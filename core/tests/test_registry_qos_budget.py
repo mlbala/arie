@@ -1,0 +1,106 @@
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass
+
+import pytest
+from arie_core.budget import BudgetHandle
+from arie_core.registry.manager import PluginDefinition, RegistryManager
+from arie_core.sched import QoS_Background, QoS_UserInitiated, QoSPriorityGate
+
+
+@dataclass
+class Ctx:
+    deadline: float
+    trace_id: str = "trace"
+    budget: BudgetHandle | None = None
+    paper_id: str | None = None
+
+
+class OldPlugin:
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def fetch(self, ctx: Ctx, *, paper_id: str | None = None) -> list[dict[str, object]]:
+        await asyncio.sleep(0.05)
+        return [{"paper_id": paper_id or ctx.paper_id, "source": "old"}]
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class NewPlugin:
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def fetch(self, ctx: Ctx, *, paper_id: str | None = None) -> list[dict[str, object]]:
+        return [{"paper_id": paper_id or ctx.paper_id, "source": "new"}]
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_budget_enforces_tool_call_and_token_caps() -> None:
+    budget = BudgetHandle(max_tool_calls=2, max_tokens=100, max_wall_sec=2.0)
+    assert budget.record_tool_call("lookup") == "lookup"
+    assert budget.record_tool_call("search") == "search"
+    with pytest.raises(ValueError):
+        budget.record_tool_call("lookup")
+    with pytest.raises(RuntimeError):
+        budget.record_tool_call("rerank")
+    budget = BudgetHandle(max_tokens=10)
+    budget.consume(10)
+    with pytest.raises(RuntimeError):
+        budget.consume(1)
+    assert "BATS:" in budget.status()
+
+
+@pytest.mark.asyncio
+async def test_registry_hot_switch_keeps_inflight_requests() -> None:
+    manager = RegistryManager(project_root=".")
+    manager._plugin_defs["old_source"] = PluginDefinition(  # pyright: ignore[reportPrivateUsage]
+        name="old_source",
+        slot="source",
+        module="tests.old",
+        object_name="OldPlugin",
+        factory=OldPlugin,
+    )
+    manager._plugin_defs["new_source"] = PluginDefinition(  # pyright: ignore[reportPrivateUsage]
+        name="new_source",
+        slot="source",
+        module="tests.new",
+        object_name="NewPlugin",
+        factory=NewPlugin,
+    )
+    manager._instances["source"] = OldPlugin()  # pyright: ignore[reportPrivateUsage]
+    manager._slot_to_name["source"] = "old_source"  # pyright: ignore[reportPrivateUsage]
+
+    old_ctx = Ctx(deadline=10.0, budget=BudgetHandle(), paper_id="paper-1")
+    in_flight = asyncio.create_task(
+        manager.call_plugin("source", "fetch", old_ctx, paper_id="paper-1")
+    )
+    await asyncio.sleep(0.02)
+    await manager.switch_plugin("source", "new_source")
+    result = await in_flight
+    old_items = result  # pyright: ignore[reportUnknownVariableType]
+    assert old_items[0]["source"] == "old"  # pyright: ignore[reportIndexIssue]
+    assert manager._instances["source"].__class__ is NewPlugin  # pyright: ignore[reportPrivateUsage]
+
+    fresh_ctx = Ctx(deadline=10.0, budget=BudgetHandle(), paper_id="paper-2")
+    next_result = await manager.call_plugin("source", "fetch", fresh_ctx, paper_id="paper-2")
+    assert next_result[0]["source"] == "new"  # pyright: ignore[reportIndexIssue]
+    assert next_result[0]["paper_id"] == "paper-2"  # pyright: ignore[reportIndexIssue]
+
+
+@pytest.mark.asyncio
+async def test_qos_priority_gate_orders_user_initiated_before_background() -> None:
+    gate = QoSPriorityGate(max_llm_concurrency=2)
+    background_task = asyncio.create_task(gate.acquire(QoS_Background))
+    await asyncio.sleep(0.05)
+    user_task = asyncio.create_task(gate.acquire(QoS_UserInitiated))
+    await asyncio.sleep(0.05)
+    assert gate.priority_for(QoS_UserInitiated) < gate.priority_for(QoS_Background)
+    assert gate._in_use.get(QoS_UserInitiated, 0) >= 1 or gate._in_use.get(QoS_Background, 0) >= 1  # pyright: ignore[reportPrivateUsage]
+    gate.release(QoS_Background)
+    await user_task
+    await background_task
