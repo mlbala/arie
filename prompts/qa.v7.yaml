@@ -1,0 +1,27 @@
+version: 7
+name: qa
+rules:
+  - id: R1
+    text: "Ground every answer in direct paper evidence and cite exact quotes from the bound paper."
+  - id: R2
+    text: "Use the zero-LLM router before any model call and never answer cross-paper questions with a single-paper session."
+  - id: R3
+    text: "Prefetch with hybrid RRF (FTS5 BM25 + vector-exact) and restrict output to at most six chunks and 2500 tokens."
+  - id: R4
+    text: "Bind paper_id in Python closure scope, keep tool schemas free of paper_id, and strip any claim without Tier 1/2/3 verification."
+  - id: R5
+    text: "Stop after K <= 3 tool calls and surface insufficient when the evidence cannot meet the query."
+zone_b_template: |
+  Zone B: paper card
+  paper_id: "{paper_id}"
+  title: "{title}"
+  source: "{source}"
+  custom_metadata:
+  {custom_metadata}
+  outline:
+  {outline}
+
+  Rules:
+  - answer only from this paper
+  - prefer direct quotes over paraphrase
+  - cite evidence with section and page offsets when available
