@@ -1,0 +1,18 @@
+[project]
+name = "arie-plugin-embed-fastembed"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = [
+    "arie-core",
+    "fastembed>=0.4.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+arie-core = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["arie_embed_fastembed"]
