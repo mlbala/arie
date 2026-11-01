@@ -81,7 +81,7 @@ def _matches_api_constraint(version: str, constraint: str) -> bool:
     return True
 
 
-def plugin(slot: type[object], name: str, api: str = ">=1,<2") -> Callable[[T], T]:
+def plugin(slot: object, name: str, api: str = ">=1,<2") -> Callable[[T], T]:
     def decorator(target: T) -> T:
         if not _matches_api_constraint("1.0", api):
             raise ValueError(
