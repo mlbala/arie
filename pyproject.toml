@@ -35,9 +35,11 @@ pythonVersion = "3.14"
 typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
+extraPaths = ["core"]
 
 [tool.importlinter]
 root_packages = ["arie_core", "arie_api", "arie_worker"]
+include_external_packages = true
 
 [[tool.importlinter.contracts]]
 name = "Invariant I5: Core never imports plugins, API, worker, or vendor SDKs"
