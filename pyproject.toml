@@ -1,0 +1,57 @@
+[project]
+name = "arie-workspace"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = [
+    "msgspec>=0.19.0",
+    "pydantic>=2.10.0",
+    "uvloop>=0.21.0; sys_platform != 'win32'",
+    "httpx[http2]>=0.28.0",
+    "opentelemetry-api>=1.29.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.25.0",
+    "hypothesis>=6.122.0",
+    "ruff>=0.9.0",
+    "pyright>=1.1.390",
+    "import-linter>=2.1",
+]
+
+[tool.uv.workspace]
+members = ["core", "api", "worker", "sdk", "plugins/*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "SIM", "RET"]
+
+[tool.pyright]
+pythonVersion = "3.14"
+typeCheckingMode = "strict"
+venvPath = "."
+venv = ".venv"
+
+[tool.importlinter]
+root_packages = ["arie_core", "arie_api", "arie_worker"]
+
+[[tool.importlinter.contracts]]
+name = "Invariant I5: Core never imports plugins, API, worker, or vendor SDKs"
+type = "forbidden"
+source_modules = ["arie_core"]
+forbidden_modules = [
+    "arie_api",
+    "arie_worker",
+    "fastapi",
+    "openai",
+    "anthropic",
+    "qdrant_client",
+    "weaviate",
+    "fitz",
+    "pymupdf4llm",
+    "fastembed",
+]

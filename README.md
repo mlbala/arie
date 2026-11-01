@@ -1,2 +1,11 @@
-# ARIE
-ARIE - Agentic Research Intelligence Engine : is an enterprise-grade, local-first academic research intelligence platform built around a Microkernel + Pluggable Adapter Pattern. Features BYO LLM/Vector/Scraper/MCP-SQL adapters, isolated PDF worker pools, verified 5-part briefs, and 3-tier quote-verified single-paper Q&amp;A.
+# arie — Agentic Research Intelligence Engine
+
+**ARIE** is an enterprise-grade, local-first academic research intelligence platform built around a **Microkernel + Pluggable Adapter Pattern**. It features:
+
+- **Zero-SDK Microkernel & 9 Pluggable Adapter Slots:** Hot-swap any LLM, embedding model, vector store, SQL database (SQLite WAL, Postgres, or external stateless `mcp-sql`), file storage, PDF parser, or custom paper scraper via `arie.yaml` without touching core code.
+- **Automated Multi-Source Ingestion & Boundary Gates:** Pulls AI/CS papers from arXiv, Google DeepMind (via OpenAlex ROR lineage), and custom BYO scrapers (e.g., OpenReview) guarded by a strict Pydantic v2 `ScrapedPaperInput` boundary contract, zero-token relevance filtering, SSRF host allow-lists, and a 64 KB `%PDF-` streaming gatekeeper.
+- **Strict Single-Paper Isolation ($P(\text{Contamination}) = 0$):** Binds `paper_id` inside Python tool lexical closures and post-filters every vector and SQL/MCP query so cross-paper contamination is structurally impossible.
+- **Bounded Agentic Q&A & 3-Zone Prefix Caching:** Combines zero-LLM routing, hybrid prefetch (FTS5 BM25 + exact vector RRF), a 3-zone prompt cache layout, and a BATS budget-tracked loop hard-capped at $K \le 3$ tool calls, $12,000$ tokens, and $25\text{ s}$.
+- **3-Tier Quote & Entailment Verifier Ladder:** Every claim in pre-computed 5-part executive briefs and live Q&A must pass exact byte matching (Tier 1), Unicode NFKC/ligature normalization with authoritative SQLite offset mapping (Tier 2), and local MiniCheck semantic entailment (Tier 3) before reaching the user.
+- **Hybrid Multi-Process Runtime & 4-Tier QoS Scheduling:** Isolates non-thread-safe PDF parsing (`PyMuPDF4LLM` / `Docling`) and ONNX inference in recycled worker processes while keeping `arie-api` (`uvloop`) under $\le 10\text{ ms}$ p99 lag via 4 GCD-inspired QoS priority lanes.
+- **120 Hz Three-Pane React 19.2 Workspace & Stateless MCP Server:** Delivers instant paper switching with `<Activity mode="hidden">`, Web Worker KaTeX rendering, exact character-offset quote highlighting in `pdf.js`, and per-paper `/mcp/p/<handle>` endpoints.

@@ -1,0 +1,17 @@
+profile: hybrid
+runtime_qos:
+  use_uvloop: true
+  slow_callback_threshold_ms: 15.0
+  user_initiated_override_concurrency: 2
+  utility_worker_processes: 4
+  background_pdf_stream_concurrency: 4
+  arxiv_rate_limit_delay_sec: 3.0
+plugins:
+  llm:          {use: deepseek, model: deepseek-chat}
+  embedder:     {use: fastembed, model: BAAI/bge-small-en-v1.5}
+  vector_store: {use: exact}
+  database:     {use: sqlite, path: ./data/arie.db}
+  file_storage: {use: local, root: ./data/papers}
+  parser:       {use: pymupdf4llm}
+  sources:      [arxiv, deepmind]
+features: [code-links]

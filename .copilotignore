@@ -1,0 +1,16 @@
+.venv/
+.fdevenv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+data/
+*.db
+*.db-wal
+*.db-shm
+*.pdf
+*.part
+*.sock
+web/node_modules/
+web/dist/
+uv.lock
