@@ -9,6 +9,23 @@ dependencies = [
     "httpx[http2]>=0.28.0",
     "opentelemetry-api>=1.29.0",
     "pyyaml>=6.0.3",
+    "python-dotenv>=1.0.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "arie-core",
+    "arie-api",
+    "arie-worker",
+    "arie-sdk",
+    "arie-db-sqlite",
+    "arie-plugin-files-local",
+    "arie-llm-deepseek",
+    "arie-llm-openai-compatible",
+    "arie-llm-gemini",
+    "arie-plugin-embed-fastembed",
+    "arie-plugin-parser-pymupdf4llm",
+    "arie-plugin-source-arxiv",
+    "arie-plugin-source-deepmind",
+    "arie-plugin-vector-exact",
 ]
 
 [dependency-groups]
@@ -24,6 +41,22 @@ dev = [
 [tool.uv.workspace]
 members = ["core", "api", "worker", "sdk", "plugins/*"]
 
+[tool.uv.sources]
+arie-core = { workspace = true }
+arie-api = { workspace = true }
+arie-worker = { workspace = true }
+arie-sdk = { workspace = true }
+arie-db-sqlite = { workspace = true }
+arie-plugin-files-local = { workspace = true }
+arie-llm-deepseek = { workspace = true }
+arie-llm-openai-compatible = { workspace = true }
+arie-llm-gemini = { workspace = true }
+arie-plugin-embed-fastembed = { workspace = true }
+arie-plugin-parser-pymupdf4llm = { workspace = true }
+arie-plugin-source-arxiv = { workspace = true }
+arie-plugin-source-deepmind = { workspace = true }
+arie-plugin-vector-exact = { workspace = true }
+
 [tool.ruff]
 line-length = 100
 target-version = "py314"
@@ -36,7 +69,7 @@ pythonVersion = "3.14"
 typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
-extraPaths = ["core", "plugins/db-sqlite", "api"]
+extraPaths = ["core", "plugins/db-sqlite", "api", "worker"]
 
 [tool.importlinter]
 root_packages = ["arie_core", "arie_api", "arie_worker"]

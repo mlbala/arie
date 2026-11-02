@@ -3,6 +3,8 @@ name = "arie-api"
 version = "0.1.0"
 requires-python = ">=3.14"
 dependencies = [
+    "arie-core",
+    "arie-worker",
     "fastapi>=0.115.0",
     "uvicorn>=0.30.0",
 ]

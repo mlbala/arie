@@ -8,6 +8,10 @@ import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PLUGINS_ROOT = REPO_ROOT / "plugins"
 SLOT_PREFIXES = {

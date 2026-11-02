@@ -1,4 +1,4 @@
-version: 3
+version: 1
 name: brief
 sections:
   - title: Executive summary
@@ -15,3 +15,9 @@ trusted_boundary:
   require_exact_quotes: true
   require_normalized_match: true
   require_semantic_entailment: true
+
+faithfulness:
+  source_of_truth: saved_pdf_text
+  preserve: [numbers, units, scope, negation, uncertainty, comparisons]
+  missing_sections: omit_without_inventing
+  paraphrase_review: require_separate_evidence_review

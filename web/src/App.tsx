@@ -1,194 +1,544 @@
-import { useInfiniteQuery, useMutation, useQuery } from '@tanstack/react-query'
 import {
-  ArrowDownToLine,
-  ChevronDown,
-  CircleHelp,
-  Command,
-  Database,
-  ExternalLink,
+  useInfiniteQuery,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import {
+  ArrowUpRight,
+  BookOpen,
+  Check,
+  ChevronRight,
+  Circle,
   FileStack,
-  Layers3,
-  RefreshCw,
+  FolderOpen,
+  LoaderCircle,
+  Menu,
+  Search,
   Settings2,
-  Sparkles,
-} from 'lucide-react'
-import { useMemo, useState } from 'react'
+  ShieldCheck,
+  PanelsTopLeft,
+  Activity,
+  SlidersHorizontal,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import {
+  getPaper,
   getPapers,
   getPluginSlots,
-  syncSource,
+  getSyncStatus,
+  DOMAIN_LABELS,
   type CitationRange,
   type PaperSummary,
-} from './api/client'
-import { BriefViewer } from './components/BriefViewer'
-import { ChatWorkspace } from './components/ChatWorkspace'
-import { PaperFeed } from './components/PaperFeed'
-import { SettingsDialog } from './components/SettingsDialog'
-import { SkippedDrawer } from './components/SkippedDrawer'
+  type SyncJob,
+} from "./api/client";
+import { ChatWorkspace, type ChatProgress } from "./components/ChatWorkspace";
+import { EvidenceDrawer } from "./components/EvidenceDrawer";
+import { ImportPaper } from "./components/ImportPaper";
+import { SettingsDialog } from "./components/SettingsDialog";
+import { SkippedDrawer } from "./components/SkippedDrawer";
+import { SyncControls } from "./components/SyncControls";
+import { SelectedDocument, StorageHealth, SystemPane } from "./components/SystemPane";
+import { PublicationWindowFields } from "./components/PublicationWindow";
+import { RECENT_WINDOW, publicationLabel, publicationParams, type PublicationWindow } from "./publication";
+import { ThemeControl } from "./components/ThemeControl";
 
-const SLOT_INFO = [
-  { slot: 'llm', label: 'LLM', icon: Sparkles },
-  { slot: 'vector_store', label: 'Vector', icon: Layers3 },
-  { slot: 'database', label: 'DB', icon: Database },
-]
+type Layout = { library: "left" | "right"; import: "library" | "right"; libraryWidth: number; activityWidth: number; sizing: "auto" | "custom" };
+function savedLayout(): Layout {
+  try {
+    const value = JSON.parse(localStorage.getItem("arie.ui.layout") ?? "null") as Layout | null;
+    return {
+      sizing: value?.sizing === "custom" ? "custom" : "auto",
+      library: value?.library === "right" ? "right" : "left",
+      import: value?.import === "library" ? "library" : "right",
+      activityWidth: typeof value?.activityWidth === "number" ? Math.min(360, Math.max(260, value.activityWidth)) : 300,
+      libraryWidth: typeof value?.libraryWidth === "number" ? Math.min(400, Math.max(240, value.libraryWidth)) : 280,
+    };
+  } catch { return { library: "left", import: "right", libraryWidth: 280, activityWidth: 300, sizing: "auto" }; }
+}
+
+/** Observe window resizing and browser zoom without storing a fixed screen size. */
+function subscribeToViewport(onChange: () => void) {
+  window.addEventListener("resize", onChange);
+  return () => window.removeEventListener("resize", onChange);
+}
+const viewportWidth = () => window.innerWidth;
+
+const INGEST_STEPS = [
+  ["discovery", "Discover papers"],
+  ["download", "Validate & download"],
+  ["extraction", "Extract PDF content"],
+  ["indexing", "Index evidence"],
+] as const;
+const ANSWER_STEPS = [
+  ["retrieval", "Find relevant passages"],
+  ["reading", "Read source evidence"],
+  ["verification", "Verify quotes & citations"],
+] as const;
 
 export default function App() {
-  const [selectedPaperId, setSelectedPaperId] = useState<string | null>(null)
-  const [recentPaperIds, setRecentPaperIds] = useState<string[]>([])
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [skippedOpen, setSkippedOpen] = useState(false)
-  const [syncMessage, setSyncMessage] = useState<string | null>(null)
-  const [activeCitation, setActiveCitation] = useState<CitationRange | null>(null)
+  const queryClient = useQueryClient();
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [recentIds, setRecentIds] = useState<string[]>([]);
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [dateWindow, setDateWindow] = useState<PublicationWindow>(RECENT_WINDOW);
+  const [source, setSource] = useState("");
+  const dateParams = publicationParams(dateWindow);
+  const [domain, setDomain] = useState("");
+  const [sort, setSort] = useState("newest");
+  const [layout, setLayout] = useState<Layout>(savedLayout);
+  const width = useSyncExternalStore(subscribeToViewport, viewportWidth);
+  const activityBreakpoint = layout.sizing === "custom"
+    ? Math.max(1180, layout.libraryWidth + layout.activityWidth + 620)
+    : 1180;
+  const docked = width >= activityBreakpoint;
+  const compactLibrary = width <= 720;
+  const [activityPanel, setActivityPanel] = useState({ docked, open: docked });
+  const [libraryPanel, setLibraryPanel] = useState({ compact: compactLibrary, open: false });
+  // Recompute visibility when crossing a layout boundary, preserving choices within it.
+  if (activityPanel.docked !== docked) setActivityPanel({ docked, open: docked });
+  if (libraryPanel.compact !== compactLibrary) setLibraryPanel({ compact: compactLibrary, open: false });
+  const systemOpen = activityPanel.docked === docked ? activityPanel.open : docked;
+  const libraryOpen = libraryPanel.compact === compactLibrary && libraryPanel.open;
+  const setSystemOpen = useCallback((open: boolean) => setActivityPanel((current) => ({ ...current, open })), []);
+  const setLibraryOpen = useCallback((open: boolean) => setLibraryPanel((current) => ({ ...current, open })), []);
+  const [importRevision, setImportRevision] = useState(0);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 250);
+    return () => clearTimeout(timer);
+  }, [search]);
+  const changeLayout = (update: Partial<Layout>) => {
+    const next = { ...layout, ...update, ...(update.libraryWidth !== undefined || update.activityWidth !== undefined ? { sizing: "custom" as const } : {}) };
+    setLayout(next);
+    if (update.import === "right") setSystemOpen(true);
+    try { localStorage.setItem("arie.ui.layout", JSON.stringify(next)); } catch { /* Session layout still applies. */ }
+  };
+  const searchInput = useRef<HTMLInputElement | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [auditOpen, setAuditOpen] = useState(false);
+  const [sourceOpen, setSourceOpen] = useState(false);
+  const closeSource = useCallback(() => setSourceOpen(false), []);
+  const [citation, setCitation] = useState<CitationRange | null>(null);
+  const [importJob, setImportJob] = useState<SyncJob | null>(null);
+  const importProgress = useCallback(
+    (job: SyncJob | null) => setImportJob(job),
+    [],
+  );
+  const [progress, setProgress] = useState<Record<string, ChatProgress>>({});
   const papersQuery = useInfiniteQuery({
-    queryKey: ['papers'],
-    queryFn: ({ pageParam, signal }) => getPapers(pageParam, signal),
+    queryKey: ["papers", { ...dateParams, domain, source, search: debouncedSearch, sort }],
+    queryFn: ({ pageParam, signal }) => getPapers(pageParam, signal, {
+      ...dateParams, domain, source, search: debouncedSearch, sort: sort === "newest" ? "" : sort,
+    }),
     initialPageParam: null as string | null,
-    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
-  })
-  const pluginsQuery = useQuery({ queryKey: ['plugins'], queryFn: getPluginSlots })
-  const papers = useMemo(
+    getNextPageParam: (page) => page.next_cursor ?? undefined,
+  });
+  const syncQuery = useQuery({
+    queryKey: ["sync"],
+    queryFn: getSyncStatus,
+    refetchInterval: 1500,
+  });
+  const pluginsQuery = useQuery({
+    queryKey: ["plugins"],
+    queryFn: getPluginSlots,
+  });
+  const job = syncQuery.data?.job;
+  const syncing = job?.status === "running" || job?.status === "queued";
+  useEffect(() => {
+    void queryClient.invalidateQueries({ queryKey: ["papers"] });
+    void queryClient.invalidateQueries({ queryKey: ["skipped"] });
+  }, [job?.indexed, job?.status, queryClient]);
+  useEffect(() => {
+    const shortcut = (event: KeyboardEvent) => {
+      const editing =
+        event.target instanceof HTMLElement &&
+        (event.target.isContentEditable ||
+          ["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName));
+      if (
+        (event.key === "/" && !editing) ||
+        ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k")
+      ) {
+        event.preventDefault();
+        setLibraryOpen(true);
+        searchInput.current?.focus();
+      }
+      if (event.key === "Escape") {
+        setLibraryOpen(false);
+        setSystemOpen(false);
+      }
+    };
+    window.addEventListener("keydown", shortcut);
+    return () => window.removeEventListener("keydown", shortcut);
+  }, [setLibraryOpen, setSystemOpen]);
+  const loadedPapers = useMemo(
     () => papersQuery.data?.pages.flatMap((page) => page.items) ?? [],
     [papersQuery.data],
-  )
-
-  const activePaperId = selectedPaperId ?? papers[0]?.id ?? null
-
+  );
+  const selectedPaperQuery = useQuery({
+    queryKey: ["paper", selectedId],
+    queryFn: () => getPaper(selectedId!),
+    enabled: Boolean(
+      selectedId && !loadedPapers.some((paper) => paper.id === selectedId),
+    ),
+  });
+  const papers = useMemo(() => {
+    const merged = new Map(loadedPapers.map((paper) => [paper.id, paper]));
+    if (selectedPaperQuery.data)
+      merged.set(selectedPaperQuery.data.id, selectedPaperQuery.data);
+    return [...merged.values()];
+  }, [loadedPapers, selectedPaperQuery.data]);
+  const activeId = selectedId ?? (debouncedSearch ? null : papers[0]?.id ?? null);
+  const activePaper = papers.find((paper) => paper.id === activeId);
   const recentPapers = useMemo(() => {
-    const ids = activePaperId
-      ? [activePaperId, ...recentPaperIds.filter((id) => id !== activePaperId)]
-      : recentPaperIds
+    const ids = activeId
+      ? [activeId, ...recentIds.filter((id) => id !== activeId)]
+      : recentIds;
     return ids
       .slice(0, 5)
       .map((id) => papers.find((paper) => paper.id === id))
-      .filter((paper): paper is PaperSummary => paper !== undefined)
-  }, [activePaperId, papers, recentPaperIds])
-
-  const selectPaper = (paperId: string) => {
-    if (paperId !== activePaperId) setActiveCitation(null)
-    setSelectedPaperId(paperId)
-    setRecentPaperIds((current) => [paperId, ...current.filter((id) => id !== paperId)].slice(0, 5))
-  }
-
-  const syncMutation = useMutation({
-    mutationFn: (source: string) => syncSource(source),
-    onSuccess: ({ job_id }) => {
-      setSyncMessage(`Sync started · ${job_id}`)
-      window.setTimeout(() => setSyncMessage(null), 4200)
-    },
-  })
-
-  const sourceProvider = pluginsQuery.data?.plugins.find((plugin) => plugin.slot === 'source')
-  const sourceName =
-    sourceProvider?.configured.use && typeof sourceProvider.configured.use === 'string'
-      ? sourceProvider.configured.use
-      : 'arxiv'
+      .filter((paper): paper is PaperSummary => paper !== undefined);
+  }, [activeId, papers, recentIds]);
+  const selectPaper = useCallback((id: string) => {
+    setSelectedId(id);
+    setRecentIds((current) =>
+      [id, ...current.filter((item) => item !== id)].slice(0, 5),
+    );
+    setCitation(null);
+    setSourceOpen(false);
+    setLibraryOpen(false);
+  }, [setLibraryOpen]);
+  const filtered = loadedPapers;
+  const chatProgress = activeId ? progress[activeId] : undefined;
+  const chatRunning =
+    chatProgress && !["idle", "complete", "error"].includes(chatProgress.stage);
+  const importing =
+    importJob?.status === "running" || importJob?.status === "queued";
+  const showAnswer = Boolean(
+    chatProgress && chatProgress.stage !== "idle" && !importing,
+  );
+  const steps = showAnswer ? ANSWER_STEPS : INGEST_STEPS;
+  const pipelineJob = importing || (!syncing && importJob) ? importJob : job;
+  const processing = importing || syncing;
+  const phase = showAnswer ? chatProgress?.stage : pipelineJob?.phase;
+  const completed = showAnswer
+    ? phase === "complete"
+    : pipelineJob?.status === "completed";
+  const stepIndex = steps.findIndex(([key]) => key === phase);
+  const llmSlot = pluginsQuery.data?.plugins.find((plugin) => plugin.slot === "llm");
+  const llm = llmSlot?.configured.use;
+  const activeProvider = llmSlot?.providers?.find((provider) => provider.name === llm);
 
   return (
-    <main className="app-shell">
-      <header className="topbar">
-        <div className="brand">
-          <div className="brand-mark" aria-hidden="true">
-            <FileStack size={17} strokeWidth={2.2} />
+    <main className={`research-shell library-${layout.library}`} style={{ "--library-width": layout.sizing === "auto" ? "clamp(240px, 18vw, 340px)" : `${layout.libraryWidth}px`, "--activity-width": layout.sizing === "auto" ? "clamp(260px, 20vw, 340px)" : `${layout.activityWidth}px` } as CSSProperties}>
+      {libraryOpen && (
+        <button
+          className="library-scrim"
+          aria-label="Close library"
+          onClick={() => setLibraryOpen(false)}
+        />
+      )}
+      <aside
+        className={`library-sidebar${libraryOpen ? " is-open" : ""}`}
+        aria-label="Research library and pipeline"
+      >
+        <a className="research-brand" href="/" aria-label="ARIE home">
+          <span className="brand-mark">
+            <FileStack size={20} />
+          </span>
+          <span>
+            ARIE<small>Research, grounded.</small>
+          </span>
+        </a>
+        <div className="sidebar-scroll">
+        {layout.import === "library" && <ImportPaper key={importRevision} onImported={selectPaper} onProgress={importProgress} />}
+        <section className="library-section" aria-label="Library papers">
+        <div className="library-heading">
+          <span>
+            <FolderOpen size={15} /> Your library
+          </span>
+          <span>{loadedPapers.length}{papersQuery.hasNextPage ? "+" : ""}</span>
+        </div>
+        <label className="library-search">
+          <Search size={14} />
+          <input
+            ref={searchInput}
+            aria-label="Search library"
+            placeholder="Title, topic, or a few words…"
+            value={search}
+            onChange={(event) => {
+              setSearch(event.target.value);
+              setSelectedId(null);
+              setCitation(null);
+              setSourceOpen(false);
+            }}
+          />
+          <kbd>/</kbd>
+        </label>
+        <details className="library-filters">
+          <summary><SlidersHorizontal size={13} /> Filter & sort <span>{publicationLabel(dateWindow)}</span></summary>
+          <div className="library-filter-body">
+          <PublicationWindowFields value={dateWindow} allowAll onChange={setDateWindow} />
+          <label>Source<select value={source} onChange={(event) => setSource(event.target.value)}>
+            <option value="">All sources</option>{[...new Set([...(syncQuery.data?.sources ?? []), ...loadedPapers.map((paper) => paper.source)])].sort().map((name) => <option key={name} value={name}>{name}</option>)}
+          </select></label>
+          <label>Research domain<select value={domain} onChange={(e) => setDomain(e.target.value)}>
+            <option value="">All domains</option>
+            {Object.entries(DOMAIN_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+          </select></label>
+          <label>Sort papers<select value={sort} onChange={(e) => setSort(e.target.value)}>
+            <option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="domain">Research domain</option>
+          </select></label>
+          <button className="text-button" onClick={() => { setDateWindow(RECENT_WINDOW); setDomain(""); setSource(""); setSearch(""); setSort("newest"); }}>Reset filters</button>
+          <button className="button filter-results-button" onClick={(event) => { const details = event.currentTarget.closest("details"); if (details) details.open = false; }}>Show results</button>
+          </div>
+        </details>
+        {debouncedSearch && <p className="search-help" role="status">Relevant papers · choose one to ask questions</p>}
+        <div className="library-list">
+          {papersQuery.isPending ? (
+            <p className="sidebar-message">Loading your library…</p>
+          ) : papersQuery.error ? (
+            <div className="sidebar-message error" role="alert">
+              {papersQuery.error.message}
+              <button
+                className="text-button"
+                onClick={() => void papersQuery.refetch()}
+              >
+                Try again
+              </button>
+            </div>
+          ) : filtered.length ? (
+            filtered.map((paper) => (
+              <button
+                className={`library-paper${paper.id === activeId ? " selected" : ""}`}
+                key={paper.id}
+                onClick={() => selectPaper(paper.id)}
+              >
+                <BookOpen size={14} />
+                <span>
+                  <strong>{paper.title}</strong>
+                  {debouncedSearch && <span className="search-result-detail"><em>{paper.match_reason ?? "Relevant paper"}</em>{paper.abstract.slice(0, 130)}{paper.abstract.length > 130 ? "…" : ""}</span>}
+                  <small>
+                    {paper.source} <span>·</span>{" "}
+                    {formatDate(paper.published_at)}
+                  </small>
+                  <span className="topic-tags">{paper.tags?.slice(0, 3).map((tag) => <span key={tag.tag} title={`${tag.basis}: ${tag.quote ?? "Uncategorized"}`}>{tag.label}</span>)}</span>
+                </span>
+                {paper.id === activeId && <ChevronRight size={13} />}
+              </button>
+            ))
+          ) : (
+            <div className="library-empty">
+              <BookOpen size={24} />
+              <strong>
+                {search || dateWindow.mode !== "all" || domain || source ? "No matching papers" : "Make room for new ideas."}
+              </strong>
+              <p>
+                {search || dateWindow.mode !== "all" || domain || source
+                  ? "Try another publication window, source, domain or search."
+                  : "Sync your sources to build a library of extracted research."}
+              </p>
+            </div>
+          )}
+          {papersQuery.hasNextPage && (
+            <button
+              className="load-papers"
+              disabled={papersQuery.isFetchingNextPage}
+              onClick={() => void papersQuery.fetchNextPage()}
+            >
+              {papersQuery.isFetchingNextPage ? "Loading…" : "Load more papers"}
+            </button>
+          )}
+        </div>
+        </section>
+        {activePaper && <SelectedDocument key={activePaper.id} paper={activePaper} onDeleted={(id, pdfOnly) => {
+          setSourceOpen(false);
+          setImportJob(null);
+          setImportRevision((value) => value + 1);
+          if (!pdfOnly) {
+            setRecentIds((ids) => ids.filter((item) => item !== id));
+            setSelectedId(null);
+          }
+        }} />}
+        </div>
+        <div className="library-storage"><StorageHealth /></div>
+        <div className="sidebar-appearance"><ThemeControl /></div>
+        <div className="sidebar-footer">
+          <button onClick={() => setAuditOpen(true)}>Sync audit</button>
+          <button aria-label="Settings" onClick={() => setSettingsOpen(true)}>
+            <Settings2 size={15} />
+          </button>
+        </div>
+      </aside>
+      <section className="conversation-main">
+        <header className="conversation-topbar">
+          <div>
+            <button
+              aria-label="Open library"
+              className="icon-button mobile-library-toggle"
+              onClick={() => setLibraryOpen(true)}
+            >
+              <Menu size={18} />
+            </button>
+            <BookOpen size={15} />
+            <span className="workspace-title">Paper chat</span>
           </div>
           <div>
-            <div className="brand-name">ARIE</div>
-            <span className="brand-caption">RESEARCH INTELLIGENCE</span>
+            <details className="layout-options">
+              <summary><PanelsTopLeft size={13} /> Layout</summary>
+              <div>
+                <label>Library position<select value={layout.library} onChange={(e) => changeLayout({ library: e.target.value as Layout["library"] })}><option value="left">Left side</option><option value="right">Right side</option></select></label>
+                <label>Panel sizing<select value={layout.sizing} onChange={(e) => changeLayout({ sizing: e.target.value as Layout["sizing"] })}><option value="auto">Automatic · fit the window</option><option value="custom">Custom widths</option></select></label>
+                {layout.sizing === "custom" && <>
+                <label>Library width · {layout.libraryWidth}px<input aria-label="Library width" type="range" min="240" max="400" step="10" value={layout.libraryWidth} onChange={(e) => changeLayout({ libraryWidth: Number(e.target.value) })} /></label>
+                <label>Activity pane width · {layout.activityWidth}px<input aria-label="Activity pane width" type="range" min="260" max="360" step="10" value={layout.activityWidth} onChange={(e) => changeLayout({ activityWidth: Number(e.target.value) })} /></label>
+                </>}
+                <label>Import form position<select value={layout.import} onChange={(e) => changeLayout({ import: e.target.value as Layout["import"] })}><option value="right">Right pane</option><option value="library">In the library</option></select></label>
+              </div>
+            </details>
+            <button className="button" aria-expanded={systemOpen} onClick={() => setSystemOpen(!systemOpen)}><Activity size={13} />Import & sync</button>
+            <span className="local-label">
+              <span className="live-dot" /> Local library
+            </span>
+            {activePaper && (
+              <button
+                className="button source-open"
+                onClick={() => {
+                  setCitation(null);
+                  setSourceOpen(true);
+                }}
+              >
+                <BookOpen size={13} />
+                View paper
+                <ArrowUpRight size={12} />
+              </button>
+            )}
           </div>
-        </div>
-        <SlotBadges
-          plugins={pluginsQuery.data?.plugins ?? []}
-          isLoading={pluginsQuery.isPending}
-        />
-        <div className="top-actions">
-          <button
-            className="button button-primary sync-button"
-            disabled={syncMutation.isPending}
-            onClick={() => syncMutation.mutate(sourceName)}
-            type="button"
-          >
-            <RefreshCw className={syncMutation.isPending ? 'spin' : ''} size={12} />
-            <span className="button-label">{syncMutation.isPending ? 'Syncing…' : 'Sync now'}</span>
-          </button>
-          <button
-            className="button skipped-button"
-            onClick={() => setSkippedOpen(true)}
-            type="button"
-          >
-            <ArrowDownToLine size={12} />
-            <span className="button-label">Skipped audit</span>
-          </button>
-          <button
-            aria-label="Settings"
-            className="icon-button"
-            onClick={() => setSettingsOpen(true)}
-            type="button"
-          >
-            <Settings2 size={16} />
-          </button>
-          <button aria-label="Help" className="icon-button help-button" type="button">
-            <CircleHelp size={15} />
-          </button>
-        </div>
-      </header>
-      {(syncMessage || syncMutation.error) && (
-        <div className={`sync-toast${syncMutation.error ? ' error' : ''}`} role="status">
-          {syncMutation.error?.message ?? syncMessage}
-          <button
-            aria-label="Dismiss sync message"
-            className="toast-dismiss"
-            onClick={() => {
-              syncMutation.reset()
-              setSyncMessage(null)
-            }}
-            type="button"
-          >
-            <ChevronDown size={12} />
-          </button>
-        </div>
-      )}
-      <div className="workspace">
-        <PaperFeed selectedPaperId={activePaperId} onSelectPaper={selectPaper} />
-        <BriefViewer citation={activeCitation} paperId={activePaperId} />
+        </header>
+        {activeProvider && !activeProvider.key_configured && <div className="model-config-notice" role="alert"><span>{activeProvider.label} API key is not configured. Source excerpts remain available.</span><button className="text-button" onClick={() => setSettingsOpen(true)}>Open Settings</button></div>}
+        {syncing && (
+          <div className="sync-banner" role="status">
+            <LoaderCircle size={13} className="spin" />
+            <span>
+              {job.message}
+              {job.current_paper && <small> · {job.current_paper}</small>}
+            </span>
+            <strong>{job.indexed} ready</strong>
+          </div>
+        )}
+        {debouncedSearch && !activeId && <div className="search-choice-notice" role="status">Choose a paper from the library results to start asking questions.</div>}
         <ChatWorkspace
-          activePaperId={activePaperId}
-          onCitation={setActiveCitation}
+          papers={activeId ? recentPapers : []}
+          activePaperId={activeId}
           onSelectPaper={selectPaper}
-          papers={recentPapers}
+          onCitation={(range) => {
+            setCitation(range);
+            setSourceOpen(true);
+          }}
+          onProgress={(id, update) =>
+            setProgress((current) => ({ ...current, [id]: update }))
+          }
         />
-      </div>
-      <footer className="app-footer">
-        <span><span className="live-dot" /> Local-first workspace</span>
-        <span className="footer-center"><Command size={10} /> K search · J/K navigate</span>
-        <span>ARIE · 0.1.0</span>
-      </footer>
-      {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
-      {skippedOpen && <SkippedDrawer onClose={() => setSkippedOpen(false)} />}
-    </main>
-  )
-}
-
-interface SlotBadgesProps {
-  plugins: Array<{ slot: string; configured: Record<string, unknown> }>
-  isLoading: boolean
-}
-
-function SlotBadges({ plugins, isLoading }: SlotBadgesProps) {
-  return (
-    <div className="slot-row" aria-label="Active plugin slots">
-      {SLOT_INFO.map(({ slot, label, icon: Icon }) => {
-        const plugin = plugins.find((item) => item.slot === slot)
-        const provider = plugin?.configured.use
-        return (
-          <div className="slot-badge" key={slot} title={`${label}: ${String(provider ?? 'not configured')}`}>
-            <span className="slot-dot" />
-            <Icon size={11} />
-            <span>{label}</span>
-            <span className="slot-vendor">
-              {isLoading ? '…' : typeof provider === 'string' ? <><ExternalLink size={9} /> {provider}</> : 'offline'}
+        <footer className="research-footer">
+          <span>
+            <ShieldCheck size={12} /> Every answer anchored to its source
+          </span>
+          <span>
+            {typeof llm === "string" ? llm : "Research assistant"}
+            <span className="footer-separator">·</span> ARIE 0.1.0
+          </span>
+        </footer>
+      </section>
+      <SystemPane docked={docked} open={systemOpen} onClose={() => setSystemOpen(false)}>
+        <SyncControls status={syncQuery.data} error={syncQuery.error} />
+        {layout.import === "right" && <ImportPaper key={importRevision} onImported={selectPaper} onProgress={importProgress} />}
+        <section
+          className="pipeline-card"
+          aria-label={showAnswer ? "Answer pipeline" : "Sync pipeline"}
+        >
+          <div className="pipeline-title">
+            <span>{showAnswer ? "Answer pipeline" : "Ingestion pipeline"}</span>
+            <span
+              className={`pipeline-state${chatRunning || (!showAnswer && processing) ? " active" : ""}`}
+            >
+              {chatRunning || (!showAnswer && processing)
+                ? "Live"
+                : completed
+                  ? "Complete"
+                  : phase === "error"
+                    ? "Stopped"
+                    : "Ready"}
             </span>
           </div>
-        )
-      })}
-    </div>
-  )
+          <ol className="pipeline-steps">
+            {steps.map(([key, label], index) => {
+              const done = completed || (stepIndex >= 0 && index < stepIndex);
+              const current =
+                key === phase && (showAnswer ? chatRunning : processing);
+              return (
+                <li
+                  key={key}
+                  className={done ? "done" : current ? "current" : ""}
+                >
+                  <span className="pipeline-node">
+                    {done ? (
+                      <Check size={11} />
+                    ) : current ? (
+                      <LoaderCircle size={12} className="spin" />
+                    ) : (
+                      <Circle size={10} />
+                    )}
+                  </span>
+                  <span>{label}</span>
+                </li>
+              );
+            })}
+          </ol>
+          <p className="pipeline-caption" aria-live="polite">
+            {showAnswer
+              ? chatProgress?.message
+              : processing
+                ? (pipelineJob?.current_paper ?? pipelineJob?.message)
+                : "PDF pages → searchable evidence"}
+          </p>
+          {showAnswer && (
+            <button
+              className="text-button"
+              onClick={() =>
+                activeId &&
+                setProgress((current) => ({
+                  ...current,
+                  [activeId]: { stage: "idle", message: "" },
+                }))
+              }
+            >
+              View sync pipeline <ArrowUpRight size={10} />
+            </button>
+          )}
+        </section>
+      </SystemPane>
+      {sourceOpen && activeId && (
+        <EvidenceDrawer
+          key={`${activeId}:${activePaper?.revision}:${citation?.page_start}:${citation?.char_start}`}
+          paperId={activeId}
+          citation={citation}
+          onClose={closeSource}
+        />
+      )}
+      {settingsOpen && (
+        <SettingsDialog onClose={() => setSettingsOpen(false)} />
+      )}
+      {auditOpen && <SkippedDrawer onClose={() => setAuditOpen(false)} />}
+    </main>
+  );
+}
+
+function formatDate(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? "Undated"
+    : new Intl.DateTimeFormat(undefined, {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      }).format(date);
 }

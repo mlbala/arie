@@ -20,11 +20,15 @@ from types import ModuleType
 from typing import Protocol, TypeVar, cast
 
 import yaml
+from dotenv import load_dotenv
 from opentelemetry import metrics, trace
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from arie_core.budget import BudgetHandle
 from arie_core.events import EventBus
+from arie_core.registry.sync import SyncConfig
+
+load_dotenv()
 
 _T = TypeVar("_T")
 
@@ -70,6 +74,23 @@ class PluginConfigEntry(BaseModel):
     inline: str | None = None
 
 
+class LLMProviderConfig(BaseModel):
+    """Server-side provider defaults; credentials are resolved from environment variables."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    model: str = Field(min_length=1, max_length=128)
+    api_key_env: str = Field(pattern=r"^[A-Z][A-Z0-9_]*$")
+    base_url: str | None = None
+
+
+def default_llm_providers() -> dict[str, LLMProviderConfig]:
+    return {
+        "deepseek": LLMProviderConfig(model="deepseek-chat", api_key_env="DEEPSEEK_API_KEY"),
+        "openai": LLMProviderConfig(model="gpt-4.1-mini", api_key_env="OPENAI_API_KEY"),
+        "gemini": LLMProviderConfig(model="gemini-3.5-flash-lite", api_key_env="GEMINI_API_KEY"),
+    }
+
+
 class ArieConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -77,6 +98,8 @@ class ArieConfig(BaseModel):
     runtime_qos: RuntimeQoSConfig = Field(default_factory=RuntimeQoSConfig)
     plugins: dict[str, object] = Field(default_factory=dict)
     features: list[str] = Field(default_factory=list)
+    llm_providers: dict[str, LLMProviderConfig] = Field(default_factory=default_llm_providers)
+    sync: SyncConfig = Field(default_factory=lambda: SyncConfig())
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> ArieConfig:
@@ -264,13 +287,21 @@ class RegistryManager:
                 plugin_name = str(configured)
         if not plugin_name:
             raise ValueError(f"No plugin configured for slot: {slot}")
-        definition = self._plugin_defs.get(plugin_name)
-        if definition is None:
-            raise KeyError(f"Plugin {plugin_name!r} not found")
-        instance = definition.factory(**kwargs) if definition.factory is not None else definition
+        instance = self.build_plugin(slot, plugin_name, **kwargs)
+        self.activate_plugin(slot, plugin_name, instance)
+        return instance
+
+    def activate_plugin(self, slot: str, plugin_name: str, instance: object) -> None:
+        """Activate an already validated instance without reconstructing or retesting it."""
         self._instances[slot] = instance
         self._slot_to_name[slot] = plugin_name
-        return instance
+
+    def build_plugin(self, slot: str, plugin_name: str, **kwargs: object) -> object:
+        """Construct a candidate without changing the active slot."""
+        definition = self._slot_plugins.get(slot, {}).get(plugin_name)
+        if definition is None:
+            raise KeyError(f"Plugin {plugin_name!r} not found for slot {slot!r}")
+        return definition.factory(**kwargs) if definition.factory is not None else definition
 
     async def health_check(self, instance: object) -> bool:
         health_handler = getattr(instance, "healthcheck", None)

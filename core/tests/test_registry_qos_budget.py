@@ -72,6 +72,12 @@ async def test_registry_hot_switch_keeps_inflight_requests() -> None:
         object_name="NewPlugin",
         factory=NewPlugin,
     )
+    manager._slot_plugins["source"].update(  # pyright: ignore[reportPrivateUsage]
+        {
+            name: manager._plugin_defs[name]  # pyright: ignore[reportPrivateUsage]
+            for name in ("old_source", "new_source")
+        }
+    )
     manager._instances["source"] = OldPlugin()  # pyright: ignore[reportPrivateUsage]
     manager._slot_to_name["source"] = "old_source"  # pyright: ignore[reportPrivateUsage]
 

@@ -3,555 +3,504 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-from collections import defaultdict, deque
+import logging
+import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Mapping
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Annotated, Any, ClassVar, Literal, cast
+from urllib.parse import quote
 
-from arie_core.contracts import Claim, Evidence
-from arie_core.harness.verifier import EvidenceVerifier
-from arie_core.registry.manager import ArieConfig, RegistryManager
+from arie_core.harness.intent import DialogueTurn
+from arie_core.harness.orchestrator import answer_question
+from arie_core.harness.reader import EvidenceChunk
+from arie_core.plugin_api import LLM
+from arie_core.registry.sync import SyncConfig
+from arie_core.sched import supervised
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from arie_api.mcp_server import MCPStatelessServer, verify_scope_handle
+from arie_api.monitor import StorageMonitor
+from arie_api.runtime import Document, ResearchRuntime, context
+
+logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
+@dataclass(frozen=True)
+class QuestionTurn:
+    """Bounded, untrusted pointers to earlier questions in the selected paper's chat."""
+
+    __pydantic_config__: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
+    question: Annotated[str, Field(min_length=1, max_length=700)]
+    source_ids: Annotated[
+        tuple[Annotated[str, Field(max_length=256)], ...], Field(max_length=8)
+    ] = ()
+
+
 class QuestionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    question: str = Field(min_length=1)
-    context: str | None = None
-
-
-class OverrideRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    size_limit_mb: int | None = Field(default=200, ge=0, le=200)
-    relevance_override: bool = False
-    note: str | None = None
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    question: str = Field(min_length=1, max_length=2000)
+    context: str | None = Field(default=None, max_length=2000)
+    history: tuple[QuestionTurn, ...] = Field(default=(), max_length=4)
 
 
 class SyncRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    source: str = "all"
+    settings: SyncConfig | None = None
+    resume_job_id: str | None = None
 
-    source: str = "arxiv"
+
+@dataclass(frozen=True)
+class ImportRequest:
+    """Validate the public import boundary without a mutable runtime model."""
+
+    __pydantic_config__: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
+    url: Annotated[str, Field(min_length=1, max_length=2048)]
+
+
+class OverrideRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    size_limit_mb: int | None = Field(default=25, ge=0, le=25)
+    relevance_override: bool = False
+    note: str | None = None
 
 
 class PluginRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     plugin: str
     config: dict[str, object] = Field(default_factory=dict)
 
 
-class PaperDocument(dict[str, Any]):
-    pass
+def _event(kind: str, **payload: Any) -> str:
+    return f"event: {kind}\ndata: {json.dumps(payload)}\n\n"
 
 
-def _paper_seed() -> dict[str, dict[str, Any]]:
-    return {
-        "paper-1": {
-            "id": "paper-1",
-            "title": "Grounded Verification for Agentic Reading",
-            "source": "arxiv",
-            "status": "INDEXED",
-            "published_at": "2025-01-12T00:00:00Z",
-            "abstract": (
-                "This paper proposes a grounded verification pipeline that binds every claim "
-                "to exact quote spans and verifies evidence tiers before surfacing results."
-            ),
-            "outline": [
-                "Problem definition",
-                "Evidence-first construction",
-                "Verifier ladder",
-                "Evaluation and limitations",
-            ],
-            "chunk_text": (
-                "The paper proposes a grounded verification pipeline for agentic reading. "
-                "The system binds every claim to exact quote spans, checks Tier 1 exact byte "
-                "matching, Tier 2 normalized text matching, and Tier 3 entailment before a "
-                "claim is shown to the user."
-            ),
-            "brief": {
-                "parts": [
-                    {
-                        "label": "summary",
-                        "title": "Summary",
-                        "content": (
-                            "The paper presents a grounded verification pipeline for "
-                            "agentic reading."
-                        ),
-                    },
-                    {
-                        "label": "method",
-                        "title": "Method",
-                        "content": (
-                            "Claims are bound to exact quote spans and checked with a "
-                            "three-tier verification ladder."
-                        ),
-                    },
-                    {
-                        "label": "results",
-                        "title": "Results",
-                        "content": (
-                            "The approach reduces unsupported claims and keeps answer quality "
-                            "grounded."
-                        ),
-                    },
-                    {
-                        "label": "limitations",
-                        "title": "Limitations",
-                        "content": (
-                            "The design still depends on high-quality evidence extraction and "
-                            "retrieval quality."
-                        ),
-                    },
-                    {
-                        "label": "future_work",
-                        "title": "Future work",
-                        "content": (
-                            "The next iteration should strengthen retrieval and broaden "
-                            "evaluation settings."
-                        ),
-                    },
-                ]
-            },
-            "allowed_hosts": ["export.arxiv.org", "arxiv.org"],
-            "pdf_header_ok": True,
-            "size_limit_mb": 200,
-            "relevance_gate": True,
-            "relevance_override": False,
-            "overridden_by_user": 0,
-            "status_reason": "indexed",
-        },
-        "paper-2": {
-            "id": "paper-2",
-            "title": "Hybrid Retrieval for Literature Discovery",
-            "source": "arxiv",
-            "status": "SKIPPED",
-            "published_at": "2024-12-05T00:00:00Z",
-            "abstract": (
-                "A hybrid retrieval design combines lexical ranking with semantic similarity to "
-                "discover relevant literature and reduce false positives."
-            ),
-            "outline": ["Goal", "Retrieval design", "Scoring", "Limitations"],
-            "chunk_text": (
-                "The system combines lexical ranking with semantic similarity to retrieve "
-                "relevant literature. Results show that hybrid retrieval reduces false "
-                "positives and improves citation recall in large corpora."
-            ),
-            "brief": {
-                "parts": [
-                    {
-                        "label": "summary",
-                        "title": "Summary",
-                        "content": "Hybrid retrieval is used for literature discovery.",
-                    },
-                    {
-                        "label": "method",
-                        "title": "Method",
-                        "content": "Lexical and semantic signals are combined.",
-                    },
-                    {
-                        "label": "results",
-                        "title": "Results",
-                        "content": "False positives are reduced in large corpora.",
-                    },
-                    {
-                        "label": "limitations",
-                        "title": "Limitations",
-                        "content": "Retrieval still depends on corpus quality.",
-                    },
-                    {
-                        "label": "future_work",
-                        "title": "Future work",
-                        "content": "Broader evaluation across more domains is recommended.",
-                    },
-                ]
-            },
-            "allowed_hosts": ["export.arxiv.org", "arxiv.org"],
-            "pdf_header_ok": True,
-            "size_limit_mb": 80,
-            "relevance_gate": False,
-            "relevance_override": False,
-            "overridden_by_user": 0,
-            "status_reason": "relevance mismatch",
-        },
-    }
+def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
+    service = runtime
+    monitor: StorageMonitor | None = None
 
+    def active() -> ResearchRuntime:
+        if service is None:
+            raise HTTPException(status_code=503, detail="Research service is starting")
+        return service
 
-PAPERS: dict[str, dict[str, Any]] = _paper_seed()
-EVENT_HISTORY: deque[dict[str, Any]] = deque(maxlen=200)
-EVENT_QUEUE: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-SYNC_LOCKS: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
-SINGLE_FLIGHT: dict[str, dict[str, Any]] = {}
-PLUGIN_CONFIG: dict[str, dict[str, Any]] = {
-    "source": {"use": "arxiv"},
-    "llm": {"use": "deepseek", "model": "deepseek-chat"},
-    "embedder": {"use": "fastembed", "model": "BAAI/bge-small-en-v1.5"},
-}
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
+        nonlocal service
+        service = service or ResearchRuntime(PROJECT_ROOT)
+        await service.initialize()
+        async with asyncio.TaskGroup() as group:
+            worker = group.create_task(supervised(service.run)())
+            imports = group.create_task(supervised(service.run_imports)())
+            try:
+                yield
+            finally:
+                worker.cancel()
+                imports.cancel()
+                service.close()
 
+    app = FastAPI(title="ARIE API", version="0.1.0", lifespan=lifespan)
 
-def _utc_now() -> datetime:
-    return datetime.now(UTC)
+    async def document(paper_id: str) -> Document:
+        paper = await active().get_paper(paper_id)
+        if paper is None:
+            raise HTTPException(status_code=404, detail="Paper not found")
+        return paper
 
-
-def _record_event(event_type: str, **payload: Any) -> dict[str, Any]:
-    item = {
-        "event": event_type,
-        "timestamp": _utc_now().isoformat(),
-        **payload,
-    }
-    EVENT_HISTORY.append(item)
-    with suppress(RuntimeError):
-        EVENT_QUEUE.put_nowait(item)
-    return item
-
-
-def _paper_summary(paper: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "id": paper["id"],
-        "title": paper["title"],
-        "source": paper["source"],
-        "status": paper["status"],
-        "published_at": paper["published_at"],
-        "abstract": paper["abstract"],
-        "relevance_gate": paper["relevance_gate"],
-        "overridden_by_user": paper["overridden_by_user"],
-    }
-
-
-def _parse_before(raw_value: str | None) -> datetime | None:
-    if raw_value is None:
-        return None
-    try:
-        return datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-
-def _question_claim(paper: dict[str, Any], question: str) -> tuple[str, str]:
-    normalized = question.strip()
-    lowered = normalized.lower()
-    if "contribution" in lowered or "main contribution" in lowered:
-        return (
-            "The paper proposes a grounded verification pipeline for agentic reading.",
-            "The paper proposes a grounded verification pipeline for agentic reading.",
-        )
-    if "method" in lowered:
-        return (
-            "The method binds claims to exact quote spans and runs a three-tier verifier.",
-            "The paper proposes a grounded verification pipeline for agentic reading.",
-        )
-    return (
-        "The paper demonstrates a grounded verification pipeline and evidence-first "
-        "architecture.",
-        "The paper proposes a grounded verification pipeline for agentic reading.",
-    )
-
-
-def _verify_claims(paper: dict[str, Any], question: str) -> list[dict[str, Any]]:
-    verifier = EvidenceVerifier()
-    claim_text, quote = _question_claim(paper, question)
-    evidence = [
-        Evidence(
-            id="e-paper-1",
-            chunk_id="chunk-1",
-            quote=quote,
-        )
-    ]
-    claim = Claim(text=claim_text, evidence=evidence)
-    verified = verifier.verify(claim, chunk_text=paper["chunk_text"])
-    if not verified:
-        return []
-    return [
-        {
-            "text": claim_text,
-            "quote": quote,
-            "tier_checks": ["tier_1", "tier_2", "tier_3"],
-            "verified": True,
-        }
-    ]
-
-
-def _registry_manager() -> RegistryManager:
-    config = ArieConfig.from_yaml(PROJECT_ROOT / "arie.yaml")
-    return RegistryManager(project_root=PROJECT_ROOT, config=config)
-
-
-@asynccontextmanager
-async def _app_lifespan(_: FastAPI) -> AsyncGenerator[None]:
-    try:
-        import uvloop  # type: ignore[import-not-found]
-    except ImportError:  # pragma: no cover
-        yield
-        return
-    if hasattr(asyncio, "set_event_loop_policy"):
-        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())  # pyright: ignore[reportDeprecated]
-    yield
-
-
-def create_app() -> FastAPI:
-    app = FastAPI(title="ARIE API", version="0.1.0", lifespan=_app_lifespan)
+    @app.get("/")
+    async def root() -> dict[str, str]:
+        return {"service": "ARIE API", "status": "ok", "version": "0.1.0"}
 
     @app.get("/v1/papers")
     async def list_papers(
-        status: str | None = Query(default=None),
-        before: str | None = Query(default=None),
-        source: str | None = Query(default=None),
-        cursor: str | None = Query(default=None),
-    ) -> dict[str, Any]:
-        cutoff = _parse_before(before)
-        items: list[dict[str, Any]] = []
-        for paper in PAPERS.values():
-            if status and paper["status"] != status.upper():
-                continue
-            if source and paper["source"] != source:
-                continue
-            if cutoff is not None:
-                published = datetime.fromisoformat(paper["published_at"].replace("Z", "+00:00"))
-                if published > cutoff:
-                    continue
-            items.append(_paper_summary(paper))
-        page_size = 20
-        offset = int(cursor) if cursor and cursor.isdigit() else 0
-        selection = items[offset : offset + page_size]
-        next_cursor = str(offset + page_size) if offset + page_size < len(items) else None
-        return {
-            "items": selection,
-            "next_cursor": next_cursor,
-            "has_more": next_cursor is not None,
-        }
+        status: str | None = None,
+        source: str | None = None,
+        cursor: int = Query(default=0, ge=0),
+        month: str | None = Query(default=None, pattern=r"^[0-9]{4}-(0[1-9]|1[0-2])$"),
+        year: int | None = Query(default=None, ge=1991, le=9998),
+        months: int | None = Query(default=None, ge=1, le=120),
+        start_month: str | None = Query(default=None, pattern=r"^[0-9]{4}-(0[1-9]|1[0-2])$"),
+        end_month: str | None = Query(default=None, pattern=r"^[0-9]{4}-(0[1-9]|1[0-2])$"),
+        domain: str | None = None,
+        search: str | None = Query(default=None, max_length=200),
+        sort: Literal["newest", "oldest", "domain"] = "newest",
+    ) -> Document:
+        try:
+            return await active().list_papers(
+                cursor,
+                status,
+                source,
+                month,
+                domain,
+                search,
+                sort,
+                year=year,
+                months=months,
+                start_month=start_month,
+                end_month=end_month,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    @app.get("/v1/papers/{paper_id}")
-    async def get_paper(paper_id: str) -> dict[str, Any]:
-        paper = PAPERS.get(paper_id)
-        if paper is None:
-            raise HTTPException(status_code=404, detail="paper not found")
-        return {
-            "id": paper["id"],
-            "title": paper["title"],
-            "source": paper["source"],
-            "status": paper["status"],
-            "abstract": paper["abstract"],
-            "outline": paper["outline"],
-            "brief": paper["brief"],
-            "verified_5_part_brief": paper["brief"]["parts"],
-            "allowed_hosts": paper["allowed_hosts"],
-            "pdf_header_ok": paper["pdf_header_ok"],
-            "size_limit_mb": paper["size_limit_mb"],
-            "relevance_gate": paper["relevance_gate"],
-            "overridden_by_user": paper["overridden_by_user"],
-        }
+    @app.get("/v1/papers/{paper_id:path}/pdf")
+    async def paper_pdf(paper_id: str) -> FileResponse:
+        paper = await document(paper_id)
 
-    @app.post("/v1/papers/{paper_id}/questions")
+        def resolve_pdf() -> Path:
+            path = Path(str(paper.get("file_path", ""))).resolve()
+            if not path.is_relative_to(active().storage_root.resolve()) or not path.is_file():
+                raise HTTPException(status_code=404, detail="Extracted PDF is unavailable")
+            return path
+
+        path = await asyncio.to_thread(resolve_pdf)
+        return FileResponse(path, media_type="application/pdf")
+
+    @app.get("/v1/papers/{paper_id:path}/pages/{page_number}")
+    async def paper_page(paper_id: str, page_number: int) -> Document:
+        paper = await document(paper_id)
+        pages = paper.get("pages", [])
+        if page_number < 1 or page_number > len(pages):
+            raise HTTPException(status_code=404, detail="Page not found")
+        return {**pages[page_number - 1], "paper_id": paper_id}
+
+    @app.post("/v1/papers/{paper_id:path}/questions")
     async def ask_question(paper_id: str, request: QuestionRequest) -> StreamingResponse:
-        paper = PAPERS.get(paper_id)
-        if paper is None:
-            raise HTTPException(status_code=404, detail="paper not found")
+        paper = await document(paper_id)
+        if paper["status"] not in {"INDEXED", "BRIEFED"}:
+            raise HTTPException(
+                status_code=409, detail="Wait for PDF extraction and indexing to finish"
+            )
 
         async def stream() -> AsyncIterator[str]:
-            yield "event: progress\ndata: " + json.dumps({
-                "paper_id": paper_id,
-                "status": "queued",
-                "question": request.question,
-            }) + "\n\n"
-            await asyncio.sleep(0.02)
-            claims = _verify_claims(paper, request.question)
-            if not claims:
-                yield "event: progress\ndata: " + json.dumps({
-                    "paper_id": paper_id,
-                    "status": "no_verified_claims",
-                    "question": request.question,
-                }) + "\n\n"
-            for claim in claims:
-                yield "event: claim\ndata: " + json.dumps({
-                    "paper_id": paper_id,
-                    "verified": claim["verified"],
-                    "claim": {
-                        "text": claim["text"],
-                        "quote": claim["quote"],
-                        "tier_checks": claim["tier_checks"],
-                    },
-                    "status": "passed_verifier_tiers",
-                }) + "\n\n"
-            yield "event: done\ndata: " + json.dumps({
-                "paper_id": paper_id,
-                "status": "complete",
-                "claims": claims,
-            }) + "\n\n"
+            try:
+                async with asyncio.timeout(25.0):
+                    ctx = context(uuid.uuid4().hex, 25.0)
+                    yield _event(
+                        "progress",
+                        paper_id=paper_id,
+                        status="planning",
+                        message="Planning what to read in this paper",
+                    )
+                    rows = [
+                        EvidenceChunk(**row)
+                        for row in paper.get("chunks", [])
+                        if row.get("paper_id") == paper_id
+                    ]
+                    history = [
+                        DialogueTurn(turn.question, turn.source_ids) for turn in request.history
+                    ]
+                    if not history and request.context:
+                        history = [DialogueTurn(request.context)]
+                    llm: LLM | None = cast(LLM, active().instance("llm"))
+                    if not getattr(llm, "api_key", None):
+                        llm = None
+                    run = await answer_question(
+                        ctx,
+                        paper_id,
+                        request.question,
+                        rows,
+                        llm,
+                        project_root=PROJECT_ROOT,
+                        history=history,
+                    )
+                    plan, reading, result = run.plan, run.reading, run.answer
+                    excerpts = result.excerpts
+                    mode = result.mode
+                    yield _event(
+                        "progress",
+                        paper_id=paper_id,
+                        status="verification",
+                        message="Source quotations matched; summary evidence review completed"
+                        if result.reviewed_claims
+                        else "Checking exact quotes and page locations",
+                    )
+                    yield _event(
+                        "answer",
+                        paper_id=paper_id,
+                        mode=mode,
+                        context_question=plan.topic_question,
+                        heading="Detailed explanation"
+                        if plan.depth == "detailed"
+                        else "Brief answer"
+                        if plan.depth == "brief"
+                        else "Paper summary"
+                        if plan.overview
+                        else "Answer",
+                        evaluation={
+                            "source_of_truth": "saved_pdf_text",
+                            "task": plan.task,
+                            "planner": run.planner_status,
+                            "guardrail": run.guardrail.code or "passed",
+                            "required_aspects": list(plan.aspects),
+                            "covered_aspects": result.covered_aspects,
+                            "depth": plan.depth,
+                            "follow_up": plan.follow_up,
+                            "reading_steps": list(reading.actions),
+                            "model_calls": result.model_calls,
+                            "reviewed_claims": result.reviewed_claims,
+                            "rejected_claims": result.rejected_claims,
+                            "accepted_claims": len(excerpts),
+                            "answer_relevant": result.answer_relevant,
+                            "fallback_reason": result.fallback_reason,
+                        },
+                    )
+                    for excerpt in excerpts:
+                        yield _event(
+                            "claim",
+                            paper_id=paper_id,
+                            verified=True,
+                            claim={
+                                "text": excerpt.text,
+                                "label": excerpt.label,
+                                "paragraph": excerpt.paragraph,
+                                "quote": excerpt.quote,
+                                "citation": {
+                                    "page_start": excerpt.page_start,
+                                    "char_start": excerpt.char_start,
+                                    "char_end": excerpt.char_end,
+                                    "chunk_id": excerpt.chunk_id,
+                                    "label": f"p. {excerpt.page_start}",
+                                },
+                                "tier_checks": list(excerpt.checks),
+                            },
+                        )
+                    if not excerpts:
+                        yield _event(
+                            "abstention",
+                            paper_id=paper_id,
+                            message=(
+                                run.guardrail.message
+                                or "I could not find verified evidence in this paper "
+                                "to answer that question."
+                            ),
+                        )
+                    yield _event(
+                        "done",
+                        paper_id=paper_id,
+                        status="complete",
+                        mode=mode,
+                        claims_count=len(excerpts),
+                        tool_calls=len(reading.actions),
+                        model_calls=result.model_calls,
+                        input_bytes=result.input_bytes,
+                        output_tokens=result.output_tokens,
+                    )
+            except TimeoutError:
+                yield _event(
+                    "error",
+                    paper_id=paper_id,
+                    message="The 25-second answer deadline was reached. Try a narrower question.",
+                )
+            except Exception:
+                logger.exception("Paper answer failed for %s", paper_id)
+                yield _event(
+                    "error",
+                    paper_id=paper_id,
+                    message="The answer could not be completed. Please try again.",
+                )
 
-        return StreamingResponse(stream(), media_type="text/event-stream")
-
-    @app.get("/v1/skips")
-    async def get_skips() -> dict[str, Any]:
-        items = [
-            {
-                "paper_id": paper["id"],
-                "title": paper["title"],
-                "source": paper["source"],
-                "status": paper["status"],
-                "reason": paper["status_reason"],
-                "overridden_by_user": paper["overridden_by_user"],
-            }
-            for paper in PAPERS.values()
-            if paper["status"] == "SKIPPED"
-        ]
-        return {"items": items}
-
-    @app.post("/v1/papers/{paper_id}/override")
-    async def override_paper(paper_id: str, request: OverrideRequest) -> JSONResponse:
-        paper = PAPERS.get(paper_id)
-        if paper is None:
-            raise HTTPException(status_code=404, detail="paper not found")
-        size_limit_mb = min(int(request.size_limit_mb or 200), 200)
-        paper["size_limit_mb"] = size_limit_mb
-        paper["relevance_override"] = bool(request.relevance_override)
-        paper["overridden_by_user"] = 1
-        paper["status"] = "INDEXED" if paper["relevance_override"] else paper["status"]
-        _record_event(
-            "override",
-            paper_id=paper_id,
-            size_limit_mb=size_limit_mb,
-            relevance_override=paper["relevance_override"],
-            overridden_by_user=1,
-            pdf_header_ok=paper["pdf_header_ok"],
-            allowed_hosts=paper["allowed_hosts"],
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
-        return JSONResponse(
-            {
-                "id": paper_id,
-                "status": paper["status"],
-                "size_limit_mb": size_limit_mb,
-                "relevance_override": paper["relevance_override"],
-                "overridden_by_user": 1,
-                "pdf_header_ok": paper["pdf_header_ok"],
-                "allowed_hosts": paper["allowed_hosts"],
-            },
-            status_code=202,
+
+    @app.get("/v1/papers/{paper_id:path}")
+    async def get_paper(paper_id: str) -> Document:
+        paper = await document(paper_id)
+        result = {
+            key: value
+            for key, value in paper.items()
+            if key not in {"file_path", "pages", "chunks"}
+        }
+        result["page_count"] = len(paper.get("pages", []))
+        result["revision"] = paper.get("dedup_hash", "")
+        result["pdf_url"] = (
+            None if paper.get("pdf_deleted") else f"/v1/papers/{quote(paper_id, safe='')}/pdf"
         )
+        return result
+
+    @app.delete("/v1/papers/{paper_id:path}")
+    async def delete_paper(paper_id: str, pdf_only: bool = False) -> Document:
+        try:
+            await active().delete_paper(paper_id, pdf_only)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if monitor is not None:
+            monitor.cached = None
+        return {"deleted": True, "paper_id": paper_id, "pdf_only": pdf_only}
 
     @app.post("/v1/sync")
-    async def sync_sources(request: Request) -> JSONResponse:
-        raw_payload: Any = await request.json()
-        payload = cast(dict[str, Any], raw_payload if isinstance(raw_payload, dict) else {})
-        source_value = payload.get("source", "arxiv")
-        source = str(source_value if source_value is not None else "arxiv").strip() or "arxiv"
-        lock = SYNC_LOCKS[source]
-        async with lock:
-            job_id = f"sync-{source}-{len(SINGLE_FLIGHT) + 1}"
-            SINGLE_FLIGHT[source] = {"job_id": job_id, "status": "running"}
-            _record_event("sync.started", source=source, job_id=job_id, qos="QoS_Background")
-            await asyncio.sleep(0.02)
-            SINGLE_FLIGHT[source] = {"job_id": job_id, "status": "completed"}
-            _record_event("sync.completed", source=source, job_id=job_id, qos="QoS_Background")
-            return JSONResponse(
-                {
-                    "accepted": True,
-                    "status": "accepted",
-                    "job_id": job_id,
-                    "source": source,
-                    "qos": "QoS_Background",
-                    "single_flight": True,
-                },
-                status_code=202,
+    async def sync_sources(request: SyncRequest) -> JSONResponse:
+        try:
+            job = await active().start_sync(request.source, request.settings, request.resume_job_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return JSONResponse({**job, "accepted": True, "single_flight": True}, status_code=202)
+
+    @app.get("/v1/sync")
+    async def sync_status() -> Document:
+        jobs = [job for job in active().jobs.values() if job.get("kind") != "import"]
+        return {
+            "job": jobs[-1] if jobs else None,
+            "initial_months": active().config.sync.initial_months,
+            "settings": active().config.sync.model_dump(exclude_none=True),
+            "sources": active().config.plugins.get("sources", []),
+        }
+
+    @app.put("/v1/sync/settings")
+    async def save_sync_settings(settings: SyncConfig) -> Document:
+        try:
+            await active().save_sync_settings(settings)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=503, detail="Could not save arie.yaml") from exc
+        return {"settings": settings.model_dump(exclude_none=True)}
+
+    @app.get("/v1/sync/{job_id}")
+    async def sync_job(job_id: str) -> Document:
+        job = active().jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Sync job not found")
+        return job
+
+    @app.post("/v1/sync/{job_id}/pause")
+    async def pause_sync(job_id: str) -> Document:
+        job = active().jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Sync job not found")
+        if job["status"] in {"running", "queued"}:
+            await active().update_job(
+                job, pause_requested=True, message="Pausing after the current paper finishes"
             )
+        return job
+
+    @app.post("/v1/imports")
+    async def import_paper(request: ImportRequest) -> JSONResponse:
+        try:
+            job = await active().start_import(request.url)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
+        return JSONResponse(job, status_code=202)
+
+    @app.get("/v1/imports/{job_id}")
+    async def import_status(job_id: str) -> Document:
+        job = active().jobs.get(job_id)
+        if job is None or job.get("kind") != "import":
+            raise HTTPException(status_code=404, detail="Import job not found")
+        return job
 
     @app.get("/v1/events")
     async def stream_events() -> StreamingResponse:
-        async def event_stream() -> AsyncIterator[str]:
-            for item in list(EVENT_HISTORY):
-                yield "event: update\ndata: " + json.dumps(item) + "\n\n"
-            while True:
-                try:
-                    item = await asyncio.wait_for(EVENT_QUEUE.get(), timeout=0.25)
-                except TimeoutError:
-                    break
-                yield "event: update\ndata: " + json.dumps(item) + "\n\n"
+        return StreamingResponse(active().events(), media_type="text/event-stream")
 
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
+    @app.get("/v1/skips")
+    async def get_skips() -> Document:
+        rows = await active().db.fetch(
+            context("audit"),
+            "SELECT summary_json FROM arie_library "
+            "WHERE status IN ('SKIPPED', 'FAILED', 'QUARANTINED') "
+            "ORDER BY published_at DESC LIMIT 200",
+        )
+        papers = [json.loads(str(row["summary_json"])) for row in rows]
+        return {
+            "items": [
+                {**paper, "paper_id": paper["id"], "reason": paper["status_reason"]}
+                for paper in papers
+            ]
+        }
+
+    @app.post("/v1/papers/{paper_id:path}/override")
+    async def override_paper(paper_id: str, request: OverrideRequest) -> JSONResponse:
+        paper = await document(paper_id)
+        del request
+        if paper["status"] == "SKIPPED":
+            raise HTTPException(
+                status_code=409, detail="This paper did not pass ingestion safety gates"
+            )
+        job = await active().start_sync(paper["source"])
+        return JSONResponse({"job_id": job["job_id"], "status": "queued"}, status_code=202)
 
     @app.get("/v1/plugins")
-    async def list_plugins() -> dict[str, Any]:
-        manager = _registry_manager()
-        slots = [
-            "source",
-            "llm",
-            "embedder",
-            "vector_store",
-            "database",
-            "file_storage",
-            "parser",
-        ]
-        plugin_view: list[dict[str, Any]] = []
-        for slot in slots:
-            configured = PLUGIN_CONFIG.get(slot, {})
-            available = manager.get_available_plugins(slot)
-            if not available and slot == "source":
-                available = ["arxiv"]
-            plugin_view.append(
+    async def list_plugins() -> Document:
+        config = active().config.plugins
+        slots = ["source", "llm", "embedder", "vector_store", "database", "file_storage", "parser"]
+        return {
+            "plugins": [
                 {
                     "slot": slot,
-                    "configured": configured,
-                    "available": available,
+                    "configured": (
+                        {"use": "all", "sources": config.get("sources", [])}
+                        if slot == "source"
+                        else {
+                            key: value
+                            for key, value in cast(dict[str, object], config.get(slot, {})).items()
+                            if key not in {"api_key", "password", "secret", "token"}
+                        }
+                    ),
+                    "available": active().manager.get_available_plugins(slot),
+                    **({"providers": active().providers.options()} if slot == "llm" else {}),
                 }
-            )
-        return {"plugins": plugin_view}
+                for slot in slots
+            ]
+        }
 
     @app.put("/v1/plugins/{slot}")
-    async def set_plugin(slot: str, request: PluginRequest) -> dict[str, Any]:
-        PLUGIN_CONFIG[slot] = {"use": request.plugin, **request.config}
-        return {"slot": slot, "plugin": request.plugin, "config": PLUGIN_CONFIG[slot]}
+    async def set_plugin(slot: str, request: PluginRequest) -> Document:
+        if slot != "llm":
+            raise HTTPException(
+                status_code=409, detail="Change this slot in arie.yaml and restart ARIE"
+            )
+        try:
+            return await active().providers.switch(request.plugin, request.config)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(
+                status_code=503, detail="Could not save provider selection to arie.yaml"
+            ) from exc
 
     @app.post("/v1/plugins/{slot}/test")
-    async def test_plugin(slot: str, request: PluginRequest) -> JSONResponse:
-        manager = _registry_manager()
-        plugin_name = request.plugin or str(PLUGIN_CONFIG.get(slot, {}).get("use") or "")
-        if not plugin_name:
-            raise HTTPException(status_code=400, detail="plugin name required")
+    async def test_plugin(slot: str, request: PluginRequest) -> Document:
         try:
-            instance = manager.instantiate_plugin(slot, plugin_name)
-        except (KeyError, ValueError, RuntimeError) as exc:
+            if slot == "llm":
+                await active().providers.check(request.plugin, request.config)
+                return {"ok": True, "slot": slot, "plugin": request.plugin}
+            instance = active().manager.build_plugin(slot, request.plugin, **request.config)
+            ping = getattr(instance, "ping", None)
+            if callable(ping):
+                result = ping()
+                if inspect.isawaitable(result):
+                    await result
+        except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        try:
-            if slot == "source":
-                fetcher = getattr(instance, "fetch", None)
-                if callable(fetcher):
-                    result = fetcher(None, source_id="arxiv")
-                    if inspect.isawaitable(result):
-                        await result
-                elif hasattr(instance, "ping"):
-                    health = manager.health_check(instance)
-                    if inspect.isawaitable(health):
-                        await health
-            elif hasattr(instance, "ping"):
-                health = manager.health_check(instance)
-                if inspect.isawaitable(health):
-                    await health
-        except Exception as exc:  # pragma: no cover - plugin health checks can be noisy
-            raise HTTPException(status_code=503, detail=f"plugin test failed: {exc}") from exc
-        return JSONResponse({"slot": slot, "plugin": plugin_name, "ok": True}, status_code=200)
+        return {"ok": True, "slot": slot, "plugin": request.plugin}
+
+    @app.get("/v1/storage")
+    async def storage_status() -> Document:
+        nonlocal monitor
+        if monitor is None:
+            monitor = StorageMonitor(active())
+        return await monitor.snapshot()
 
     @app.get("/v1/health")
-    async def healthcheck() -> dict[str, Any]:
-        manager = _registry_manager()
-        checks = {
-            slot: bool(manager.get_available_plugins(slot))
-            for slot in ["source", "llm", "embedder"]
-        }
-        return {
-            "ok": True,
-            "status": "healthy",
-            "runtime": "uvloop",
-            "plugins": checks,
-            "timestamp": _utc_now().isoformat(),
-        }
+    async def healthcheck() -> Document:
+        await active().db.fetch(context("health"), "SELECT 1")
+        return {"ok": True, "status": "healthy", "timestamp": datetime.now(UTC).isoformat()}
 
     @app.post("/mcp/p/{handle}")
     async def mcp_scope_handle(request: Request, handle: str) -> JSONResponse:
@@ -561,7 +510,7 @@ def create_app() -> FastAPI:
                 dict[str, Any],
                 raw_payload if isinstance(raw_payload, dict) else {},
             )
-            trace_id = request.headers.get("x-trace-id") or "trace-" + str(len(EVENT_HISTORY))
+            trace_id = request.headers.get("x-trace-id") or "trace-" + uuid.uuid4().hex
             traceparent = request.headers.get("traceparent")
             try:
                 expected_paper_id = verify_scope_handle(handle)
@@ -608,5 +557,3 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
-
-__all__ = ["app", "create_app"]

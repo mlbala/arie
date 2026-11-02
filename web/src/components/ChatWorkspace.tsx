@@ -1,39 +1,55 @@
-import { Activity, useEffect, useRef, useState } from 'react'
-import { CheckCircle2, CircleHelp, LoaderCircle, Send, ShieldCheck } from 'lucide-react'
+import { Activity, Fragment, useEffect, useRef, useState } from "react";
 import {
-  apiUrl,
-  type CitationRange,
-  type PaperSummary,
-} from '../api/client'
+  ArrowUpRight,
+  BookOpen,
+  Check,
+  FileText,
+  LoaderCircle,
+  Quote,
+  Send,
+  ShieldCheck,
+  Sparkles,
+  Square,
+} from "lucide-react";
+import { apiUrl, type CitationRange, type PaperSummary } from "../api/client";
 
+export interface ChatProgress {
+  stage: string;
+  message: string;
+}
 interface ChatWorkspaceProps {
-  papers: PaperSummary[]
-  activePaperId: string | null
-  onSelectPaper: (paperId: string) => void
-  onCitation: (citation: CitationRange) => void
+  papers: PaperSummary[];
+  activePaperId: string | null;
+  onSelectPaper: (paperId: string) => void;
+  onCitation: (citation: CitationRange) => void;
+  onProgress?: (paperId: string, progress: ChatProgress) => void;
 }
-
 interface VerifiedClaim {
-  text: string
-  quote: string
-  citation?: CitationRange | undefined
+  text: string;
+  quote: string;
+  paragraph?: number;
+  label?: string | undefined;
+  citation?: CitationRange | undefined;
 }
-
 interface ChatEntry {
-  id: string
-  question: string
-  claims: VerifiedClaim[]
-  error?: string | undefined
+  id: string;
+  question: string;
+  contextQuestion?: string;
+  claims: VerifiedClaim[];
+  error?: string | undefined;
+  message?: string | undefined;
+  mode?: string | undefined;
+  heading?: string | undefined;
+  reviewedClaims?: number | undefined;
+  rejectedClaims?: number | undefined;
+  answerRelevant?: boolean | undefined;
+  fallbackReason?: string | undefined;
+  coveredAspects?: number;
+  requiredAspects?: number;
 }
-
-interface StreamClaim {
-  paper_id?: unknown
-  claim?: unknown
-}
-
 interface RequestCallbacks {
-  onStart: (controller: AbortController) => void
-  onFinish: (controller: AbortController) => void
+  onStart: (controller: AbortController) => void;
+  onFinish: (controller: AbortController) => void;
 }
 
 export function ChatWorkspace({
@@ -41,262 +57,519 @@ export function ChatWorkspace({
   activePaperId,
   onSelectPaper,
   onCitation,
+  onProgress,
 }: ChatWorkspaceProps) {
-  const recentPapers = papers.slice(0, 5)
-  const activeRequest = useRef<AbortController | null>(null)
-  const previousActiveId = useRef(activePaperId)
-
+  const activeRequest = useRef<AbortController | null>(null);
+  const previousActiveId = useRef(activePaperId);
   useEffect(() => {
     if (previousActiveId.current !== activePaperId) {
-      activeRequest.current?.abort()
-      activeRequest.current = null
-      previousActiveId.current = activePaperId
+      activeRequest.current?.abort();
+      activeRequest.current = null;
+      previousActiveId.current = activePaperId;
     }
-  }, [activePaperId])
-
-  const requestCallbacks: RequestCallbacks = {
+  }, [activePaperId]);
+  useEffect(() => () => activeRequest.current?.abort(), []);
+  const callbacks: RequestCallbacks = {
     onStart: (controller) => {
-      activeRequest.current = controller
+      activeRequest.current = controller;
     },
     onFinish: (controller) => {
-      if (activeRequest.current === controller) activeRequest.current = null
+      if (activeRequest.current === controller) activeRequest.current = null;
     },
-  }
-
+  };
   return (
-    <section className="pane chat-pane-shell" aria-label="Grounded paper Q&A">
-      <header className="pane-header chat-header">
-        <div className="pane-title-row">
-          <div>
-            <p className="eyebrow">Grounded assistant</p>
-            <h1 className="pane-title">Ask this paper</h1>
-          </div>
-          <span className="verified-pill"><ShieldCheck size={11} /> Verified only</span>
-        </div>
-        <div className="chat-paper-tabs" aria-label="Recent paper conversations">
-          {recentPapers.map((paper) => (
+    <section className="research-chat" aria-label="Grounded paper Q&A">
+      {papers.length > 1 && (
+        <nav
+          className="conversation-tabs"
+          aria-label="Recent paper conversations"
+        >
+          {papers.slice(0, 5).map((paper) => (
             <button
-              aria-current={paper.id === activePaperId ? 'true' : undefined}
-              className={`chat-paper-tab${paper.id === activePaperId ? ' active' : ''}`}
               key={paper.id}
-              onClick={() => onSelectPaper(paper.id)}
               title={paper.title}
-              type="button"
+              aria-current={paper.id === activePaperId ? "page" : undefined}
+              onClick={() => onSelectPaper(paper.id)}
             >
-              {paper.title}
+              <FileText size={12} />
+              <span>{paper.title}</span>
             </button>
           ))}
-          {recentPapers.length === 0 && <span className="chat-tab-empty">Choose a paper to begin</span>}
+        </nav>
+      )}
+      {!papers.length ? (
+        <div className="welcome-empty">
+          <div className="welcome-symbol">
+            <Sparkles size={26} />
+          </div>
+          <p className="eyebrow">YOUR RESEARCH COMPANION</p>
+          <h1>
+            Good research starts
+            <br />
+            with a closer look.
+          </h1>
+          <p>
+            Bring your papers together. Ask focused questions.
+            <br />
+            Follow every answer back to the evidence.
+          </p>
+          <div className="welcome-features">
+            <span>
+              <FileText size={16} /> Full PDF extraction
+            </span>
+            <span>
+              <ShieldCheck size={16} /> Source-grounded answers
+            </span>
+            <span>
+              <Quote size={16} /> Page-level citations
+            </span>
+          </div>
+          <p className="welcome-hint">
+            <RefreshHint /> Import a PDF link or sync your sources to begin.
+          </p>
         </div>
-      </header>
-      {recentPapers.length === 0 ? (
-        <div className="empty-state">Your paper conversations will appear here.</div>
       ) : (
-        recentPapers.map((paper) => (
+        papers.slice(0, 5).map((paper) => (
           <Activity
-            key={paper.id}
-            mode={paper.id === activePaperId ? 'visible' : 'hidden'}
+            key={`${paper.id}:${paper.revision ?? ""}`}
+            mode={paper.id === activePaperId ? "visible" : "hidden"}
           >
             <ChatPanel
-              callbacks={requestCallbacks}
-              onCitation={onCitation}
               paper={paper}
+              callbacks={callbacks}
+              onCitation={onCitation}
+              onProgress={onProgress}
             />
           </Activity>
         ))
       )}
-      <footer className="status-strip">
-        <span><span className="live-dot" /> Evidence verifier online</span>
-        <span>max 3 tool calls</span>
-      </footer>
     </section>
-  )
+  );
+}
+
+function RefreshHint() {
+  return <ArrowUpRight size={14} />;
 }
 
 interface ChatPanelProps {
-  paper: PaperSummary
-  callbacks: RequestCallbacks
-  onCitation: (citation: CitationRange) => void
+  paper: PaperSummary;
+  callbacks: RequestCallbacks;
+  onCitation: (citation: CitationRange) => void;
+  onProgress: ChatWorkspaceProps["onProgress"];
 }
+function ChatPanel({
+  paper,
+  callbacks,
+  onCitation,
+  onProgress,
+}: ChatPanelProps) {
+  const [question, setQuestion] = useState("");
+  const [entries, setEntries] = useState<ChatEntry[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [status, setStatus] = useState("");
+  const controllerRef = useRef<AbortController | null>(null);
+  const logEnd = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    logEnd.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+  }, [entries, status]);
+  useEffect(() => () => controllerRef.current?.abort(), []);
+  const ready = ["INDEXED", "BRIEFED"].includes(paper.status);
 
-function ChatPanel({ paper, callbacks, onCitation }: ChatPanelProps) {
-  const [question, setQuestion] = useState('')
-  const [entries, setEntries] = useState<ChatEntry[]>([])
-  const [isLoading, setIsLoading] = useState(false)
-
-  const submitQuestion = async () => {
-    const prompt = question.trim()
-    if (!prompt || isLoading) return
-    const controller = new AbortController()
-    const entryId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
-    setQuestion('')
-    setIsLoading(true)
-    setEntries((current) => [...current, { id: entryId, question: prompt, claims: [] }])
-    callbacks.onStart(controller)
-
+  const submitQuestion = async (suggestion?: string) => {
+    const prompt = (suggestion ?? question).trim();
+    if (!prompt || isLoading || !ready) return;
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    const id = crypto.randomUUID();
+    const patchEntry = (patch: Partial<ChatEntry>) =>
+      setEntries((current) =>
+        current.map((entry) =>
+          entry.id === id ? { ...entry, ...patch } : entry,
+        ),
+      );
+    const report = (stage: string, message: string) => {
+      setStatus(message);
+      onProgress?.(paper.id, { stage, message });
+    };
+    setQuestion("");
+    setIsLoading(true);
+    setEntries((current) => [...current, { id, question: prompt, claims: [] }]);
+    callbacks.onStart(controller);
+    report("retrieval", "Finding relevant passages…");
     try {
       const response = await fetch(
         apiUrl(`/v1/papers/${encodeURIComponent(paper.id)}/questions`),
         {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ question: prompt }),
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ question: prompt, ...(entries.length ? {
+            history: entries.filter((entry) => !entry.error).slice(-3).map((entry) => ({
+              question: (entry.contextQuestion ?? entry.question).slice(0, 700),
+              source_ids: [...new Set(entry.claims.flatMap((claim) => claim.citation?.chunk_id ? [claim.citation.chunk_id] : []))].slice(0, 8),
+            })),
+          } : {}) }),
           signal: controller.signal,
         },
-      )
-      if (!response.ok) throw new Error(`Question failed (${response.status}).`)
-      if (!response.body) throw new Error('The server did not return a response stream.')
-      const reader = response.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-
-      const consumeEvents = (complete: boolean) => {
-        const blocks = buffer.split('\n\n')
-        buffer = complete ? '' : (blocks.pop() ?? '')
+      );
+      if (!response.ok) {
+        const body = (await response.json().catch(() => ({}))) as {
+          detail?: string;
+        };
+        throw new Error(body.detail ?? `Question failed (${response.status}).`);
+      }
+      if (!response.body)
+        throw new Error("The server did not return a response stream.");
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let finished = false;
+      const consume = (complete: boolean) => {
+        buffer = buffer.replace(/\r\n/g, "\n");
+        const blocks = buffer.split("\n\n");
+        buffer = complete ? "" : (blocks.pop() ?? "");
         for (const block of blocks) {
-          const eventLine = block.split('\n').find((line) => line.startsWith('event:'))
-          const dataLine = block.split('\n').find((line) => line.startsWith('data:'))
-          if (eventLine?.trim() !== 'event: claim' || !dataLine) continue
-          const parsed = JSON.parse(dataLine.slice(5).trim()) as StreamClaim
-          const claim = normalizeClaim(parsed.claim)
-          if (!claim) continue
-          setEntries((current) =>
-            current.map((entry) =>
-              entry.id === entryId ? { ...entry, claims: [...entry.claims, claim] } : entry,
-            ),
-          )
+          const lines = block.split("\n");
+          const kind = lines
+            .find((line) => line.startsWith("event:"))
+            ?.slice(6)
+            .trim();
+          const data = lines
+            .filter((line) => line.startsWith("data:"))
+            .map((line) => line.slice(5).trimStart())
+            .join("\n");
+          if (!data) continue;
+          const parsed = JSON.parse(data) as Record<string, unknown>;
+          if (parsed.paper_id !== paper.id) continue;
+          if (kind === "progress" && typeof parsed.status === "string")
+            report(parsed.status, String(parsed.message ?? parsed.status));
+          if (kind === "claim" && parsed.verified === true) {
+            const claim = normalizeClaim(parsed.claim);
+            if (claim)
+              setEntries((current) =>
+                current.map((entry) =>
+                  entry.id === id
+                    ? { ...entry, claims: [...entry.claims, claim] }
+                    : entry,
+                ),
+              );
+          }
+          if (kind === "answer")
+            patchEntry({
+              mode: String(parsed.mode ?? ""),
+              heading: String(parsed.heading ?? "Answer"),
+              contextQuestion: typeof parsed.context_question === "string" ? parsed.context_question.slice(0, 700) : prompt,
+              reviewedClaims: typeof parsed.evaluation === "object" && parsed.evaluation !== null
+                && "reviewed_claims" in parsed.evaluation
+                ? Number(parsed.evaluation.reviewed_claims) : 0,
+              rejectedClaims: typeof parsed.evaluation === "object" && parsed.evaluation !== null
+                && "rejected_claims" in parsed.evaluation ? Number(parsed.evaluation.rejected_claims) : 0,
+              answerRelevant: typeof parsed.evaluation === "object" && parsed.evaluation !== null
+                && "answer_relevant" in parsed.evaluation && parsed.evaluation.answer_relevant === true,
+              fallbackReason: typeof parsed.evaluation === "object" && parsed.evaluation !== null
+                && "fallback_reason" in parsed.evaluation
+                ? String(parsed.evaluation.fallback_reason) : "",
+              coveredAspects: typeof parsed.evaluation === "object" && parsed.evaluation !== null
+                && "covered_aspects" in parsed.evaluation && typeof parsed.evaluation.covered_aspects === "number"
+                ? parsed.evaluation.covered_aspects : 0,
+              requiredAspects: typeof parsed.evaluation === "object" && parsed.evaluation !== null
+                && "required_aspects" in parsed.evaluation && Array.isArray(parsed.evaluation.required_aspects)
+                ? parsed.evaluation.required_aspects.length : 0,
+            });
+          if (kind === "abstention")
+            patchEntry({ message: String(parsed.message) });
+          if (kind === "error") {
+            finished = true;
+            throw new Error(String(parsed.message ?? "Answer failed."));
+          }
+          if (kind === "done") {
+            finished = true;
+            patchEntry({ mode: String(parsed.mode ?? "") });
+            report("complete", "Source quotes and page citations checked.");
+          }
         }
+      };
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          consume(false);
+        }
+        buffer += decoder.decode();
+        consume(true);
+        if (!finished)
+          throw new Error("The response was interrupted. Please try again.");
+      } finally {
+        reader.releaseLock();
       }
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        consumeEvents(false)
-      }
-      buffer += decoder.decode()
-      consumeEvents(true)
     } catch (error) {
-      if (!controller.signal.aborted) {
-        setEntries((current) =>
-          current.map((entry) =>
-            entry.id === entryId
-              ? { ...entry, error: error instanceof Error ? error.message : 'Question failed.' }
-              : entry,
-          ),
-        )
-      }
+      const message = controller.signal.aborted
+        ? "Response stopped."
+        : error instanceof Error
+          ? error.message
+          : "Question failed.";
+      patchEntry({ error: message });
+      report("error", message);
     } finally {
-      setIsLoading(false)
-      callbacks.onFinish(controller)
+      setIsLoading(false);
+      callbacks.onFinish(controller);
+      if (controllerRef.current === controller) controllerRef.current = null;
     }
-  }
-
+  };
   return (
-    <div className="chat-pane">
-      <div className="chat-intro">
-        Answers stay inside <strong>{paper.title}</strong>. Each surfaced claim is checked against
-        source evidence.
-      </div>
-      <div className="chat-log" aria-live="polite">
-        {entries.length === 0 ? (
-          <div className="chat-empty">
-            <span className="chat-empty-icon"><CircleHelp size={15} /></span>
-            <strong>Start with a focused question</strong>
-            <p>Ask about the method, key findings, or limitations in this paper.</p>
+    <div className="paper-conversation">
+      <div className="conversation-scroll">
+        <header className="selected-research">
+          <div className="paper-label">
+            <span>{paper.source}</span>
+            <span>·</span>
+            <span>
+              {paper.page_count
+                ? `${paper.page_count} pages extracted`
+                : ready
+                  ? "PDF indexed"
+                  : "Awaiting extraction"}
+            </span>
           </div>
-        ) : (
-          entries.slice(-5).map((entry) => (
-            <div key={entry.id}>
-              <p className="question-bubble">{entry.question}</p>
-              {entry.claims.map((claim, index) => (
-                <article className="claim-card" key={`${entry.id}:${index}`}>
-                  <p>{claim.text}</p>
-                  <div className="claim-quote">“{claim.quote}”</div>
-                  <div className="claim-status">
-                    <CheckCircle2 size={10} /> Verified against source
-                    {claim.citation && (
-                      <button
-                        className="citation-button"
-                        onClick={() => onCitation(claim.citation!)}
-                        type="button"
-                      >
-                        p. {claim.citation.page_start}
-                      </button>
-                    )}
-                  </div>
-                </article>
-              ))}
-              {entry.error && <p className="chat-error">{entry.error}</p>}
-            </div>
-          ))
-        )}
-        {isLoading && (
-          <div className="claim-card response-reservation" aria-label="Verifying response">
-            <div className="skeleton-line" style={{ width: '84%' }} />
-            <div className="skeleton-line" style={{ width: '61%' }} />
-            <span className="claim-status"><LoaderCircle className="spin" size={10} /> Verifying evidence</span>
-          </div>
-        )}
-      </div>
-      <form
-        className="chat-composer"
-        onSubmit={(event) => {
-          event.preventDefault()
-          void submitQuestion()
-        }}
-      >
-        <textarea
-          aria-label={`Ask about ${paper.title}`}
-          className="chat-textarea"
-          onChange={(event) => setQuestion(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
-              event.preventDefault()
-              void submitQuestion()
-            }
-          }}
-          placeholder="Ask a question about this paper..."
-          value={question}
-        />
-        <button
-          aria-label="Send question"
-          className="chat-send"
-          disabled={!question.trim() || isLoading}
-          type="submit"
+          <h1>{paper.title}</h1>
+          <details className="paper-abstract">
+            <summary>About this paper</summary>
+            <p>{paper.abstract}</p>
+          </details>
+        </header>
+        <div
+          className="conversation-log"
+          aria-live="polite"
+          aria-busy={isLoading}
         >
-          <Send size={12} />
-        </button>
-      </form>
-      <div className="chat-footnote">Only source-verified claims are shown</div>
+          {!entries.length ? (
+            <div className="conversation-start">
+              <div className="assistant-avatar">
+                <Sparkles size={18} />
+              </div>
+              <h2>What would you like to understand?</h2>
+              <p>
+                Explore this paper with answers you can trace to the source.
+              </p>
+              <div className="question-suggestions">
+                {[
+                  "What is this paper about?",
+                  "How does the method work?",
+                  "What are the key results?",
+                  "What limitations are discussed?",
+                ].map((prompt) => (
+                  <button
+                    key={prompt}
+                    onClick={() => void submitQuestion(prompt)}
+                    disabled={!ready}
+                  >
+                    {prompt}
+                    <ArrowUpRight size={14} />
+                  </button>
+                ))}
+              </div>
+              <span className="scope-note">
+                <ShieldCheck size={12} /> This conversation stays within one
+                paper.
+              </span>
+            </div>
+          ) : (
+            entries.map((entry) => (
+              <article className="conversation-turn" key={entry.id}>
+                <div className="user-turn">
+                  <span>You</span>
+                  <p>{entry.question}</p>
+                </div>
+                <div className="assistant-turn">
+                  <div className="answer-heading">
+                    <span className="assistant-avatar">
+                      <Sparkles size={13} />
+                    </span>
+                    <strong>ARIE</strong>
+                    <span>Grounded in this paper</span>
+                  </div>
+                  {entry.heading && (
+                    <h3 className="answer-title">{entry.heading}</h3>
+                  )}
+                  {entry.claims.length > 0 && <GroundedAnswer entry={entry} onCitation={onCitation} />}
+                  {entry.message && (
+                    <p className="answer-notice">{entry.message}</p>
+                  )}
+                  {entry.error && (
+                    <p className="answer-error" role="alert">
+                      {entry.error}
+                    </p>
+                  )}
+                  {["source_excerpts", "extractive_summary"].includes(
+                    entry.mode ?? "",
+                  ) &&
+                    entry.claims.length > 0 && (
+                      <p className="excerpt-mode">
+                        {["provider_http_401", "provider_http_403"].includes(entry.fallbackReason ?? "")
+                          ? "Model connection rejected. This extractive answer uses saved paper text. Reconnect in Settings for a model-reviewed summary."
+                          : entry.mode === "extractive_summary"
+                            ? "Extractive summary from this paper. A reviewed model summary was unavailable."
+                            : "Showing source excerpts. A reviewed model answer was unavailable."}
+                      </p>
+                    )}
+                </div>
+              </article>
+            ))
+          )}
+          {isLoading && (
+            <div className="answer-working" role="status">
+              <LoaderCircle className="spin" size={15} />
+              <span>{status}</span>
+            </div>
+          )}
+          <div ref={logEnd} />
+        </div>
+      </div>
+      <div className="composer-area">
+        <form
+          className="research-composer"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submitQuestion();
+          }}
+        >
+          <textarea
+            aria-label={`Ask about ${paper.title}`}
+            onChange={(event) => setQuestion(event.target.value)}
+            onKeyDown={(event) => {
+              if (
+                event.key === "Enter" &&
+                !event.shiftKey &&
+                !event.nativeEvent.isComposing
+              ) {
+                event.preventDefault();
+                void submitQuestion();
+              }
+            }}
+            placeholder={
+              ready
+                ? "Ask anything about this paper…"
+                : "PDF extraction is still in progress…"
+            }
+            maxLength={2000}
+            disabled={!ready}
+            value={question}
+            rows={2}
+          />
+          <div className="composer-bottom">
+            <span>
+              <BookOpen size={12} /> One paper. Every citation.
+            </span>
+            {isLoading ? (
+              <button
+                className="composer-send"
+                aria-label="Stop response"
+                type="button"
+                onClick={() => controllerRef.current?.abort()}
+              >
+                <Square size={13} />
+              </button>
+            ) : (
+              <button
+                className="composer-send"
+                aria-label="Send question"
+                disabled={!question.trim() || !ready}
+                type="submit"
+              >
+                <Send size={15} />
+              </button>
+            )}
+          </div>
+        </form>
+        <p className="composer-hint">
+          Answers cite saved paper text. When evidence is insufficient,
+          ARIE will say so.<span>↵ send</span>
+        </p>
+      </div>
     </div>
-  )
+  );
+}
+
+/** Assemble only verified sentences; keep original evidence separate from the answer. */
+function GroundedAnswer({ entry, onCitation }: { entry: ChatEntry; onCitation: (citation: CitationRange) => void }) {
+  const cite = (claim: VerifiedClaim) => {
+    if (claim.citation) onCitation({ ...claim.citation, quote: claim.quote });
+  };
+  const reviewed = entry.answerRelevant && Boolean(entry.reviewedClaims)
+    && ["grounded_summary", "reviewed_answer"].includes(entry.mode ?? "");
+  const paragraphs = [...new Set(entry.claims.map((claim) => claim.paragraph ?? 0))].sort((a, b) => a - b);
+  return <div className="grounded-answer">
+    {paragraphs.map((paragraph) => <p className="answer-summary" key={paragraph}>{entry.claims.map((claim, index) => (claim.paragraph ?? 0) === paragraph && <Fragment key={index}>
+      {index > 0 ? " " : ""}{displaySourceText(claim.text)}
+      <button className="inline-citation" aria-label={`Source ${index + 1}, page ${claim.citation?.page_start}`} onClick={() => cite(claim)}>[{index + 1}]</button>
+    </Fragment>)}</p>)}
+    <section className="answer-evidence" aria-label="Verified sources">
+      <div className="answer-evidence-heading"><Check size={12} /><strong>Verified sources</strong><span>{entry.claims.length} supporting passage{entry.claims.length === 1 ? "" : "s"}</span></div>
+      <details className="supporting-passages"><summary>Supporting passages</summary>
+        <ol>{entry.claims.map((claim, index) => <li key={index}>
+          <button className="source-citation" onClick={() => cite(claim)}><span>{index + 1}</span><FileText size={12} /> Page {claim.citation?.page_start}<ArrowUpRight size={11} /></button>
+          <blockquote>{displaySourceText(claim.quote)}</blockquote>
+        </li>)}</ol>
+      </details>
+      {reviewed && <details className="answer-evaluation"><summary>Model evaluation</summary>
+        <p>{entry.reviewedClaims} statements checked · {entry.claims.length} accepted · {entry.rejectedClaims ?? 0} rejected</p>
+        <p>Question relevance: passed · Evidence support: passed</p>
+        {Boolean(entry.requiredAspects) && <p>Requested points covered: {entry.coveredAspects ?? 0}/{entry.requiredAspects}</p>}
+      </details>}
+    </section>
+  </div>;
 }
 
 function normalizeClaim(value: unknown): VerifiedClaim | null {
-  if (typeof value !== 'object' || value === null || !('text' in value) || !('quote' in value)) {
-    return null
-  }
-  const { text, quote } = value
-  if (typeof text !== 'string' || typeof quote !== 'string') return null
-  const citationValue = 'citation' in value ? normalizeCitation(value.citation) : undefined
-  return citationValue
-    ? { text, quote, citation: citationValue }
-    : { text, quote }
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("text" in value) ||
+    !("quote" in value)
+  )
+    return null;
+  if (typeof value.text !== "string" || typeof value.quote !== "string")
+    return null;
+  if (!displaySourceText(value.text) || displaySourceText(value.quote).length < 15) return null;
+  const citation =
+    "citation" in value ? normalizeCitation(value.citation) : undefined;
+  if (!citation) return null;
+  const label = "label" in value && typeof value.label === "string" ? value.label : undefined;
+  const paragraph = "paragraph" in value && typeof value.paragraph === "number"
+    && Number.isInteger(value.paragraph) && value.paragraph >= 0 && value.paragraph <= 2 ? value.paragraph : 0;
+  return { text: value.text, quote: value.quote, label, citation, paragraph };
+}
+function normalizeCitation(value: unknown): CitationRange | undefined {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("page_start" in value) ||
+    !("char_start" in value) ||
+    !("char_end" in value)
+  )
+    return undefined;
+  const { page_start, char_start, char_end } = value;
+  if (
+    typeof page_start !== "number" ||
+    typeof char_start !== "number" ||
+    typeof char_end !== "number" ||
+    !Number.isInteger(page_start) ||
+    page_start < 1 ||
+    !Number.isInteger(char_start) ||
+    char_start < 0 ||
+    !Number.isInteger(char_end) ||
+    char_end <= char_start
+  )
+    return undefined;
+  const chunkId = "chunk_id" in value && typeof value.chunk_id === "string" && value.chunk_id.length <= 256 ? value.chunk_id : undefined;
+  return { page_start, char_start, char_end, ...(chunkId ? { chunk_id: chunkId } : {}) };
 }
 
-function normalizeCitation(value: unknown): CitationRange | undefined {
-  if (typeof value !== 'object' || value === null) return undefined
-  if (!('page_start' in value) || !('char_start' in value) || !('char_end' in value)) {
-    return undefined
-  }
-  const { page_start, char_start, char_end } = value
-  if (
-    typeof page_start !== 'number' ||
-    typeof char_start !== 'number' ||
-    typeof char_end !== 'number'
-  ) {
-    return undefined
-  }
-  return { page_start, char_start, char_end }
+function displaySourceText(text: string): string {
+  return text
+    .replace(/<\/?(?:sup|sub|b|i|em|strong|u|s|del)>/gi, "")
+    .replace(/\*\*|~~/g, "")
+    .replace(/(?<!\w)_([^_\n]+)_(?!\w)/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
 }

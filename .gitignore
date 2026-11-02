@@ -13,3 +13,8 @@ data/
 *.sock
 web/node_modules/
 web/dist/
+.env
+.env.*
+!.env.example
+.DS_Store
+.playwright-mcp/

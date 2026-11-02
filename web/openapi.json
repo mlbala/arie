@@ -14,6 +14,23 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "ImportRequest": {
+        "additionalProperties": false,
+        "description": "Validate the public import boundary without a mutable runtime model.",
+        "properties": {
+          "url": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "ImportRequest",
+        "type": "object"
+      },
       "OverrideRequest": {
         "additionalProperties": false,
         "properties": {
@@ -36,7 +53,7 @@
           "size_limit_mb": {
             "anyOf": [
               {
-                "maximum": 200.0,
+                "maximum": 25.0,
                 "minimum": 0.0,
                 "type": "integer"
               },
@@ -44,7 +61,7 @@
                 "type": "null"
               }
             ],
-            "default": 200,
+            "default": 25,
             "title": "Size Limit Mb"
           }
         },
@@ -76,6 +93,7 @@
           "context": {
             "anyOf": [
               {
+                "maxLength": 2000,
                 "type": "string"
               },
               {
@@ -84,7 +102,17 @@
             ],
             "title": "Context"
           },
+          "history": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/QuestionTurn"
+            },
+            "maxItems": 4,
+            "title": "History",
+            "type": "array"
+          },
           "question": {
+            "maxLength": 2000,
             "minLength": 1,
             "title": "Question",
             "type": "string"
@@ -94,6 +122,157 @@
           "question"
         ],
         "title": "QuestionRequest",
+        "type": "object"
+      },
+      "QuestionTurn": {
+        "additionalProperties": false,
+        "description": "Bounded, untrusted pointers to earlier questions in the selected paper's chat.",
+        "properties": {
+          "question": {
+            "maxLength": 700,
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          },
+          "source_ids": {
+            "default": [],
+            "items": {
+              "maxLength": 256,
+              "type": "string"
+            },
+            "maxItems": 8,
+            "title": "Source Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "QuestionTurn",
+        "type": "object"
+      },
+      "SyncConfig": {
+        "additionalProperties": false,
+        "description": "Validate unambiguous publication windows and bounded, resumable sync settings.",
+        "properties": {
+          "batch_size": {
+            "default": 20,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Batch Size",
+            "type": "integer"
+          },
+          "end_month": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Month"
+          },
+          "initial_months": {
+            "default": 6,
+            "maximum": 120.0,
+            "minimum": 1.0,
+            "title": "Initial Months",
+            "type": "integer"
+          },
+          "max_papers": {
+            "default": 100,
+            "maximum": 10000.0,
+            "minimum": 1.0,
+            "title": "Max Papers",
+            "type": "integer"
+          },
+          "mode": {
+            "default": "relative",
+            "enum": [
+              "relative",
+              "year",
+              "month",
+              "since",
+              "range"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "month": {
+            "anyOf": [
+              {
+                "maximum": 12.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Month"
+          },
+          "start_month": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Month"
+          },
+          "year": {
+            "anyOf": [
+              {
+                "maximum": 9998.0,
+                "minimum": 1991.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Year"
+          }
+        },
+        "title": "SyncConfig",
+        "type": "object"
+      },
+      "SyncRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "resume_job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resume Job Id"
+          },
+          "settings": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SyncConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "default": "all",
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "title": "SyncRequest",
         "type": "object"
       },
       "ValidationError": {
@@ -144,6 +323,28 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/": {
+      "get": {
+        "operationId": "root__get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Root  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Root"
+      }
+    },
     "/mcp/p/{handle}": {
       "post": {
         "operationId": "mcp_scope_handle_mcp_p__handle__post",
@@ -217,6 +418,83 @@
         "summary": "Healthcheck"
       }
     },
+    "/v1/imports": {
+      "post": {
+        "operationId": "import_paper_v1_imports_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Import Paper"
+      }
+    },
+    "/v1/imports/{job_id}": {
+      "get": {
+        "operationId": "import_status_v1_imports__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Import Status V1 Imports  Job Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Import Status"
+      }
+    },
     "/v1/papers": {
       "get": {
         "operationId": "list_papers_v1_papers_get",
@@ -235,22 +513,6 @@
                 }
               ],
               "title": "Status"
-            }
-          },
-          {
-            "in": "query",
-            "name": "before",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Before"
             }
           },
           {
@@ -274,6 +536,104 @@
             "name": "cursor",
             "required": false,
             "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Cursor",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "month",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Month"
+            }
+          },
+          {
+            "in": "query",
+            "name": "year",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 9998,
+                  "minimum": 1991,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Year"
+            }
+          },
+          {
+            "in": "query",
+            "name": "months",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 120,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Months"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_month",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Month"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_month",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Month"
+            }
+          },
+          {
+            "in": "query",
+            "name": "domain",
+            "required": false,
+            "schema": {
               "anyOf": [
                 {
                   "type": "string"
@@ -282,7 +642,39 @@
                   "type": "null"
                 }
               ],
-              "title": "Cursor"
+              "title": "Domain"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "newest",
+              "enum": [
+                "newest",
+                "oldest",
+                "domain"
+              ],
+              "title": "Sort",
+              "type": "string"
             }
           }
         ],
@@ -314,6 +706,55 @@
       }
     },
     "/v1/papers/{paper_id}": {
+      "delete": {
+        "operationId": "delete_paper_v1_papers__paper_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "paper_id",
+            "required": true,
+            "schema": {
+              "title": "Paper Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "pdf_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Pdf Only",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Paper V1 Papers  Paper Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Paper"
+      },
       "get": {
         "operationId": "get_paper_v1_papers__paper_id__get",
         "parameters": [
@@ -399,6 +840,93 @@
           }
         },
         "summary": "Override Paper"
+      }
+    },
+    "/v1/papers/{paper_id}/pages/{page_number}": {
+      "get": {
+        "operationId": "paper_page_v1_papers__paper_id__pages__page_number__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "paper_id",
+            "required": true,
+            "schema": {
+              "title": "Paper Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "page_number",
+            "required": true,
+            "schema": {
+              "title": "Page Number",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Paper Page V1 Papers  Paper Id  Pages  Page Number  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Paper Page"
+      }
+    },
+    "/v1/papers/{paper_id}/pdf": {
+      "get": {
+        "operationId": "paper_pdf_v1_papers__paper_id__pdf_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "paper_id",
+            "required": true,
+            "schema": {
+              "title": "Paper Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Paper Pdf"
       }
     },
     "/v1/papers/{paper_id}/questions": {
@@ -547,7 +1075,11 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Test Plugin V1 Plugins  Slot  Test Post",
+                  "type": "object"
+                }
               }
             },
             "description": "Successful Response"
@@ -586,9 +1118,57 @@
         "summary": "Get Skips"
       }
     },
+    "/v1/storage": {
+      "get": {
+        "operationId": "storage_status_v1_storage_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Storage Status V1 Storage Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Storage Status"
+      }
+    },
     "/v1/sync": {
+      "get": {
+        "operationId": "sync_status_v1_sync_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Sync Status V1 Sync Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Sync Status"
+      },
       "post": {
         "operationId": "sync_sources_v1_sync_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SyncRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -597,9 +1177,141 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Sync Sources"
+      }
+    },
+    "/v1/sync/settings": {
+      "put": {
+        "operationId": "save_sync_settings_v1_sync_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SyncConfig"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Save Sync Settings V1 Sync Settings Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Sync Settings"
+      }
+    },
+    "/v1/sync/{job_id}": {
+      "get": {
+        "operationId": "sync_job_v1_sync__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Sync Job V1 Sync  Job Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sync Job"
+      }
+    },
+    "/v1/sync/{job_id}/pause": {
+      "post": {
+        "operationId": "pause_sync_v1_sync__job_id__pause_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Pause Sync V1 Sync  Job Id  Pause Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pause Sync"
       }
     }
   }

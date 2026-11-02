@@ -1,4 +1,11 @@
 profile: hybrid
+# Publication dates are UTC; range end months are inclusive.
+# UI: Sync options -> Save defaults writes this block atomically.
+sync:
+  mode: relative
+  initial_months: 6
+  batch_size: 20
+  max_papers: 100
 runtime_qos:
   use_uvloop: true
   slow_callback_threshold_ms: 15.0
@@ -6,8 +13,14 @@ runtime_qos:
   utility_worker_processes: 4
   background_pdf_stream_concurrency: 4
   arxiv_rate_limit_delay_sec: 3.0
+# Select a provider in Settings or change plugins.llm.use below.
+# API keys stay on the server in .env; the UI displays presence and connection checks.
+llm_providers:
+  deepseek: {model: deepseek-chat, api_key_env: DEEPSEEK_API_KEY}
+  openai: {model: gpt-4.1-mini, api_key_env: OPENAI_API_KEY}
+  gemini: {model: gemini-3.5-flash-lite, api_key_env: GEMINI_API_KEY}
 plugins:
-  llm:          {use: deepseek, model: deepseek-chat}
+  llm:          {use: deepseek}  # model defaults come from llm_providers above
   embedder:     {use: fastembed, model: BAAI/bge-small-en-v1.5}
   vector_store: {use: exact}
   database:     {use: sqlite, path: ./data/arie.db}

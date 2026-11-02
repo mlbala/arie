@@ -1,4 +1,4 @@
-.PHONY: check lint types boundaries test-unit test-contracts
+.PHONY: check lint types boundaries test-unit test-contracts eval-llm
 
 check: lint boundaries types test-unit
 
@@ -16,3 +16,7 @@ test-unit:
 
 test-contracts:
 	uv run pytest contract_tests/ -q --tb=short
+
+# Uses the configured provider and fixed synthetic source-of-truth cases.
+eval-llm:
+	uv run python -m arie_api.eval_answers

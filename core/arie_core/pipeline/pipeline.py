@@ -1,20 +1,20 @@
 from __future__ import annotations
 
 import asyncio
-import io
+import hashlib
 import os
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, BinaryIO, Protocol, cast
 from urllib.parse import urlparse
 
 import httpx
 
 from arie_core.contracts import ChunkRow, ParsedDoc
-from arie_core.plugin_api import ScrapedPaperInput
+from arie_core.plugin_api import Ctx, FileStorage, ScrapedPaperInput
 
 ALLOWED_CATEGORIES = (
     "cs.AI",
@@ -134,9 +134,15 @@ class IngestionPipeline:
         file_storage: object | None = None,
         db: object | None = None,
         max_queue_size: int = 4,
+        allowed_hosts: tuple[str, ...] = ("export.arxiv.org", "arxiv.org"),
+        parse_worker: Callable[[str], Awaitable[ParsedDoc]] | None = None,
+        ctx: Ctx | None = None,
     ) -> None:
         self.storage_root = Path(storage_root)
         self.storage_root.mkdir(parents=True, exist_ok=True)
+        self.allowed_hosts = allowed_hosts
+        self.parse_worker = parse_worker
+        self.ctx = ctx
         self.file_storage = file_storage
         self.db = db
         self.queue: asyncio.Queue[ScrapedPaperInput] = asyncio.Queue(maxsize=max_queue_size)
@@ -203,81 +209,96 @@ class IngestionPipeline:
         return parsed.scheme, host
 
     async def _fetch_response(self, url: str) -> httpx.Response:
-        async with httpx.AsyncClient(follow_redirects=False, timeout=30.0) as client:
-            return await client.get(url)
+        client = httpx.AsyncClient(follow_redirects=False, timeout=30.0)
+        try:
+            response = await client.send(client.build_request("GET", url), stream=True)
+        except BaseException:
+            await client.aclose()
+            raise
+        response.extensions["arie_client"] = client
+        return response
 
     async def download_pdf(self, paper: ScrapedPaperInput) -> str:
+        """Stream a bounded PDF to a temporary file; failures never promote partial data."""
         self._paper_states[paper.paper_id] = IngestionStage.DOWNLOADING
         url = str(paper.pdf_url)
+        parsed_url = urlparse(url)
         scheme, host = self._candidate_hosts(url)
         if scheme not in {"http", "https"}:
-            raise ValueError(f"Unsupported URL scheme for {paper.paper_id!r}: {scheme!r}")
-        if host not in {"export.arxiv.org", "arxiv.org"}:
-            raise ValueError(f"Host {host!r} is not allowed for {paper.paper_id!r}")
-
-        response = await self._fetch_response(url)
-        if response.is_redirect:
-            raise ValueError("Redirects are rejected by the download gate")
-
-        content_length = response.headers.get("Content-Length")
-        if content_length is not None:
-            try:
-                length_value = int(content_length)
-            except (TypeError, ValueError) as exc:
-                # pragma: no cover - preserved for clear validation
-                raise ValueError("Invalid Content-Length header") from exc
-            if length_value > MAX_PDF_BYTES:
-                raise ValueError("Content-Length exceeds the 25 MB limit")
-
-        pending = bytearray()
-        total = 0
-        async for chunk in response.aiter_bytes(CHUNK_SIZE_BYTES):
-            chunk_bytes = bytes(chunk)
-            if total + len(chunk_bytes) > MAX_PDF_BYTES:
-                raise ValueError("Downloaded PDF exceeds the 25 MB limit")
-            pending.extend(chunk_bytes)
-            total += len(chunk_bytes)
-
-        if not pending[:MAX_HEADER_BYTES].startswith(b"%PDF-"):
-            raise ValueError("Corrupted PDF header: missing %PDF-")
-
-        return await self._persist_bytes(paper.paper_id, bytes(pending))
-
-    async def _persist_bytes(self, paper_id: str, content: bytes) -> str:
-        if self.file_storage is not None:
-            put_stream = getattr(self.file_storage, "put_stream", None)
-            write = getattr(self.file_storage, "write", None)
-            if put_stream is not None:
-                await put_stream(
-                    None,
-                    f"{paper_id}.pdf",
-                    io.BytesIO(content),
-                    expected_sha256=__import__("hashlib").sha256(content).hexdigest(),
-                    expected_size=len(content),
-                )
-                return str(self.storage_root / f"{paper_id}.pdf")
-            if write is not None:
-                await write(None, f"{paper_id}.pdf", content)
-                return str(self.storage_root / f"{paper_id}.pdf")
-
-        target = self.storage_root / f"{paper_id}.pdf"
+            raise ValueError(f"Unsupported URL scheme: {scheme!r}")
+        if (
+            host not in self.allowed_hosts
+            or parsed_url.username
+            or parsed_url.password
+            or parsed_url.port not in {None, 80, 443}
+        ):
+            raise ValueError(f"Host {host!r} is not allowed")
+        date = datetime.fromisoformat(
+            (paper.published_at or _utc_now()).replace("Z", "+00:00")
+        ).strftime("%Y/%m/%d")
+        key = f"{date}/{paper.storage_hash}.pdf"
+        target = self.storage_root / key
         target.parent.mkdir(parents=True, exist_ok=True)
-        temp_target = target.with_suffix(f"{target.suffix}.part")
-        temp_target.write_bytes(content)
-        os.replace(temp_target, target)
-        return str(target)
+        partial = target.with_suffix(".download.part")
+        response = await self._fetch_response(url)
+        try:
+            if response.is_redirect:
+                raise ValueError("Redirects are rejected by the download gate")
+            if isinstance(response, httpx.Response):  # pyright: ignore[reportUnnecessaryIsInstance]
+                response.raise_for_status()
+            length = response.headers.get("Content-Length")
+            expected = int(length) if length is not None else None
+            if expected is not None and (expected < 0 or expected > MAX_PDF_BYTES):
+                raise ValueError("Content-Length exceeds the 25 MB limit")
+            total = 0
+            header = bytearray()
+            digest = hashlib.sha256()
+            with partial.open("wb") as handle:
+                async for chunk in response.aiter_bytes(CHUNK_SIZE_BYTES):
+                    total += len(chunk)
+                    if total > MAX_PDF_BYTES:
+                        raise ValueError("Downloaded PDF exceeds the 25 MB limit")
+                    if len(header) < MAX_HEADER_BYTES:
+                        header.extend(chunk[: MAX_HEADER_BYTES - len(header)])
+                    if len(header) >= MAX_HEADER_BYTES and b"%PDF-" not in header:
+                        raise ValueError("Corrupted PDF header: missing %PDF-")
+                    handle.write(chunk)
+                    digest.update(chunk)
+                if b"%PDF-" not in header:
+                    raise ValueError("Corrupted PDF header: missing %PDF-")
+                if expected is not None and expected != total:
+                    raise ValueError("Incomplete PDF download")
+                handle.flush()
+                os.fsync(handle.fileno())
+            if self.file_storage is not None:
+                put_stream = getattr(self.file_storage, "put_stream", None)
+                if put_stream is None:
+                    # The basic storage slot is bounded by the same 25 MB gate.
+                    storage = cast(FileStorage, self.file_storage)
+                    await storage.write(cast(Ctx, self.ctx), key, partial.read_bytes())
+                else:
+                    with partial.open("rb") as stream:
+                        await put_stream(
+                            self.ctx,
+                            key,
+                            cast(BinaryIO, stream),
+                            expected_sha256=digest.hexdigest(),
+                            expected_size=total,
+                        )
+            os.replace(partial, target)
+            return str(target)
+        finally:
+            partial.unlink(missing_ok=True)
+            if isinstance(response, httpx.Response):  # pyright: ignore[reportUnnecessaryIsInstance]
+                await response.aclose()
+                client = response.extensions.get("arie_client")
+                if isinstance(client, httpx.AsyncClient):
+                    await client.aclose()
 
     async def _run_worker_parse(self, file_path: str) -> ParsedDoc:
-        content = await asyncio.to_thread(Path(file_path).read_bytes)
-        text = content.decode("utf-8", errors="replace").strip() or "empty document"
-        sections = [text]
-        return ParsedDoc(
-            paper_id=Path(file_path).stem,
-            title="Parsed document",
-            source="arxiv",
-            sections=sections,
-            metadata={"path": file_path},
-        )
+        if self.parse_worker is None:
+            raise RuntimeError("No isolated PDF parser worker is configured")
+        return await self.parse_worker(file_path)
 
     def is_quarantined(self, paper_id: str) -> bool:
         return paper_id in self._quarantined_papers
