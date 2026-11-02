@@ -1,0 +1,43 @@
+{
+  "name": "web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run typecheck && vite build",
+    "lint": "oxlint",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.app.json",
+    "test": "vitest run",
+    "generate:api": "uv run --directory .. python -m arie_api.export_openapi --output web/openapi.json && openapi-typescript openapi.json -o src/api/generated.ts"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.105.1",
+    "@tanstack/react-virtual": "^3.14.25",
+    "katex": "^0.19.1",
+    "lucide-react": "^1.66.0",
+    "markdown-it": "^15.0.3",
+    "pdfjs-dist": "^6.5.438",
+    "react": "~19.2.0",
+    "react-dom": "~19.2.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@types/markdown-it": "^14.2.0",
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "babel-plugin-react-compiler": "^1.0.0",
+    "jsdom": "^29.1.1",
+    "openapi-typescript": "^7.13.0",
+    "oxlint": "^1.89.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
+  }
+}
