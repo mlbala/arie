@@ -6,7 +6,9 @@ requires-python = ">=3.14"
 members = [
     "arie-api",
     "arie-core",
+    "arie-db-postgres",
     "arie-db-sqlite",
+    "arie-files-s3",
     "arie-llm-deepseek",
     "arie-llm-openai-compatible",
     "arie-plugin-db-mcp",
@@ -18,6 +20,8 @@ members = [
     "arie-plugin-source-openreview",
     "arie-plugin-vector-exact",
     "arie-sdk",
+    "arie-vector-pgvector",
+    "arie-vector-qdrant",
     "arie-worker",
     "arie-workspace",
 ]
@@ -84,6 +88,21 @@ requires-dist = [
 ]
 
 [[package]]
+name = "arie-db-postgres"
+version = "0.1.0"
+source = { editable = "plugins/db-postgres" }
+dependencies = [
+    { name = "arie-core" },
+    { name = "arie-db-sqlite" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "arie-core", editable = "core" },
+    { name = "arie-db-sqlite", editable = "plugins/db-sqlite" },
+]
+
+[[package]]
 name = "arie-db-sqlite"
 version = "0.1.0"
 source = { editable = "plugins/db-sqlite" }
@@ -93,6 +112,21 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "arie-core", editable = "core" }]
+
+[[package]]
+name = "arie-files-s3"
+version = "0.1.0"
+source = { editable = "plugins/files-s3" }
+dependencies = [
+    { name = "arie-core" },
+    { name = "arie-plugin-files-local" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "arie-core", editable = "core" },
+    { name = "arie-plugin-files-local", editable = "plugins/files-local" },
+]
 
 [[package]]
 name = "arie-llm-deepseek"
@@ -236,6 +270,36 @@ requires-dist = [
 name = "arie-sdk"
 version = "0.1.0"
 source = { editable = "sdk" }
+
+[[package]]
+name = "arie-vector-pgvector"
+version = "0.1.0"
+source = { editable = "plugins/vector-pgvector" }
+dependencies = [
+    { name = "arie-core" },
+    { name = "numpy" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "arie-core", editable = "core" },
+    { name = "numpy", specifier = ">=2.1.0" },
+]
+
+[[package]]
+name = "arie-vector-qdrant"
+version = "0.1.0"
+source = { editable = "plugins/vector-qdrant" }
+dependencies = [
+    { name = "arie-core" },
+    { name = "numpy" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "arie-core", editable = "core" },
+    { name = "numpy", specifier = ">=2.1.0" },
+]
 
 [[package]]
 name = "arie-worker"
