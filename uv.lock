@@ -9,10 +9,13 @@ members = [
     "arie-db-sqlite",
     "arie-llm-deepseek",
     "arie-llm-openai-compatible",
+    "arie-plugin-db-mcp",
     "arie-plugin-embed-fastembed",
     "arie-plugin-files-local",
     "arie-plugin-parser-pymupdf4llm",
     "arie-plugin-source-arxiv",
+    "arie-plugin-source-deepmind",
+    "arie-plugin-source-openreview",
     "arie-plugin-vector-exact",
     "arie-sdk",
     "arie-worker",
@@ -114,6 +117,21 @@ dependencies = [
 requires-dist = [{ name = "arie-core", editable = "core" }]
 
 [[package]]
+name = "arie-plugin-db-mcp"
+version = "0.1.0"
+source = { editable = "plugins/db-mcp" }
+dependencies = [
+    { name = "arie-core" },
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "arie-core", editable = "core" },
+    { name = "httpx", specifier = ">=0.28.0" },
+]
+
+[[package]]
 name = "arie-plugin-embed-fastembed"
 version = "0.1.0"
 source = { editable = "plugins/embed-fastembed" }
@@ -158,6 +176,36 @@ requires-dist = [
 name = "arie-plugin-source-arxiv"
 version = "0.1.0"
 source = { editable = "plugins/source-arxiv" }
+dependencies = [
+    { name = "arie-core" },
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "arie-core", editable = "core" },
+    { name = "httpx", specifier = ">=0.28.0" },
+]
+
+[[package]]
+name = "arie-plugin-source-deepmind"
+version = "0.1.0"
+source = { editable = "plugins/source-deepmind" }
+dependencies = [
+    { name = "arie-core" },
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "arie-core", editable = "core" },
+    { name = "httpx", specifier = ">=0.28.0" },
+]
+
+[[package]]
+name = "arie-plugin-source-openreview"
+version = "0.1.0"
+source = { editable = "plugins/source-openreview" }
 dependencies = [
     { name = "arie-core" },
     { name = "httpx" },

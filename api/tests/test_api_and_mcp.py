@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 from arie_api.export_openapi import export_openapi
 from arie_api.mcp_server import create_scope_handle, verify_scope_handle
 from arie_api.routes import app
 from fastapi.testclient import TestClient
 
-client = TestClient(app)
+client: Any = TestClient(app)
 
 
 def test_papers_feed_and_detail() -> None:
@@ -121,9 +124,9 @@ def test_mcp_scope_handle_isolated_and_ordered() -> None:
     assert mismatched.status_code == 400
 
 
-def test_openapi_export(tmp_path) -> None:
+def test_openapi_export(tmp_path: Path) -> None:
     target = tmp_path / "openapi.json"
-    schema = export_openapi(target)
+    schema: dict[str, Any] = export_openapi(target)
     assert "openapi" in schema
     assert "/v1/papers" in schema["paths"]
     assert target.exists()

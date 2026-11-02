@@ -3,9 +3,9 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
-from typing import Protocol, TypeVar
+from typing import Protocol, TypeVar, cast
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from arie_core.contracts import (
     AnswerDraft,
@@ -170,6 +170,17 @@ class Feature(Protocol):
     def add_ui_panel(self, name: str, panel: object) -> None: ...
 
 
+def _normalize_metadata_mapping(value: object) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+
+    normalized: dict[str, str] = {}
+    mapping = cast(Mapping[object, object], value)
+    for key, item in mapping.items():
+        normalized[str(key)] = "" if item is None else str(item)
+    return normalized
+
+
 class ScrapedPaperInput(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", str_strip_whitespace=True)
 
@@ -181,6 +192,39 @@ class ScrapedPaperInput(BaseModel):
     authors: list[str] = Field(default_factory=list)
     published_at: str | None = None
     metadata: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_custom_metadata(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+
+        value_mapping = cast(Mapping[object, object], value)
+        data: dict[str, object] = {str(key): item for key, item in value_mapping.items()}
+        custom = data.pop("custom_metadata", None)
+        if isinstance(custom, Mapping):
+            existing_metadata = data.get("metadata")
+            merged_metadata = _normalize_metadata_mapping(
+                cast(Mapping[object, object], existing_metadata)
+                if isinstance(existing_metadata, Mapping)
+                else {}
+            )
+            custom_mapping = cast(Mapping[object, object], custom)
+            for key, item in custom_mapping.items():
+                merged_metadata[str(key)] = "" if item is None else str(item)
+            data["metadata"] = merged_metadata
+
+        metadata = data.get("metadata")
+        if isinstance(metadata, Mapping):
+            data["metadata"] = _normalize_metadata_mapping(
+                cast(Mapping[object, object], metadata)
+            )
+
+        if "paper_id" not in data and "id" in data:
+            paper_id = data.get("id")
+            if paper_id is not None:
+                data["paper_id"] = paper_id
+        return data
 
     @field_validator("paper_id", "title", "source", "pdf_url", "abstract", "published_at")
     @classmethod
@@ -220,6 +264,26 @@ def normalize_scraper_output(
                 data["source"] = expected_source
             if "paper_id" not in data and "id" in data:
                 data["paper_id"] = data["id"]
+
+            custom_metadata = data.get("custom_metadata")
+            if isinstance(custom_metadata, Mapping):
+                existing_metadata = data.get("metadata")
+                metadata = _normalize_metadata_mapping(
+                    cast(Mapping[object, object], existing_metadata)
+                    if isinstance(existing_metadata, Mapping)
+                    else {}
+                )
+                custom_mapping = cast(Mapping[object, object], custom_metadata)
+                for key, value in custom_mapping.items():
+                    metadata[str(key)] = "" if value is None else str(value)
+                data["metadata"] = metadata
+
+            metadata = data.get("metadata")
+            if isinstance(metadata, Mapping):
+                data["metadata"] = _normalize_metadata_mapping(
+                    cast(Mapping[object, object], metadata)
+                )
+
             candidate = ScrapedPaperInput.model_validate(data)
 
         if candidate.source != expected_source:
