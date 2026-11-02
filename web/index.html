@@ -6,6 +6,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f6f7f5" />
     <meta name="description" content="ARIE — grounded research intelligence workspace." />
+    <script>
+      try {
+        const theme = localStorage.getItem("arie.ui.theme") || "system";
+        document.documentElement.dataset.theme = theme === "system" ? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light") : theme;
+      } catch {}
+    </script>
     <title>ARIE — Research workspace</title>
   </head>
   <body>

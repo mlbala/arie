@@ -43,7 +43,7 @@ class PromptCacheBuilder:
             return value
         return " ".join(words[:max_tokens])
 
-    def build_zone_a(self, *, playbook_name: str = "qa.v7.yaml") -> str:
+    def build_zone_a(self, *, playbook_name: str = "qa.v1.yaml") -> str:
         playbook = self._load_prompt(playbook_name)
         rules = playbook.get("rules", [])
         fragments: list[str] = []
@@ -68,7 +68,7 @@ class PromptCacheBuilder:
         source: str,
         custom_metadata: Mapping[str, str] | None = None,
         outline: Sequence[str] | None = None,
-        playbook_name: str = "qa.v7.yaml",
+        playbook_name: str = "qa.v1.yaml",
     ) -> str:
         playbook = self._load_prompt(playbook_name)
         zone_template = str(

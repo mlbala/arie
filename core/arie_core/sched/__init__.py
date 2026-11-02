@@ -5,7 +5,7 @@ import contextlib
 import logging
 import time
 from collections import defaultdict
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from typing import TypeVar
 
 QoS_UserInteractive = "user_interactive"
@@ -20,7 +20,7 @@ def supervised[T](
     func: Callable[..., Awaitable[T]],
     *args: object,
     **kwargs: object,
-) -> Callable[[], Awaitable[T]]:
+) -> Callable[[], Coroutine[object, object, T]]:
     """Wrap a task so TaskGroup failures remain easy to supervise and debug."""
 
     async def _runner() -> T:

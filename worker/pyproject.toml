@@ -2,7 +2,7 @@
 name = "arie-worker"
 version = "0.1.0"
 requires-python = ">=3.14"
-dependencies = []
+dependencies = ["arie-core", "psutil>=7.0.0", "types-psutil>=7.0.0"]
 
 [build-system]
 requires = ["hatchling"]

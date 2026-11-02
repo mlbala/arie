@@ -23,6 +23,7 @@ class LLMRequest(msgspec.Struct, frozen=True, kw_only=True):
     prompt: str = ""
     system_prompt: str | None = None
     tools: list[str] = []
+    max_output_tokens: int = 700
 
 
 class LLMResponse(msgspec.Struct, frozen=True):

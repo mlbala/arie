@@ -1,14 +1,26 @@
 from __future__ import annotations
 
+import asyncio
+import os
+import time
 from collections.abc import AsyncIterator
+from typing import Any, cast
 
-from arie_core.contracts import LLMDelta, LLMRequest, LLMResponse, TokenUsage
-from arie_core.plugin_api import plugin
+import httpx
+from arie_core.plugin_api import (
+    Ctx,
+    LLMDelta,
+    LLMRequest,
+    LLMResponse,
+    TokenUsage,
+    configured_api_key,
+    plugin,
+)
 
 
 @plugin(slot="llm", name="deepseek")
 class DeepSeekLLM:
-    """DeepSeek adapter with a fallback to plain text when tool calls are not available."""
+    """Call the configured provider under the request deadline; never echo a prompt as an answer."""
 
     def __init__(
         self,
@@ -18,12 +30,10 @@ class DeepSeekLLM:
         api_key: str | None = None,
     ) -> None:
         self.model = model
-        self.base_url = base_url
-        self.api_key = api_key
-
-    @staticmethod
-    def _estimate_tokens(value: str) -> int:
-        return max(1, len(value.split()))
+        self.base_url = base_url or os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+        self.api_key = configured_api_key(
+            api_key if api_key is not None else os.getenv("DEEPSEEK_API_KEY")
+        )
 
     @property
     def supports_json_schema(self) -> bool:
@@ -33,26 +43,37 @@ class DeepSeekLLM:
     def supports_tool_calls(self) -> bool:
         return False
 
-    async def complete(self, ctx: object, request: LLMRequest) -> LLMResponse:
-        del ctx
-        prompt = request.prompt or ""
-        if request.tools:
-            prompt = f"{prompt}\n\nTool capability unavailable; respond with text only."
-        prompt_tokens = self._estimate_tokens(prompt)
-        completion_tokens = self._estimate_tokens(prompt)
-        cache_hit = max(0, prompt_tokens // 4)
-        usage = TokenUsage(
-            prompt=prompt_tokens,
-            completion=completion_tokens,
-            cache_hit=cache_hit,
-            cache_miss=max(0, prompt_tokens - cache_hit),
+    async def complete(self, ctx: Ctx, request: LLMRequest) -> LLMResponse:
+        if not self.api_key:
+            raise RuntimeError("DEEPSEEK_API_KEY is not configured")
+        messages = [{"role": "user", "content": request.prompt}]
+        if request.system_prompt:
+            messages.insert(0, {"role": "system", "content": request.system_prompt})
+        async with asyncio.timeout(max(0.01, ctx.deadline - time.monotonic())):
+            async with httpx.AsyncClient(timeout=23.0) as client:
+                response = await client.post(
+                    self.base_url.rstrip("/") + "/chat/completions",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json={
+                        "model": self.model,
+                        "messages": messages,
+                        "max_tokens": min(700, request.max_output_tokens),
+                        "response_format": {"type": "json_object"},
+                        "temperature": 0,
+                    },
+                )
+                response.raise_for_status()
+                body = cast(dict[str, Any], response.json())
+        usage = body.get("usage", {})
+        return LLMResponse(
+            text=str(body["choices"][0]["message"]["content"]),
+            usage=TokenUsage(
+                prompt=int(usage.get("prompt_tokens", 0)),
+                completion=int(usage.get("completion_tokens", 0)),
+                cache_hit=int(usage.get("prompt_cache_hit_tokens", 0)),
+            ),
         )
-        return LLMResponse(text=prompt, usage=usage, tool_calls=[], finish=True)
 
-    async def stream(self, ctx: object, request: LLMRequest) -> AsyncIterator[LLMDelta]:
-        del ctx
-        response = await self.complete(object(), request)
+    async def stream(self, ctx: Ctx, request: LLMRequest) -> AsyncIterator[LLMDelta]:
+        response = await self.complete(ctx, request)
         yield LLMDelta(text=response.text, finish=True)
-
-
-__all__ = ["DeepSeekLLM"]

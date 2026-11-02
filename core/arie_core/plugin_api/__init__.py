@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
+import time
+import weakref
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from typing import Protocol, TypeVar, cast
 
+import msgspec
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from arie_core.contracts import (
@@ -16,21 +20,53 @@ from arie_core.contracts import (
     LLMRequest,
     LLMResponse,
     ParsedDoc,
+    TokenUsage,
     ToolCall,
 )
 
 T = TypeVar("T")
 
 
+def configured_api_key(value: str | None) -> str | None:
+    """Return a stripped server credential, treating empty and example values as unconfigured."""
+    cleaned = (value or "").strip()
+    if not cleaned or cleaned.lower().startswith(("your-", "your_", "paste-", "paste_")):
+        return None
+    if cleaned.lower() in {"changeme", "replace-me", "replace_me"}:
+        return None
+    return cleaned
+
+
 class BudgetHandle(Protocol):
+    def record_tool_call(self, name: str, *, args: Mapping[str, object] | None = None) -> str: ...
     def reserve(self, amount: float) -> None: ...
     def consume(self, amount: float) -> None: ...
 
 
 class Ctx(Protocol):
-    deadline: float
-    trace_id: str
-    budget: BudgetHandle
+    @property
+    def deadline(self) -> float: ...
+    @property
+    def trace_id(self) -> str: ...
+    @property
+    def budget(self) -> BudgetHandle: ...
+
+
+_SOURCE_REQUESTS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, float]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+async def wait_for_source_host(ctx: Ctx, host: str) -> None:
+    """Space source requests across plugin instances without reserving past the caller deadline."""
+    loop = asyncio.get_running_loop()
+    reservations = _SOURCE_REQUESTS.setdefault(loop, {})
+    now = time.monotonic()
+    due = max(now, reservations.get(host, now))
+    if due >= ctx.deadline:
+        raise TimeoutError("Source request deadline would expire while waiting for its host")
+    reservations[host] = due + (3.0 if host == "export.arxiv.org" else 1.0)
+    await asyncio.sleep(max(0.0, due - now))
 
 
 def _version_tuple(version: str) -> tuple[int, ...]:
@@ -84,9 +120,7 @@ def _matches_api_constraint(version: str, constraint: str) -> bool:
 def plugin(slot: object, name: str, api: str = ">=1,<2") -> Callable[[T], T]:
     def decorator(target: T) -> T:
         if not _matches_api_constraint("1.0", api):
-            raise ValueError(
-                f"Plugin {name!r} requires API {api!r} but current core API is 1.0"
-            )
+            raise ValueError(f"Plugin {name!r} requires API {api!r} but current core API is 1.0")
         plugin_slot = "__arie_plugin_slot__"
         plugin_name = "__arie_plugin_name__"
         plugin_api = "__arie_plugin_api__"
@@ -141,6 +175,14 @@ class FileStorage(Protocol):
 
 class SourcePlugin(Protocol):
     async def fetch(self, ctx: Ctx, source_id: str) -> list[ScrapedPaperInput]: ...
+
+
+class PaperURLSource(SourcePlugin, Protocol):
+    @property
+    def allowed_hosts(self) -> tuple[str, ...]: ...
+
+    def canonical_pdf_url(self, url: str) -> str: ...
+    async def fetch_paper(self, ctx: Ctx, url: str) -> ScrapedPaperInput: ...
 
 
 class Parser(Protocol):
@@ -216,9 +258,7 @@ class ScrapedPaperInput(BaseModel):
 
         metadata = data.get("metadata")
         if isinstance(metadata, Mapping):
-            data["metadata"] = _normalize_metadata_mapping(
-                cast(Mapping[object, object], metadata)
-            )
+            data["metadata"] = _normalize_metadata_mapping(cast(Mapping[object, object], metadata))
 
         if "paper_id" not in data and "id" in data:
             paper_id = data.get("id")
@@ -248,6 +288,24 @@ class ScrapedPaperInput(BaseModel):
     @property
     def storage_hash(self) -> str:
         return hashlib.sha256(self.paper_id.encode("utf-8")).hexdigest()[:16]
+
+
+class SourcePage(msgspec.Struct, frozen=True):
+    papers: list[ScrapedPaperInput]
+    next_cursor: str | None = None
+
+
+class PagedSourcePlugin(SourcePlugin, Protocol):
+    allowed_hosts: tuple[str, ...]
+
+    async def fetch_page(
+        self,
+        ctx: Ctx,
+        since: str,
+        until: str,
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> SourcePage: ...
 
 
 def normalize_scraper_output(
@@ -300,6 +358,7 @@ __all__ = [
     "ChunkRow",
     "Claim",
     "Ctx",
+    "configured_api_key",
     "Database",
     "Embedder",
     "Evidence",
@@ -313,9 +372,14 @@ __all__ = [
     "Reranker",
     "ScrapedPaperInput",
     "SourcePlugin",
+    "PaperURLSource",
+    "SourcePage",
+    "PagedSourcePlugin",
     "ToolCall",
+    "TokenUsage",
     "VectorStore",
     "Verifier",
     "normalize_scraper_output",
     "plugin",
+    "wait_for_source_host",
 ]

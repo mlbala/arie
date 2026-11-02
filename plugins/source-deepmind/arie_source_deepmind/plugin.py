@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import httpx
-from arie_core.plugin_api import ScrapedPaperInput, normalize_scraper_output, plugin
+from arie_core.plugin_api import (
+    Ctx,
+    ScrapedPaperInput,
+    SourcePage,
+    normalize_scraper_output,
+    plugin,
+)
 
 ALLOWED_HOSTS = ("api.openalex.org", "export.arxiv.org", "arxiv.org")
 GOOGLE_DEEPMIND_ROR = "https://ror.org/00971b260"
@@ -60,9 +67,7 @@ class GoogleDeepMindSourcePlugin:
                 value = value[len(prefix) :]
                 break
         value = value.rstrip("/")
-        if re.search(r"v\d+$", value):
-            return value
-        return ""
+        return value if re.fullmatch(r"(?:\d{4}\.\d{4,5}|[a-z-]+/\d{7})(?:v\d+)?", value) else ""
 
     @staticmethod
     def _coerce_affiliations(work: dict[str, Any]) -> list[str]:
@@ -84,9 +89,7 @@ class GoogleDeepMindSourcePlugin:
                         continue
                     institution_dict = cast(dict[str, Any], institution)
                     name = str(
-                        institution_dict.get("display_name")
-                        or institution_dict.get("name")
-                        or ""
+                        institution_dict.get("display_name") or institution_dict.get("name") or ""
                     ).strip()
                     if not name:
                         continue
@@ -97,15 +100,30 @@ class GoogleDeepMindSourcePlugin:
             affiliations.append("Google DeepMind")
         return affiliations
 
-    async def fetch(self, ctx: object | None, source_id: str) -> list[ScrapedPaperInput]:
-        del ctx
+    async def fetch(self, ctx: Ctx, source_id: str) -> list[ScrapedPaperInput]:
         if source_id != "deepmind":
             return []
+        now = datetime.now(UTC)
+        page = await self.fetch_page(ctx, (now - timedelta(days=7)).isoformat(), now.isoformat())
+        return page.papers
 
+    async def fetch_page(
+        self,
+        ctx: Ctx,
+        since: str,
+        until: str,
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> SourcePage:
+        del ctx
         params = {
-            "filter": f"institutions.ror:{GOOGLE_DEEPMIND_ROR}",
-            "per-page": "50",
+            "filter": (
+                f"institutions.ror:{GOOGLE_DEEPMIND_ROR},"
+                f"from_publication_date:{since[:10]},to_publication_date:{until[:10]}"
+            ),
+            "per-page": str(limit),
             "sort": "publication_date:desc",
+            "cursor": cursor or "*",
         }
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
             response = await client.get("https://api.openalex.org/works", params=params)
@@ -113,12 +131,12 @@ class GoogleDeepMindSourcePlugin:
             payload_value = response.json()
 
         if not isinstance(payload_value, dict):
-            return []
+            raise ValueError("OpenAlex returned an invalid response")
         payload: dict[str, object] = cast(dict[str, object], payload_value)
 
         results_raw = payload.get("results")
         if not isinstance(results_raw, list):
-            return []
+            raise ValueError("OpenAlex returned no results list")
         results = cast(list[object], results_raw)
         items: list[dict[str, Any]] = []
 
@@ -133,6 +151,16 @@ class GoogleDeepMindSourcePlugin:
                 arxiv_value = str(ids_dict.get("arxiv") or ids_dict.get("arxiv_id") or "")
             if not arxiv_value:
                 arxiv_value = str(work.get("arxiv") or "")
+            if not arxiv_value:
+                locations = cast(list[dict[str, Any]], work.get("locations") or [])
+                for location in locations:
+                    for key in ("pdf_url", "landing_page_url"):
+                        candidate = self._extract_arxiv_id(location.get(key))
+                        if candidate:
+                            arxiv_value = candidate
+                            break
+                    if arxiv_value:
+                        break
             arxiv_id = self._extract_arxiv_id(arxiv_value)
             if not arxiv_id:
                 continue
@@ -145,6 +173,7 @@ class GoogleDeepMindSourcePlugin:
                 "institution_ror": GOOGLE_DEEPMIND_ROR,
                 "affiliations_json": json.dumps(affiliations, separators=(",", ":")),
                 "primary_category": "cs.AI",
+                "version_id": arxiv_id,
             }
             primary_location = work.get("primary_location")
             if isinstance(primary_location, dict):
@@ -174,10 +203,10 @@ class GoogleDeepMindSourcePlugin:
 
             items.append(
                 {
-                    "paper_id": arxiv_id,
+                    "paper_id": re.sub(r"v\d+$", "", arxiv_id),
                     "title": title,
                     "source": "deepmind",
-                    "pdf_url": f"https://arxiv.org/pdf/{arxiv_id}.pdf",
+                    "pdf_url": f"https://arxiv.org/pdf/{arxiv_id}",
                     "abstract": self._extract_abstract(work),
                     "authors": authors,
                     "published_at": self._clean_string(work.get("publication_date")),
@@ -185,7 +214,12 @@ class GoogleDeepMindSourcePlugin:
                 }
             )
 
-        return normalize_scraper_output(items, "deepmind")
+        meta = cast(dict[str, object], payload.get("meta") or {})
+        next_cursor = meta.get("next_cursor")
+        return SourcePage(
+            papers=normalize_scraper_output(items, "deepmind"),
+            next_cursor=str(next_cursor) if next_cursor and results else None,
+        )
 
 
 __all__ = ["GoogleDeepMindSourcePlugin"]
