@@ -36,7 +36,7 @@ pythonVersion = "3.14"
 typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
-extraPaths = ["core", "plugins/db-sqlite"]
+extraPaths = ["core", "plugins/db-sqlite", "api"]
 
 [tool.importlinter]
 root_packages = ["arie_core", "arie_api", "arie_worker"]
