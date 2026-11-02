@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from collections import defaultdict, deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from arie_core.contracts import Claim, Evidence
 from arie_core.harness.verifier import EvidenceVerifier
@@ -284,30 +285,15 @@ def _registry_manager() -> RegistryManager:
     return RegistryManager(project_root=PROJECT_ROOT, config=config)
 
 
-def _plugin_slots() -> list[str]:
-    manager = _registry_manager()
-    slots = set(manager.get_available_plugins("source"))
-    for slot in [
-        "source",
-        "llm",
-        "embedder",
-        "vector_store",
-        "database",
-        "file_storage",
-        "parser",
-    ]:
-        slots.add(slot)
-    return sorted(slots)
-
-
 @asynccontextmanager
-async def _app_lifespan(_: FastAPI) -> AsyncIterator[None]:
+async def _app_lifespan(_: FastAPI) -> AsyncGenerator[None]:
     try:
         import uvloop  # type: ignore[import-not-found]
     except ImportError:  # pragma: no cover
         yield
         return
-    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())  # pyright: ignore[reportDeprecated]
+    if hasattr(asyncio, "set_event_loop_policy"):
+        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())  # pyright: ignore[reportDeprecated]
     yield
 
 
@@ -453,8 +439,10 @@ def create_app() -> FastAPI:
 
     @app.post("/v1/sync")
     async def sync_sources(request: Request) -> JSONResponse:
-        payload = await request.json()
-        source = str((payload or {}).get("source", "arxiv")).strip() or "arxiv"
+        raw_payload: Any = await request.json()
+        payload = cast(dict[str, Any], raw_payload if isinstance(raw_payload, dict) else {})
+        source_value = payload.get("source", "arxiv")
+        source = str(source_value if source_value is not None else "arxiv").strip() or "arxiv"
         lock = SYNC_LOCKS[source]
         async with lock:
             job_id = f"sync-{source}-{len(SINGLE_FLIGHT) + 1}"
@@ -477,7 +465,7 @@ def create_app() -> FastAPI:
 
     @app.get("/v1/events")
     async def stream_events() -> StreamingResponse:
-        async def event_stream() -> Any:
+        async def event_stream() -> AsyncIterator[str]:
             for item in list(EVENT_HISTORY):
                 yield "event: update\ndata: " + json.dumps(item) + "\n\n"
             while True:
@@ -532,10 +520,20 @@ def create_app() -> FastAPI:
         except (KeyError, ValueError, RuntimeError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         try:
-            if hasattr(instance, "fetch") and slot == "source":
-                await instance.fetch(None, source_id="arxiv")
+            if slot == "source":
+                fetcher = getattr(instance, "fetch", None)
+                if callable(fetcher):
+                    result = fetcher(None, source_id="arxiv")
+                    if inspect.isawaitable(result):
+                        await result
+                elif hasattr(instance, "ping"):
+                    health = manager.health_check(instance)
+                    if inspect.isawaitable(health):
+                        await health
             elif hasattr(instance, "ping"):
-                await manager.health_check(instance)
+                health = manager.health_check(instance)
+                if inspect.isawaitable(health):
+                    await health
         except Exception as exc:  # pragma: no cover - plugin health checks can be noisy
             raise HTTPException(status_code=503, detail=f"plugin test failed: {exc}") from exc
         return JSONResponse({"slot": slot, "plugin": plugin_name, "ok": True}, status_code=200)
@@ -558,7 +556,11 @@ def create_app() -> FastAPI:
     @app.post("/mcp/p/{handle}")
     async def mcp_scope_handle(request: Request, handle: str) -> JSONResponse:
         try:
-            payload = await request.json()
+            raw_payload: Any = await request.json()
+            payload: dict[str, Any] = cast(
+                dict[str, Any],
+                raw_payload if isinstance(raw_payload, dict) else {},
+            )
             trace_id = request.headers.get("x-trace-id") or "trace-" + str(len(EVENT_HISTORY))
             traceparent = request.headers.get("traceparent")
             try:
@@ -575,13 +577,19 @@ def create_app() -> FastAPI:
                 trace_id=trace_id,
                 traceparent=traceparent,
             )
-            if "method" in payload and payload["method"] == "tools/call":
-                params = (
-                    payload.get("params", {})
-                    if isinstance(payload.get("params", {}), dict)
-                    else {}
-                )
-                scope = params.get("scope_handle") or params.get("handle")
+            if payload.get("method") == "tools/call":
+                params_raw: Any = payload.get("params", {})
+                params: dict[str, Any] = {}
+                if isinstance(params_raw, Mapping):
+                    mapping = cast(Mapping[str, Any], params_raw)
+                    params = {str(key): value for key, value in mapping.items()}
+                scope_value = params.get("scope_handle")
+                scope: str | None
+                if isinstance(scope_value, str):
+                    scope = scope_value
+                else:
+                    handle_value = params.get("handle")
+                    scope = handle_value if isinstance(handle_value, str) else None
                 if scope is not None and scope != handle:
                     return JSONResponse({"error": "scope handle mismatch"}, status_code=400)
                 if not scope:
