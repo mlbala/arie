@@ -153,11 +153,11 @@ flowchart LR
 | `core/arie_core/pipeline/` | Ingestion state machine, PDF gatekeeper, section-aware chunker. |
 | `core/arie_core/harness/` | Question answering: guard, planner, paper-bound reading, reranking, writer, verifier, reviewer. |
 | `core/arie_core/budget/`, `sched/` | Token and tool budgets, QoS lanes, per-host rate limits. |
-| `api/arie_api/` | FastAPI app: REST and server-sent events, sync and import jobs, background indexer. |
+| `api/arie_api/` | FastAPI app: REST and server-sent events, answer models, per-paper evaluation. `runtime/` holds the runtime in layers: `base` (config, plugins, pools), `library`, `vectors`, `sync` (sync and import jobs), `chat`. |
 | `worker/arie_worker/` | Supervised, recycled worker processes for CPU-heavy work. |
 | `plugins/` | Bundled plugins, one package per folder. |
 | `sdk/` | The `arie` CLI for scaffolding and testing plugins. |
-| `prompts/` | Versioned prompt playbook (`qa.v1.yaml`). |
+| `prompts/` | Versioned prompts: `qa.v1.yaml` (planner, writer, reviewer) and `eval.v1.yaml` (evaluation questions). |
 | `contract_tests/` | Slot contract tests run against every discovered plugin. |
 | `web/` | React 19 workspace. |
 | `docs/adr/` | Architecture decision records. |
