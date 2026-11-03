@@ -59,10 +59,18 @@ arie-llm-gemini = { workspace = true }
 arie-plugin-embed-fastembed = { workspace = true }
 arie-plugin-entail-nli-onnx = { workspace = true }
 arie-plugin-parser-docling = { workspace = true }
+# Docling's PyTorch comes from the CPU-only index: no multi-GB CUDA libraries in images.
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
 arie-plugin-parser-pymupdf4llm = { workspace = true }
 arie-plugin-source-arxiv = { workspace = true }
 arie-plugin-source-deepmind = { workspace = true }
 arie-plugin-vector-exact = { workspace = true }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.ruff]
 line-length = 100
