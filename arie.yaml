@@ -51,4 +51,3 @@ plugins:
   # parser: {use: docling, timeout_sec: 300, tasks_per_worker: 1, max_rss_mb: 2560}
   parser:       {use: pymupdf4llm}
   sources:      [arxiv, deepmind]
-features: [code-links]
