@@ -59,14 +59,14 @@ def _make_plugin_template(slot: str, name: str) -> str:
             ")\n\n"
             f"@plugin(slot={slot_name!r}, name={slug!r})\n"
             f"class {plugin_class}:\n"
-            "    \"\"\"Scaffolded ARIE source plugin.\"\"\"\n\n"
+            '    """Scaffolded ARIE source plugin."""\n\n'
             "    async def fetch(\n"
             "        self, ctx: object | None, source_id: str\n"
             "    ) -> list[ScrapedPaperInput]:\n"
             "        del ctx\n"
-            "        if source_id != \"" + slug + "\":\n"
+            '        if source_id != "' + slug + '":\n'
             "            return []\n"
-            "        return []\n\n\n__all__ = [\"" + plugin_class + "\"]\n"
+            '        return []\n\n\n__all__ = ["' + plugin_class + '"]\n'
         )
     if slot_name == "database":
         return (
@@ -76,14 +76,14 @@ def _make_plugin_template(slot: str, name: str) -> str:
             "from arie_core.plugin_api import plugin\n\n"
             f"@plugin(slot={slot_name!r}, name={slug!r})\n"
             f"class {plugin_class}:\n"
-            "    \"\"\"Scaffolded ARIE database plugin.\"\"\"\n\n"
+            '    """Scaffolded ARIE database plugin."""\n\n'
             "    async def startup(self, ctx: object | None = None) -> None:\n"
             "        del ctx\n\n"
             "    async def query(\n"
             "        self, *, sql: str, params: Sequence[Any] | None = None\n"
             "    ) -> list[dict[str, Any]]:\n"
             "        del sql, params\n"
-            "        return []\n\n\n__all__ = [\"" + plugin_class + "\"]\n"
+            '        return []\n\n\n__all__ = ["' + plugin_class + '"]\n'
         )
     return (
         "from __future__ import annotations\n\n"
@@ -91,10 +91,10 @@ def _make_plugin_template(slot: str, name: str) -> str:
         "from arie_core.plugin_api import plugin\n\n"
         f"@plugin(slot={slot_name!r}, name={slug!r})\n"
         f"class {plugin_class}:\n"
-        "    \"\"\"Scaffolded ARIE plugin.\"\"\"\n\n"
+        '    """Scaffolded ARIE plugin."""\n\n'
         "    async def run(self, ctx: object | None = None, **kwargs: Any) -> Any:\n"
         "        del ctx, kwargs\n"
-        "        return None\n\n\n__all__ = [\"" + plugin_class + "\"]\n"
+        '        return None\n\n\n__all__ = ["' + plugin_class + '"]\n'
     )
 
 
@@ -113,19 +113,19 @@ def _scaffold_plugin(slot: str, name: str) -> Path:
     pyproject = package_dir / "pyproject.toml"
     pyproject.write_text(
         "[project]\n"
-        f"name = \"arie-plugin-{slot_prefix}-{slug}\"\n"
-        "version = \"0.1.0\"\n"
-        "requires-python = \">=3.14\"\n"
+        f'name = "arie-plugin-{slot_prefix}-{slug}"\n'
+        'version = "0.1.0"\n'
+        'requires-python = ">=3.14"\n'
         "dependencies = [\n"
-        "    \"arie-core\",\n"
+        '    "arie-core",\n'
         "]\n\n"
         "[build-system]\n"
-        "requires = [\"hatchling\"]\n"
-        "build-backend = \"hatchling.build\"\n\n"
+        'requires = ["hatchling"]\n'
+        'build-backend = "hatchling.build"\n\n'
         "[tool.uv.sources]\n"
         "arie-core = { workspace = true }\n\n"
         "[tool.hatch.build.targets.wheel]\n"
-        f"packages = [\"{package_name}\"]\n",
+        f'packages = ["{package_name}"]\n',
         encoding="utf-8",
     )
 

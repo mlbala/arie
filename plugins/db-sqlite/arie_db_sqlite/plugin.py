@@ -19,9 +19,7 @@ def _utc_now() -> str:
 
 
 def _utc_plus(seconds: float) -> str:
-    return (datetime.now(UTC) + timedelta(seconds=seconds)).strftime(
-        "%Y-%m-%dT%H:%M:%S.%fZ"
-    )
+    return (datetime.now(UTC) + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 @plugin(slot="database", name="sqlite", api=">=1,<2")
@@ -315,14 +313,14 @@ class SQLiteDatabasePlugin:
         if not paper_id:
             raise ValueError("paper_id is required to fetch chunks")
 
-        sql = 'SELECT * FROM chunks WHERE paper_id = ?'
+        sql = "SELECT * FROM chunks WHERE paper_id = ?"
         params: list[object] = [paper_id]
         if query:
-            sql += ' AND text LIKE ?'
+            sql += " AND text LIKE ?"
             params.append(f"%{query}%")
         sql += ' ORDER BY "order" ASC'
         if limit is not None:
-            sql += ' LIMIT ?'
+            sql += " LIMIT ?"
             params.append(limit)
 
         rows = await self.fetch(ctx, sql, tuple(params))
