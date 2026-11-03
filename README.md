@@ -151,13 +151,13 @@ flowchart LR
 | `core/arie_core/contracts/` | Frozen `msgspec` data types passed between core and plugins (`VectorRow`, `Hit`, `LLMRequest`, `Evidence`, ...). |
 | `core/arie_core/registry/` | Discovers plugins, validates `arie.yaml`, builds plugin instances, circuit breakers. |
 | `core/arie_core/pipeline/` | Ingestion state machine, PDF gatekeeper, section-aware chunker. |
-| `core/arie_core/harness/` | Question answering: guard, planner, paper-bound tools, writer, verifier, reviewer. |
+| `core/arie_core/harness/` | Question answering: guard, planner, paper-bound reading, reranking, writer, verifier, reviewer. |
 | `core/arie_core/budget/`, `sched/` | Token and tool budgets, QoS lanes, per-host rate limits. |
 | `api/arie_api/` | FastAPI app: REST and server-sent events, sync and import jobs, background indexer. |
 | `worker/arie_worker/` | Supervised, recycled worker processes for CPU-heavy work. |
 | `plugins/` | Bundled plugins, one package per folder. |
 | `sdk/` | The `arie` CLI for scaffolding and testing plugins. |
-| `prompts/` | Versioned prompt playbooks (`qa.v1.yaml`, `brief.v1.yaml`). |
+| `prompts/` | Versioned prompt playbook (`qa.v1.yaml`). |
 | `contract_tests/` | Slot contract tests run against every discovered plugin. |
 | `evals/` | Source-grounding evaluations against a live LLM. |
 | `web/` | React 19 workspace. |
@@ -171,7 +171,7 @@ The core imports no vendor SDK and no plugin. `make check` enforces this with
 Each paper moves through a resumable state machine:
 
 ```
-DISCOVERED → GATED → DOWNLOADING → PARSED → INDEXED → BRIEFED
+DISCOVERED → GATED → DOWNLOADING → PARSED → INDEXED
 ```
 
 1. **Discover.** A source plugin returns paper metadata for a date window, one page at
@@ -199,7 +199,7 @@ flowchart TD
   G -- blocked --> A1[Abstain with reason]
   G -- allowed --> P[Planner LLM call:<br/>validated reading plan]
   P --> R[Retrieval in this paper only:<br/>keyword + vector, RRF k=60]
-  R --> T["Paper-bound tools, at most 3 calls:<br/>search_paper · read_section · get_table · get_page"]
+  R --> T["Paper-bound reading, at most 3 steps:<br/>search_paper · read_section · get_page"]
   T --> W[Writer LLM call: claims with quotes]
   W --> V1[Tier 1-2: quote exists in the paper]
   V1 --> V3[Tier 3: local NLI model,<br/>quote entails claim]
@@ -207,9 +207,9 @@ flowchart TD
   RV --> S[Stream verified claims<br/>with page citations]
 ```
 
-- The four tools are Python closures created for the selected paper. Their schemas
-  have no `paper_id` argument, so the model cannot ask for another paper, and every row
-  they return is filtered by paper again.
+- The reading steps run in code, not as model tool calls. The paper ID is bound before
+  any step runs, so the model cannot ask for another paper, and every row a step returns
+  is filtered by paper again.
 - Vector search gets at most 6 seconds and always leaves 10 seconds for writing and
   review. If it fails, retrieval falls back to keyword search.
 - If the LLM, the claim checker or credentials fail, the answer is a set of labelled
@@ -270,6 +270,7 @@ into the runtime:
 | `parser` | `parse(ctx, file_path) -> ParsedDoc` | `pymupdf4llm`, `docling` (OCR) | `plugins.parser.use` |
 | `source` | `fetch_page(ctx, since, until, cursor, limit)`, `allowed_hosts` | `arxiv`, `deepmind` | `plugins.sources` (a list) |
 | `entailment` | `score(ctx, pairs) -> list[float]` | `nli-onnx` | `plugins.entailment.use` |
+| `reranker` | `score(ctx, query, passages) -> list[float]` | `onnx-cross-encoder` | `plugins.reranker.use` |
 
 The exact signatures and contracts are the `Protocol` classes in
 [`core/arie_core/plugin_api/__init__.py`](core/arie_core/plugin_api/__init__.py).
@@ -444,12 +445,11 @@ workers may raise their own limits (see [Configuration reference](#configuration
 
 | Capability | Status |
 | --- | --- |
-| Custom Q&A tools | **Not pluggable yet.** The four paper-bound tools are built into the harness. `plugin_api` declares a `Feature` interface (`add_tool`, `add_route`, `add_pipeline_step`, ...) for this, but the runtime does not load it yet. |
+| Custom Q&A tools | **Not pluggable yet.** The paper-bound reading steps are built into the harness. |
 | Connect ARIE to an external MCP server as a tool | **Not available yet.** |
 | Use an MCP server as the database | **Available** through `mcp-sql`. |
 | Expose ARIE's paper tools over MCP (`POST /mcp/p/<handle>`) | **Preview.** The endpoint speaks MCP and verifies signed, paper-scoped handles (`ARIE_MCP_SECRET`), but it serves a built-in demo paper rather than your library, and no API route issues handles yet. |
 | `reranker` slot | **Available.** `onnx-cross-encoder` (default) picks each answer's passages in `arie-worker` (ADR 0007). |
-| `verifier` slot | Declared in `plugin_api`, not used by the runtime yet. |
 
 Pluggable tools are planned as a slot with two constraints from the design invariants:
 a tool never receives `paper_id` from the model, and what it returns is context, not

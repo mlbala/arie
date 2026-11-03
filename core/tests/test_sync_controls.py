@@ -239,7 +239,7 @@ async def test_settings_save_preserves_other_yaml_and_import_route_exists(tmp_pa
     path = tmp_path / "arie.yaml"
     path.write_text(
         "# Keep this comment\nprofile: hybrid\nsync:\n  initial_months: 6\n"
-        "# Keep plugin guidance\nplugins: {}\nfeatures: []\n"
+        "# Keep plugin guidance\nplugins: {}\n"
     )
     runtime.root = tmp_path
     settings = SyncConfig(mode="range", start_month="2025-01", end_month="2025-06", max_papers=10)

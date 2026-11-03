@@ -121,7 +121,6 @@ class ArieConfig(BaseModel):
     profile: str = "hybrid"
     runtime_qos: RuntimeQoSConfig = Field(default_factory=RuntimeQoSConfig)
     plugins: dict[str, object] = Field(default_factory=dict)
-    features: list[str] = Field(default_factory=list)
     llm_providers: dict[str, LLMProviderConfig] = Field(default_factory=default_llm_providers)
     embedding_providers: dict[str, EmbeddingProviderConfig] = Field(
         default_factory=default_embedding_providers
