@@ -37,7 +37,7 @@ from arie_core.sched import supervised
 from arie_core.search import score_paper
 from arie_worker.embedding import EmbeddingPool
 from arie_worker.entailment import EntailmentPool
-from arie_worker.extraction import ExtractionPool
+from arie_worker.extraction import ExtractionLimits, ExtractionPool
 
 from arie_api.providers import (
     AUTO_EMBEDDER,
@@ -85,15 +85,13 @@ class ResearchRuntime:
         self.storage_root = root / str(file_config.get("root") or "data/papers")
         parser_config = dict(cast(dict[str, object], self.config.plugins.get("parser", {})))
         parser_name = str(parser_config.pop("use", "") or "pymupdf4llm")
-        parse_timeout = float(cast(float, parser_config.pop("timeout_sec", 60.0)))
-        tasks_per_worker = int(cast(int, parser_config.pop("tasks_per_worker", 20)))
+        parser_limits = ExtractionLimits.pop_from(parser_config)
         self.pool = ExtractionPool(
             root,
             parser_name,
             self.config.runtime_qos.utility_worker_processes,
             parser_config,
-            parse_timeout,
-            tasks_per_worker,
+            parser_limits,
         )
         self.file_storage = self.instance("file_storage")
         self.jobs: dict[str, Document] = {}

@@ -42,7 +42,8 @@ def _score(
 class EntailmentPool(SupervisedPool):
     """Run the Tier 3 entailment model in one recycled worker process, never in arie-api.
 
-    Calls are serialized; an answer sends at most a handful of short pairs. Failure
+    Calls are serialized; an answer sends at most a handful of short pairs. The worker
+    keeps normal priority because every answer waits on it. Failure
     modes: model load or inference errors and timeouts propagate (the caller abstains),
     and the pool is rebuilt on the next call.
     """

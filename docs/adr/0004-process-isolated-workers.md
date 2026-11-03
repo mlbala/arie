@@ -1,6 +1,6 @@
 # 0004: CPU-heavy work runs in recycled worker processes
 
-**Status:** Accepted
+**Status:** Accepted; the parser memory cap is amended by [ADR 0005](0005-per-parser-memory-limit.md)
 
 ## Context
 
