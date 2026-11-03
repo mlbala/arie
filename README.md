@@ -159,7 +159,6 @@ flowchart LR
 | `sdk/` | The `arie` CLI for scaffolding and testing plugins. |
 | `prompts/` | Versioned prompt playbook (`qa.v1.yaml`). |
 | `contract_tests/` | Slot contract tests run against every discovered plugin. |
-| `evals/` | Source-grounding evaluations against a live LLM. |
 | `web/` | React 19 workspace. |
 | `docs/adr/` | Architecture decision records. |
 
