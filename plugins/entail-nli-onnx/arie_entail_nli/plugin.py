@@ -31,9 +31,13 @@ class NLIEntailmentPlugin:
     so a claim is never judged against a hypothesis cut short. ``threads`` caps ONNX
     Runtime's intra-op threads (default 1): its own default of one thread per core pegs
     every core on each answer and, measured on 10 claims, spends ~1.8x the CPU time of a
-    single thread for ~2x less latency. Failure modes: download, ONNX load or label-map
-    errors propagate from the first ``score`` call; ``threads`` below 1 raises
-    ``ValueError``; calls outside a worker process raise ``RuntimeError``.
+    single thread for ~2x less latency.
+    ``memory_arena`` (default off) keeps ONNX Runtime's CPU memory arena, which holds
+    on to its peak allocation: measured on Linux with this model and the reranker in
+    one worker, turning it off cut worker memory from ~1.2 GB to ~0.7 GB at the same
+    speed. Failure modes: download, ONNX load or label-map errors propagate from the
+    first ``score`` call; ``threads`` below 1 raises ``ValueError``; calls outside a
+    worker process raise ``RuntimeError``.
     """
 
     def __init__(
@@ -44,6 +48,7 @@ class NLIEntailmentPlugin:
         max_length: int = 512,
         batch_size: int = 8,
         threads: int = 1,
+        memory_arena: bool = False,
     ) -> None:
         if threads < 1:
             raise ValueError("threads must be at least 1")
@@ -53,6 +58,7 @@ class NLIEntailmentPlugin:
         self.max_length = max_length
         self.batch_size = max(1, batch_size)
         self.threads = threads
+        self.memory_arena = memory_arena
         self._model: _Model | None = None
 
     async def score(self, ctx: Ctx, pairs: Sequence[tuple[str, str]]) -> list[float]:
@@ -62,7 +68,9 @@ class NLIEntailmentPlugin:
         if not pairs:
             return []
         if self._model is None:
-            self._model = _OnnxNLI(self._download(), self.max_length, self.threads)
+            self._model = _OnnxNLI(
+                self._download(), self.max_length, self.threads, self.memory_arena
+            )
         scores: list[float] = []
         items = [(str(premise), str(hypothesis)) for premise, hypothesis in pairs]
         for start in range(0, len(items), self.batch_size):
@@ -85,7 +93,9 @@ class NLIEntailmentPlugin:
 class _OnnxNLI:
     """Tokenize pairs, run the cross-encoder, and softmax logits into P(entailment)."""
 
-    def __init__(self, files: dict[str, Path], max_length: int, threads: int) -> None:
+    def __init__(
+        self, files: dict[str, Path], max_length: int, threads: int, memory_arena: bool = False
+    ) -> None:
         config = cast(dict[str, object], json.loads(files["config"].read_text()))
         labels = cast(dict[str, str], config.get("id2label") or {})
         matches = [int(key) for key, label in labels.items() if label.lower() == "entailment"]
@@ -100,6 +110,7 @@ class _OnnxNLI:
         options = runtime.SessionOptions()
         options.intra_op_num_threads = threads
         options.inter_op_num_threads = 1
+        options.enable_cpu_mem_arena = memory_arena
         self.session = runtime.InferenceSession(
             str(files["onnx"]), sess_options=options, providers=["CPUExecutionProvider"]
         )

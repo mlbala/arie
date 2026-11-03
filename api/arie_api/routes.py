@@ -101,8 +101,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
             worker = group.create_task(supervised(service.run)())
             imports = group.create_task(supervised(service.run_imports)())
             vectors = group.create_task(supervised(service.run_vector_index)())
-            entailment = group.create_task(supervised(service.warm_entailment)())
-            reranker = group.create_task(supervised(service.warm_reranker)())
+            models = group.create_task(supervised(service.models.warm)())
             lag = EventLoopLagMonitor(
                 threshold_ms=service.config.runtime_qos.slow_callback_threshold_ms
             )
@@ -110,7 +109,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
             try:
                 yield
             finally:
-                for task in (worker, imports, vectors, entailment, reranker, lag_monitor):
+                for task in (worker, imports, vectors, models, lag_monitor):
                     task.cancel()
                 service.close()
 
@@ -237,9 +236,11 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
                         project_root=PROJECT_ROOT,
                         history=history,
                         semantic=semantic,
-                        entail=runtime.entailment_scores if runtime.entailment else None,
+                        entail=runtime.entailment_scores
+                        if runtime.models.get("entailment")
+                        else None,
                         entail_floor=runtime.entail_floor,
-                        rerank=runtime.rerank_scores if runtime.reranker else None,
+                        rerank=runtime.rerank_scores if runtime.models.get("reranker") else None,
                     )
                     plan, reading, result = run.plan, run.reading, run.answer
                     excerpts = result.excerpts

@@ -30,7 +30,12 @@ class OnnxCrossEncoderReranker:
     are sigmoid probabilities in [0, 1]. ``threads`` caps ONNX Runtime intra-op threads
     (default 2) so one answer never pegs every core: measured on an 8-core Mac, the
     worst case (24 passages of ~500 tokens) takes 3.7 s on one thread and 1.9 s on two,
-    inside the harness's 3 s reranking budget. Failure modes: download, ONNX load
+    inside the harness's 3 s reranking budget.
+    ``memory_arena`` (default off) keeps ONNX Runtime's CPU memory arena, which holds
+    on to its peak allocation: measured on Linux with this model and the reranker in
+    one worker, turning it off cut worker memory from ~1.2 GB to ~0.7 GB at the same
+    speed.
+    Failure modes: download, ONNX load
     or output-shape errors propagate from the first ``score`` call; ``threads`` below 1
     raises ``ValueError``; calls outside a worker process raise ``RuntimeError``.
     """
@@ -43,6 +48,7 @@ class OnnxCrossEncoderReranker:
         max_length: int = 512,
         batch_size: int = 8,
         threads: int = 2,
+        memory_arena: bool = False,
     ) -> None:
         if threads < 1:
             raise ValueError("threads must be at least 1")
@@ -52,6 +58,7 @@ class OnnxCrossEncoderReranker:
         self.max_length = max_length
         self.batch_size = max(1, batch_size)
         self.threads = threads
+        self.memory_arena = memory_arena
         self._model: _Model | None = None
 
     async def score(self, ctx: Ctx, query: str, passages: Sequence[str]) -> list[float]:
@@ -61,7 +68,9 @@ class OnnxCrossEncoderReranker:
         if not passages:
             return []
         if self._model is None:
-            self._model = _OnnxCrossEncoder(self._download(), self.max_length, self.threads)
+            self._model = _OnnxCrossEncoder(
+                self._download(), self.max_length, self.threads, self.memory_arena
+            )
         pairs = [(str(query), str(passage)) for passage in passages]
         scores: list[float] = []
         for start in range(0, len(pairs), self.batch_size):
@@ -80,7 +89,9 @@ class OnnxCrossEncoderReranker:
 class _OnnxCrossEncoder:
     """Tokenize (question, passage) pairs and turn the relevance logit into a probability."""
 
-    def __init__(self, files: dict[str, Path], max_length: int, threads: int) -> None:
+    def __init__(
+        self, files: dict[str, Path], max_length: int, threads: int, memory_arena: bool = False
+    ) -> None:
         tokenizers = importlib.import_module("tokenizers")
         self.tokenizer = tokenizers.Tokenizer.from_file(str(files["tokenizer"]))
         self.tokenizer.enable_truncation(max_length, strategy="only_second")
@@ -89,6 +100,7 @@ class _OnnxCrossEncoder:
         options = runtime.SessionOptions()
         options.intra_op_num_threads = threads
         options.inter_op_num_threads = 1
+        options.enable_cpu_mem_arena = memory_arena
         self.session = runtime.InferenceSession(
             str(files["onnx"]), sess_options=options, providers=["CPUExecutionProvider"]
         )

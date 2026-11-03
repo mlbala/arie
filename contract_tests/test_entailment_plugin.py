@@ -61,21 +61,28 @@ async def test_real_model_in_a_worker_rejects_polarity_flips_and_keeps_paraphras
     cache = cached_model()
     if cache is None:
         pytest.skip(f"{MODEL} is not cached; set ARIE_NLI_CACHE to run")
-    from arie_worker.entailment import EntailmentPool
+    from arie_worker.models import LocalModel, ModelPool
 
-    pool = EntailmentPool(ROOT, "nli-onnx", {"model": MODEL, "cache_dir": cache})
+    pool = LocalModel(
+        ModelPool(ROOT, "Entailment"),
+        "entailment",
+        "nli-onnx",
+        {"model": MODEL, "cache_dir": cache},
+    )
     quote = "The model performs well on all benchmarks."
     transformer = (
         "The Transformer dispenses with recurrence and convolutions entirely, "
         "relying solely on attention."
     )
     try:
-        scores = await pool.score(
+        scores = await pool.scores(
+            "score",
             [
                 (quote, "The model performs badly."),
                 (transformer, "The Transformer uses only attention instead of recurrence."),
                 (transformer, "The Transformer relies on recurrent layers."),
             ],
+            count=3,
             kill_after=120.0,
         )
     finally:

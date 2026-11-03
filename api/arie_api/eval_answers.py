@@ -13,9 +13,8 @@ from arie_core.harness.rerank import RerankCheck
 from arie_core.harness.verifier import MIN_ENTAILMENT, EntailmentCheck
 from arie_core.plugin_api import LLM
 from arie_core.registry.manager import ArieConfig, RegistryManager
-from arie_worker.entailment import EntailmentPool
-from arie_worker.reranking import RerankPool
 
+from arie_api.models import AnswerModels
 from arie_api.providers import DEFAULT_LLM, LLMProviders, config_path
 from arie_api.runtime import context
 
@@ -33,40 +32,31 @@ async def evaluate() -> bool:
     if not getattr(llm, "api_key", None):
         print(json.dumps({"status": "not_run", "reason": "Configured LLM has no API key"}))
         return False
-    entail_config = dict(cast(dict[str, object], config.plugins.get("entailment", {})))
-    entail_name = str(entail_config.pop("use", "") or "none")
-    floor = float(cast(float, entail_config.pop("min_score", MIN_ENTAILMENT)))
-    pool = EntailmentPool(ROOT, entail_name, entail_config) if entail_name != "none" else None
-    if pool is not None:
-        # The first load may download the model; answers are then timed as in production.
-        await pool.score([("ARIE warm-up premise.", "Warm-up.")], 600.0)
-
-    rerank_config = dict(cast(dict[str, object], config.plugins.get("reranker", {})))
-    rerank_name = str(rerank_config.pop("use", "") or "none")
-    reranker = RerankPool(ROOT, rerank_name, rerank_config) if rerank_name != "none" else None
-    if reranker is not None:
-        await reranker.score("ARIE warm-up question", ["Warm-up passage."], 600.0)
+    models = AnswerModels(ROOT, config)
+    floor = models.option("entailment", "min_score", MIN_ENTAILMENT)
+    entailment, reranker = models.get("entailment"), models.get("reranker")
+    for model in (entailment, reranker):
+        if model is not None:
+            # The first load may download the model; answers are then timed as in production.
+            await asyncio.wait_for(model.warm(), 600.0)
 
     async def entail(pairs: Sequence[tuple[str, str]]) -> list[float]:
-        assert pool is not None
-        return await pool.score(list(pairs))
+        assert entailment is not None
+        return await entailment.scores(list(pairs), count=len(pairs))
 
     async def rerank(query: str, passages: Sequence[str]) -> list[float]:
         assert reranker is not None
-        return await reranker.score(query, list(passages))
+        return await reranker.scores(query, list(passages), count=len(passages))
 
     try:
         return await _run_cases(
             llm,
-            entail if pool is not None else None,
+            entail if entailment is not None else None,
             floor,
             rerank if reranker is not None else None,
         )
     finally:
-        if pool is not None:
-            pool.close()
-        if reranker is not None:
-            reranker.close()
+        models.close()
 
 
 async def _run_cases(

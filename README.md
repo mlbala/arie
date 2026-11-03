@@ -127,7 +127,7 @@ flowchart LR
   subgraph Workers["arie-worker (recycled processes)"]
     PDF[PDF parser pool]
     EMB[Embedding pool]
-    NLI[Claim-checker pool]
+    NLI[Answer-model pool:<br/>claim checker + reranker]
   end
   subgraph Plugins
     LLM[LLM]
@@ -226,7 +226,7 @@ never in API threads:
 | --- | --- | --- |
 | PDF | parser plugin | 60 s per paper, 1.5 GB memory, recycled after 20 papers (configurable for the parser) |
 | Embedding | embedder plugin | defaults above; lower CPU priority |
-| Claim checker | entailment plugin | defaults above; normal priority so answers stay fast |
+| Answer models | entailment and reranker plugins, in one shared process | defaults above; normal priority so answers stay fast |
 
 A worker that exceeds a limit is killed and replaced; only that task fails. PDF and
 embedding workers run at lower CPU priority (`nice 10`), and the PDF pool never starts
@@ -386,8 +386,8 @@ package.
   deadline.
 - Any plugin that makes network requests declares `allowed_hosts` and must not follow
   redirects to other hosts.
-- Keep heavy models out of the API process. Embedder, entailment and parser plugins
-  run in worker processes; load models lazily on the first call.
+- Keep heavy models out of the API process. Embedder, entailment, reranker and parser
+  plugins run in worker processes; load models lazily on the first call.
 - Let errors propagate. The core decides the fallback (keyword search, source excerpts
   or a failed paper) and shows the reason.
 - A vector store or database must still return correct rows when the core filters by
@@ -441,6 +441,17 @@ workers may raise their own limits (see [Configuration reference](#configuration
 `(quote, claim)` pair, the probability that the quote entails the claim. Recalibrate
 `plugins.entailment.min_score` for your model.
 
+**A different reranker.** Implement `score(ctx, query, passages)` returning one
+relevance score per passage, higher meaning more relevant. Scores are compared only
+within one call, so any scale works.
+
+**A new local model slot.** Local model plugins all run through one generic worker
+pool (`arie_worker.models.ModelPool`), so a new slot needs no new pool class. Declare
+its `Protocol` in `plugin_api`, add one `AnswerSlot` entry in
+[`api/arie_api/models.py`](api/arie_api/models.py) (its warm-up call, status text and
+fallback), and call its scores from the harness step that uses them. Configuration,
+warm-up, retries, the shared worker and the health pane then come from that entry.
+
 ### Tools and MCP: current status
 
 | Capability | Status |
@@ -465,7 +476,7 @@ evidence, unless it passes the verifier.
 | `llm_providers` | Default model, key variable and optional `base_url` per LLM plugin. |
 | `embedding_providers` | Default model, similarity floor and key variable per embedder. |
 | `sync` | Default sync window and limits (see [Sync](#sync)). |
-| `runtime_qos` | Worker counts, download concurrency, arXiv spacing, event-loop warnings. |
+| `runtime_qos` | Worker counts, download concurrency, arXiv spacing, event-loop warnings. `shared_model_worker` (default `true`) runs the claim checker and reranker in one process; `false` gives each its own. |
 
 Keys for the local-model plugins:
 
@@ -474,6 +485,9 @@ Keys for the local-model plugins:
 | `entailment.threads`, `embedder.threads` (`fastembed`) | 1 | CPU threads per model. Higher is faster per answer but uses more cores. |
 | `entailment.min_score` | 0.5 | Claims scoring below this are dropped. |
 | `entailment.max_length` | 512 | Tokens per quote and claim pair. |
+| `reranker.threads` | 2 | CPU threads for the reranker; two keep 24 passages under its 3 s budget. |
+| `reranker.max_length`, `reranker.batch_size` | 512, 8 | Tokens per passage, and passages scored per batch. |
+| `entailment.memory_arena`, `reranker.memory_arena` | false | Keep ONNX Runtime's CPU memory arena. About 0.5 GB more memory for the answer worker, at the same measured speed. |
 
 Worker limits for `plugins.parser` (every other `parser` key goes to the parser):
 
@@ -483,7 +497,7 @@ Worker limits for `plugins.parser` (every other `parser` key goes to the parser)
 | `max_rss_mb` | 1536 | 1536-8192 | Kill the worker above this memory. |
 | `tasks_per_worker` | 20 | 1-20 | Replace the worker after this many papers. |
 
-ARIE refuses to start if a value is out of range. The embedding and claim-checker pools
+ARIE refuses to start if a value is out of range. The embedding and answer-model pools
 always use the defaults.
 
 `.env`:
@@ -502,7 +516,7 @@ Measured on one machine; expect similar proportions elsewhere.
 | Component | Memory | CPU |
 | --- | --- | --- |
 | Local embedder (`fastembed`, bge-small) | ~350 MB | short bursts while indexing; ~20 ms per question |
-| Claim checker (`nli-onnx`) | ~550 MB | ~0.2 s per claim on one thread |
+| Answer models: claim checker (`nli-onnx`) and reranker (`onnx-cross-encoder`), one shared worker | ~0.7 GB on Linux at the worst case per answer (12 claims, 24 long passages); ~1.2 GB with `memory_arena: true` | claim check ~0.2 s per claim on one thread; reranking up to 3 s on two threads |
 | PDF worker (`pymupdf4llm`) | up to ~500 MB each | busy during sync, at lower priority |
 | PDF worker (`docling`) | 1.4-1.5 GB peak per paper | 73-165 s per 15-page paper |
 
@@ -512,6 +526,10 @@ To make ARIE lighter:
   embedding model.
 - Keep `threads: 1` on local models so one question uses about one core.
 - Lower `runtime_qos.utility_worker_processes` to run fewer PDF workers at once.
+- Keep `runtime_qos.shared_model_worker: true` (the default) and leave `memory_arena`
+  off on the ONNX plugins ([ADR 0009](docs/adr/0009-one-model-pool-shared-answer-worker.md)).
+- Set `reranker: {use: none}` to drop the reranker; answers then use keyword and
+  vector order.
 - Set `entailment: {use: none}` only on very small machines: claims then rest on quote
   matching and the LLM reviewer, without the Tier 3 check.
 

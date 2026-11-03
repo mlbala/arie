@@ -62,6 +62,7 @@ async def test_nli_session_uses_the_thread_cap(
     class SessionOptions:
         intra_op_num_threads = 0
         inter_op_num_threads = 0
+        enable_cpu_mem_arena = True
 
     class InferenceSession:
         def __init__(self, path: str, sess_options: SessionOptions, providers: list[str]) -> None:
@@ -102,3 +103,5 @@ async def test_nli_session_uses_the_thread_cap(
     assert score > 0.99
     assert sessions[0].options.intra_op_num_threads == (threads or 1)
     assert sessions[0].options.inter_op_num_threads == 1
+    # The CPU memory arena keeps peak allocations; it is off unless configured.
+    assert sessions[0].options.enable_cpu_mem_arena is False
