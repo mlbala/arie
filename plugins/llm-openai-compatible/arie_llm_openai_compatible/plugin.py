@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time
 from collections.abc import AsyncIterator
 from typing import Any, cast
@@ -26,7 +27,7 @@ class OpenAICompatibleLLM:
     def __init__(
         self,
         *,
-        model: str = "gpt-4.1-mini",
+        model: str = "gpt-5.4-mini",
         base_url: str | None = None,
         api_key: str | None = None,
     ) -> None:
@@ -57,10 +58,14 @@ class OpenAICompatibleLLM:
         messages = [{"role": "user", "content": request.prompt}]
         if request.system_prompt:
             messages.insert(0, {"role": "system", "content": request.system_prompt})
-        token_field = (
-            "max_completion_tokens"
-            if urlsplit(self.base_url).hostname == "api.openai.com"
-            else "max_tokens"
+        official = urlsplit(self.base_url).hostname == "api.openai.com"
+        token_field = "max_completion_tokens" if official else "max_tokens"
+        # OpenAI reasoning models reject temperature 0, and hidden reasoning would spend
+        # the bounded output budget (I3); other OpenAI-compatible servers keep temperature 0.
+        sampling: dict[str, object] = (
+            {"reasoning_effort": "none"}
+            if official and re.match(r"(?:gpt-[5-9]|o\d)", self.model)
+            else {"temperature": 0}
         )
         async with asyncio.timeout(remaining):
             async with httpx.AsyncClient(
@@ -74,7 +79,7 @@ class OpenAICompatibleLLM:
                         "messages": messages,
                         token_field: min(700, request.max_output_tokens),
                         "response_format": {"type": "json_object"},
-                        "temperature": 0,
+                        **sampling,
                     },
                 )
                 response.raise_for_status()

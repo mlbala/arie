@@ -20,10 +20,12 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const provider = active?.providers?.find((item) => item.name === name);
   const model = models[name] ?? provider?.model ?? "";
   const llm = activeSlot === "llm";
-  const missingKey = llm && provider?.key_configured === false;
+  const embedder = activeSlot === "embedder" && Boolean(active?.providers?.length);
+  const selectable = llm || embedder;
+  const missingKey = selectable && provider?.key_configured === false;
   const currentModel = String(active?.configured.model ?? active?.providers?.find((item) => item.name === active?.configured.use)?.model ?? "");
-  const unchanged = name === active?.configured.use && model === currentModel;
-  const config = llm ? { model } : Object.fromEntries(
+  const unchanged = name === active?.configured.use && (!llm || model === currentModel);
+  const config = llm ? { model } : embedder ? {} : Object.fromEntries(
     Object.entries(active?.configured ?? {}).filter(([key]) => key !== "use"),
   );
   const test = useMutation({
@@ -47,7 +49,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
           <button aria-label="Close settings" className="icon-button" onClick={onClose} type="button"><X size={15} /></button>
         </header>
         <div className="settings-content">
-          <p className="settings-copy">Choose your model provider. Saving verifies the connection and remembers the choice in arie.yaml.</p>
+          <p className="settings-copy">Choose your model provider and embedder. Saving verifies the connection and remembers the choice in arie.yaml.</p>
           {pluginsQuery.isPending ? <div className="loading-state">Loading configured plugins…</div> :
             pluginsQuery.isError ? <div className="error-state">{pluginsQuery.error.message}</div> : <>
               <div className="plugin-tabs" role="tablist" aria-label="Plugin slots">
@@ -60,7 +62,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
               <label className="field-label" htmlFor="plugin-select">{llm ? "Model provider" : `Active ${SLOT_LABELS[activeSlot] ?? activeSlot} provider`}</label>
               <select className="select-control" id="plugin-select" value={name} disabled={busy}
                 onChange={(event) => { setSelections((current) => ({ ...current, [activeSlot]: event.target.value })); reset(); }}>
-                {(llm ? active?.providers?.map((item) => ({ name: item.name, label: item.label })) : active?.available.map((item) => ({ name: item, label: item })))?.map((item) => <option key={item.name} value={item.name}>{item.label}</option>)}
+                {(selectable ? active?.providers?.map((item) => ({ name: item.name, label: `${item.model ? `${item.label} · ${item.model}` : item.label}${item.default ? " (default)" : llm && !item.key_configured ? " (add your key)" : ""}` })) : active?.available.map((item) => ({ name: item, label: item })))?.map((item) => <option key={item.name} value={item.name}>{item.label}</option>)}
                 {!active?.available.length && <option value="">No providers available</option>}
               </select>
               {llm && <>
@@ -69,20 +71,24 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                   onChange={(event) => { setModels((current) => ({ ...current, [name]: event.target.value })); reset(); }} />
                 <div className={`provider-status${missingKey || provider?.status === "error" ? " error" : ""}`} role={missingKey ? "alert" : "status"}>
                   <strong>{missingKey ? "API key not configured" : test.isSuccess && !error ? "Connection verified" : model !== provider?.model ? "Connection not tested for this model" : provider?.status === "verified" ? "Connection verified" : provider?.status === "error" ? "Connection needs attention" : "API key configured · connection not tested"}</strong>
-                  <p>{missingKey ? `${provider?.key_env} is not configured. Add it to the server's .env and restart ARIE.` : test.isSuccess ? "A live request to this provider and model succeeded." : provider?.message ?? "Provider credential information is unavailable. Restart the API."}</p>
+                  <p>{missingKey ? `${provider?.default ? "" : "Optional provider: bring your own key. "}${provider?.key_env} is not configured. Add it to the server's .env and restart ARIE.` : test.isSuccess ? "A live request to this provider and model succeeded." : provider?.message ?? "Provider credential information is unavailable. Restart the API."}</p>
                 </div>
               </>}
-              {!llm && <p className="settings-copy">Change this adapter in arie.yaml and restart ARIE to apply it.</p>}
+              {embedder && <div className={`provider-status${missingKey ? " error" : ""}`} role={missingKey ? "alert" : "status"}>
+                <strong>{missingKey ? "API key not configured" : `In use: ${active?.effective?.embedder ?? "unknown"}`}</strong>
+                <p>{missingKey ? `${provider?.key_env} is not configured. Add it to the server's .env and restart ARIE.` : `${active?.effective?.reason ?? ""}. Switching embedders re-embeds your library in the background; until a paper finishes, its answers use keyword search.`}</p>
+              </div>}
+              {!selectable && <p className="settings-copy">Change this adapter in arie.yaml and restart ARIE to apply it.</p>}
               <div className="settings-actions">
                 <button className="button" disabled={!name || busy || missingKey || (llm && !model.trim())} onClick={() => test.mutate()} type="button">
                   <PlugZap size={12} />{test.isPending ? "Testing…" : "Test connection"}
                 </button>
-                {llm && <button className="button button-primary" disabled={!name || !model.trim() || busy || missingKey || unchanged} onClick={() => save.mutate()} type="button">
-                  <Check size={12} />{save.isPending ? "Checking and saving…" : "Use this model"}
+                {selectable && <button className="button button-primary" disabled={!name || (llm && !model.trim()) || busy || missingKey || unchanged} onClick={() => save.mutate()} type="button">
+                  <Check size={12} />{save.isPending ? "Checking and saving…" : llm ? "Use this model" : "Use this embedder"}
                 </button>}
               </div>
               {error && <p className="settings-feedback error" role="alert">{error}</p>}
-              {!error && (save.isSuccess || test.isSuccess) && <p className="settings-feedback" role="status">{save.isSuccess ? "Model selection saved to arie.yaml." : "Connection test passed."}</p>}
+              {!error && (save.isSuccess || test.isSuccess) && <p className="settings-feedback" role="status">{save.isSuccess ? `${llm ? "Model" : "Embedder"} selection saved to arie.yaml.` : "Connection test passed."}</p>}
             </>}
         </div>
       </section>

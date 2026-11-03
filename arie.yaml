@@ -16,13 +16,25 @@ runtime_qos:
 # Select a provider in Settings or change plugins.llm.use below.
 # API keys stay on the server in .env; the UI displays presence and connection checks.
 llm_providers:
-  deepseek: {model: deepseek-chat, api_key_env: DEEPSEEK_API_KEY}
-  openai: {model: gpt-4.1-mini, api_key_env: OPENAI_API_KEY}
+  deepseek: {model: deepseek-flash, api_key_env: DEEPSEEK_API_KEY}
+  openai: {model: gpt-5.4-mini, api_key_env: OPENAI_API_KEY}
   gemini: {model: gemini-3.5-flash-lite, api_key_env: GEMINI_API_KEY}
+# Embedder defaults; min_score is the cosine floor calibrated for each model.
+embedding_providers:
+  fastembed: {model: BAAI/bge-small-en-v1.5, min_score: 0.6}
+  openai: {model: text-embedding-3-small, min_score: 0.25, api_key_env: OPENAI_API_KEY}
+  gemini: {model: gemini-embedding-001, min_score: 0.55, api_key_env: GEMINI_API_KEY}
 plugins:
   llm:          {use: deepseek}  # model defaults come from llm_providers above
-  embedder:     {use: fastembed, model: BAAI/bge-small-en-v1.5}
-  vector_store: {use: exact}
+  # Vector search finds passages worded differently from the question. `auto` follows the
+  # model provider (OpenAI or Gemini embeddings when that key is set; DeepSeek has none, so
+  # local fastembed). Name an embedder to override. A new model re-embeds in the background.
+  # Bring your own store: add a @plugin(slot="vector_store", name=...) class under plugins/
+  # (or an installed package with an arie.plugins entry point), select it here, and run
+  # `make test-contracts`. Other keys are passed to the plugin's constructor.
+  # Set either `use` to none for keyword-only retrieval.
+  embedder:     {use: auto}
+  vector_store: {use: exact, path: ./data/arie-vectors.db}
   database:     {use: sqlite, path: ./data/arie.db}
   file_storage: {use: local, root: ./data/papers}
   parser:       {use: pymupdf4llm}

@@ -29,6 +29,8 @@ class AnswerPlan(msgspec.Struct, frozen=True):
     aspects: tuple[str, ...] = ()
     sections: tuple[str, ...] = ()
     user_question: str = ""
+    # True when the user's words ask for depth; ARIE's own upgrade to "detailed" is not.
+    detail_requested: bool = False
 
     @property
     def max_claims(self) -> int:
@@ -85,4 +87,5 @@ def plan_answer(question: str, history: Sequence[DialogueTurn] = ()) -> AnswerPl
         bool(previous),
         sources if previous else (),
         (previous or clean)[:700],
+        detail_requested=depth == "detailed",
     )

@@ -39,6 +39,12 @@ class PlannerDraft(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     follow_up: bool = False
 
 
+# Tasks answered with a multi-paragraph explanation unless the user asks for brevity.
+EXPLANATORY = frozenset(
+    {"mechanism", "methodology", "results", "limitations", "critique", "comparison", "synthesis"}
+)
+
+
 def _task(question: str, overview: bool) -> str:
     if overview:
         return "overview"
@@ -76,10 +82,14 @@ async def plan_research(
     )
     if session.llm is None or not rows:
         return basic, "deterministic"
-    outline = tuple(dict.fromkeys(row.section for row in annotate_sections(rows) if row.section))
-    # Spread a long outline across the paper rather than spending the budget on its introduction.
-    step = max(1, len(outline) // 18)
-    outline = tuple(section[:100] for section in outline[::step][:18])
+    sections = tuple(dict.fromkeys(row.section for row in annotate_sections(rows) if row.section))
+    # Every top-level section first (a conclusion often holds the limitations), then
+    # subsections spread across the paper, in reading order, within 18 entries.
+    top = {section for section in sections if " / " not in section}
+    rest = [section for section in sections if section not in top]
+    step = max(1, len(rest) // max(1, 18 - len(top)))
+    keep = top | set(rest[::step][: max(0, 18 - len(top))])
+    outline = tuple(section[:100] for section in sections if section in keep)[:18]
     try:
         playbook = await asyncio.to_thread(load_playbook, project_root)
         raw = await session.call(
@@ -89,7 +99,7 @@ async def plan_research(
                 "prior_questions": [turn.question[:700] for turn in history[-3:]],
                 "outline": outline,
             },
-            128,
+            160,
             4.0,
         )
         draft = msgspec.json.decode(msgspec.json.encode(raw), type=PlannerDraft)
@@ -105,6 +115,18 @@ async def plan_research(
         explicit_depth = bool(
             re.search(r"brief|concise|short|detail|expand|elaborate", question, re.I)
         )
+        # Recognized wording wins: an overview stays one, and a clearly specific question
+        # (method, results, ...) is not relabeled as an overview by the model.
+        overview = basic.overview or (draft.task == "overview" and basic.task == "answer")
+        depth = basic.depth if explicit_depth else draft.depth
+        generic = draft.task in {"answer", "overview"}
+        task = "overview" if overview else basic.task if generic else draft.task
+        if not explicit_depth and (overview or task in EXPLANATORY):
+            depth = "detailed"  # Explanations cover substance; lookups and definitions stay short.
+        elif depth == "brief" and len(draft.aspects) > 2 and not explicit_depth:
+            depth = "standard"  # Two brief claims cannot cover three required aspects.
+        # An explicitly brief answer keeps its length and drops the least essential aspect.
+        aspects = draft.aspects[:2] if depth == "brief" else draft.aspects
         follow_up = bool(history) and (basic.follow_up or draft.follow_up)
         sources = tuple(
             dict.fromkeys(source for turn in history[-4:] for source in turn.source_ids)
@@ -112,11 +134,11 @@ async def plan_research(
         return msgspec.structs.replace(
             basic,
             question=resolved,
-            depth=basic.depth if explicit_depth else draft.depth,
-            overview=draft.task == "overview",
-            task=draft.task,
+            depth=depth,
+            overview=overview,
+            task=task,
             queries=draft.queries,
-            aspects=draft.aspects,
+            aspects=aspects,
             sections=draft.sections,
             follow_up=follow_up,
             previous_source_ids=sources[:24] if follow_up else (),

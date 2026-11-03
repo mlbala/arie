@@ -58,6 +58,11 @@ class Hit(msgspec.Struct, frozen=True):
     payload: dict[str, str | int | float | bool | None] = {}
 
 
+class VectorStats(msgspec.Struct, frozen=True):
+    vectors: int
+    size_bytes: int | None = None
+
+
 class PaperRow(msgspec.Struct, frozen=True):
     paper_id: str
     title: str

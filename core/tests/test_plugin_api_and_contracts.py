@@ -38,7 +38,9 @@ def test_scraped_paper_input_allows_arxiv_like_ids_and_hashes_safely() -> None:
     )
     assert item.paper_id == "cs/0501001"
     assert item.storage_hash == hashlib.sha256(b"cs/0501001").hexdigest()[:16]
-    assert item.dedup_hash == hashlib.sha256(b"safe paper||https://example.com/paper.pdf").hexdigest()
+    assert (
+        item.dedup_hash == hashlib.sha256(b"safe paper||https://example.com/paper.pdf").hexdigest()
+    )
 
 
 def test_scraped_paper_input_rejects_extra_fields() -> None:

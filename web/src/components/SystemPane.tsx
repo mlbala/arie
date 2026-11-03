@@ -39,8 +39,8 @@ export function StorageHealth() {
               <p>{data?.database.provider ?? "—"} · {bytes(data?.database.size_bytes)}</p>
               <small>{data?.database.papers ?? "—"} papers · {data?.database.evidence_chunks ?? "—"} evidence chunks</small>
             </article>
-            <article><div><Layers3 size={14} /><strong>Vector index</strong><span className="health-pill inactive">{data?.vector_store.status ?? "Unknown"}</span></div>
-              <p>{data?.vector_store.provider ?? "—"} · {bytes(data?.vector_store.size_bytes)}</p>
+            <article><div><Layers3 size={14} /><strong>Vector index</strong><span className={`health-pill ${data?.vector_store.status ?? "unknown"}`}>{data?.vector_store.status ?? "Checking"}</span></div>
+              <p>{data?.vector_store.provider ?? "—"} · {data?.vector_store.vectors ?? "—"} vectors · {bytes(data?.vector_store.size_bytes)}</p>
               <small>{data?.vector_store.detail ?? "Waiting for provider status."}</small>
             </article>
             <article><div><HardDrive size={14} /><strong>PDF storage</strong><span className={`health-pill ${data?.file_storage.status ?? "unknown"}`}>{data?.file_storage.status ?? "Checking"}</span></div>
