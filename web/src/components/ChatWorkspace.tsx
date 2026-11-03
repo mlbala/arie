@@ -517,6 +517,10 @@ function GroundedAnswer({ entry, onCitation }: { entry: ChatEntry; onCitation: (
           <blockquote>{displaySourceText(claim.quote)}</blockquote>
         </li>)}</ol>
       </details>
+      {entry.mode === "entailed_answer" && <details className="answer-evaluation"><summary>Model evaluation</summary>
+        <p>{entry.claims.length} statement{entry.claims.length === 1 ? "" : "s"} checked · each strongly entailed by its quote</p>
+        <p>Direct answer: the separate model review was not needed</p>
+      </details>}
       {reviewed && <details className="answer-evaluation"><summary>Model evaluation</summary>
         <p>{entry.reviewedClaims} statements checked · {entry.claims.length} accepted · {entry.rejectedClaims ?? 0} rejected</p>
         <p>Question relevance: passed · Evidence support: passed</p>

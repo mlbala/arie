@@ -131,6 +131,35 @@ def source_truth_cases() -> list[EvaluationCase]:
             1,
             ["99%", "guarantee"],
         ),
+        # Overview wordings outside the fixed patterns: the planner must recognize them.
+        EvaluationCase(
+            "describe-paper",
+            "Describe this paper.",
+            rows,
+            ["cedar|gated memory", "68", "local index|workers"],
+            2,
+            ["99%", "guarantee"],
+            expected_task="overview",
+        ),
+        EvaluationCase(
+            "key-contributions",
+            "What are the key contributions?",
+            rows,
+            ["cedar|gated memory"],
+            1,
+            ["99%", "guarantee"],
+            expected_task="overview",
+        ),
+        # "it" must resolve to Cedar from the previous question alone.
+        EvaluationCase(
+            "pronoun-follow-up",
+            "How accurate is it?",
+            rows,
+            ["68"],
+            1,
+            ["99%", "all datasets"],
+            history=(DialogueTurn("What does this paper propose?", ("source-0",)),),
+        ),
         EvaluationCase(
             "comparison",
             "Compare the baseline and Cedar accuracy in the reported benchmark.",
@@ -236,8 +265,11 @@ def score_answer(
         coverage = coverage and bool(
             answer.excerpts and re.search(case.opening_expected, answer.excerpts[0].text, re.I)
         )
-    relevance = answer.answer_relevant
-    reviewed = answer.mode in {"grounded_summary", "reviewed_answer"}
+    # A direct answer that skipped the reviewer (ADR 0008) passed Tier 3 at >= 0.9 instead;
+    # the expected-fact patterns above still check independently that it answers.
+    skipped = answer.mode == "entailed_answer"
+    relevance = answer.answer_relevant or skipped
+    reviewed = answer.mode in {"grounded_summary", "reviewed_answer"} or skipped
     if case.abstain:
         coverage = not answer.excerpts
         reviewed = relevance = True

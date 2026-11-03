@@ -217,12 +217,14 @@ class Parser(Protocol):
 
 
 class Reranker(Protocol):
-    async def rerank(
-        self,
-        ctx: Ctx,
-        query: str,
-        candidates: Sequence[ChunkRow],
-    ) -> list[ChunkRow]: ...
+    """Question-passage relevance scoring; runs only inside arie-worker processes.
+
+    Contract: return one relevance score per passage for ``query``, in input order;
+    higher means more relevant, and scores are compared only within one call. Errors
+    propagate; the caller then keeps its own keyword and vector ranking.
+    """
+
+    async def score(self, ctx: Ctx, query: str, passages: Sequence[str]) -> list[float]: ...
 
 
 class Verifier(Protocol):

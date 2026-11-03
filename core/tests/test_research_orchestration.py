@@ -147,20 +147,25 @@ async def test_general_plans_control_reads_and_require_reviewed_question_coverag
 
 
 @pytest.mark.parametrize(
-    ("question", "task", "planned", "depth"),
+    ("question", "task", "planned", "depth", "overview"),
     [
-        ("What is this paper about?", "overview", "brief", "detailed"),
-        ("Briefly, what is this paper about?", "overview", "detailed", "brief"),
-        ("What were the results and limits?", "results", "brief", "detailed"),
-        ("How is the method trained?", "answer", "standard", "detailed"),
-        ("How many CPU workers are used?", "lookup", "brief", "standard"),
-        ("How does the method work?", "overview", "standard", "detailed"),
-        ("What is this paper about?", "answer", "standard", "detailed"),
+        ("What is this paper about?", "overview", "brief", "detailed", True),
+        ("Briefly, what is this paper about?", "overview", "detailed", "brief", True),
+        ("What were the results and limits?", "results", "brief", "detailed", False),
+        ("How is the method trained?", "answer", "standard", "detailed", False),
+        ("How many CPU workers are used?", "lookup", "brief", "standard", False),
+        # The model decides: its overview label wins over wording no keyword rule knows...
+        ("Walk me through this work.", "overview", "standard", "detailed", True),
+        # ...keyword rules fill in only when its label is broad...
+        ("What is this paper about?", "answer", "standard", "detailed", True),
+        ("What is this paper about?", "synthesis", "standard", "detailed", True),
+        # ...and a specific label from the model wins over a keyword match.
+        ("What is this paper about?", "results", "standard", "detailed", False),
     ],
 )
 @pytest.mark.asyncio
 async def test_depth_fits_overviews_and_required_aspects(
-    question: str, task: str, planned: str, depth: str
+    question: str, task: str, planned: str, depth: str, overview: bool
 ) -> None:
     # Brief allows two claims; three required aspects must never be planned into it.
     aspects = ["contribution", "method", "results"]
@@ -170,7 +175,7 @@ async def test_depth_fits_overviews_and_required_aspects(
     run = await answer_question(context(task), "paper", question, ROWS, cast(LLM, model))
     assert run.planner_status == "model" and run.plan.depth == depth
     assert len(run.plan.aspects) <= run.plan.max_claims
-    assert run.plan.overview == ("what is this paper" in question.lower())
+    assert run.plan.overview == overview
 
 
 @pytest.mark.parametrize(
@@ -245,10 +250,7 @@ async def test_implicit_follow_up_resolves_topic_but_never_accepts_foreign_histo
     assert run.answer.answer_relevant
 
 
-@pytest.mark.parametrize(
-    "bad_fields",
-    [{"paper_id": "foreign"}, {"sections": ["Foreign paper"]}, {"task": "browse_web"}],
-)
+@pytest.mark.parametrize("bad_fields", [{"paper_id": "foreign"}, {"task": "browse_web"}])
 @pytest.mark.asyncio
 async def test_planner_cannot_expand_scope_or_invent_tools(bad_fields: dict[str, object]) -> None:
     plan: dict[str, object] = {
@@ -269,6 +271,33 @@ async def test_planner_cannot_expand_scope_or_invent_tools(bad_fields: dict[str,
     assert run.planner_status != "model" and run.plan.task == "results"
     assert run.answer.answer_relevant and run.answer.model_calls == 3
     assert all(row.paper_id == "paper" for row in run.reading.rows)
+
+
+@pytest.mark.asyncio
+async def test_planner_overreach_is_trimmed_to_the_bound_paper_outline() -> None:
+    # Unknown sections and extra entries are dropped; the rest of the plan is kept.
+    model = PlanningModel(
+        {
+            "task": "results",
+            "depth": "standard",
+            "queries": ["accuracy", "", "Cedar accuracy", "baseline", "documents"],
+            "aspects": ["reported score"],
+            "sections": ["Foreign paper", "Results", "Abstract", "Methods", "Limitations"],
+        },
+        (2,),
+    )
+    run = await answer_question(
+        context("trimmed-plan"),
+        "paper",
+        "What accuracy was observed?",
+        [FOREIGN, *ROWS],
+        cast(LLM, model),
+    )
+    assert run.planner_status == "model"
+    assert run.plan.sections == ("Results", "Abstract", "Methods")
+    assert run.plan.queries == ("accuracy", "Cedar accuracy", "baseline")
+    assert all(row.paper_id == "paper" for row in run.reading.rows)
+    assert "Foreign content" not in " ".join(request.prompt for request in model.requests)
 
 
 @pytest.mark.asyncio

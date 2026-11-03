@@ -38,6 +38,7 @@ from arie_core.search import score_paper
 from arie_worker.embedding import EmbeddingPool
 from arie_worker.entailment import EntailmentPool
 from arie_worker.extraction import ExtractionLimits, ExtractionPool
+from arie_worker.reranking import RerankPool
 
 from arie_api.providers import (
     AUTO_EMBEDDER,
@@ -126,6 +127,15 @@ class ResearchRuntime:
         )
         self.entailment_ready = False
         self.entailment_error = ""
+        rerank_config = dict(cast(dict[str, object], self.config.plugins.get("reranker", {})))
+        self.rerank_name = str(rerank_config.pop("use", "") or "none")
+        self.reranker = (
+            RerankPool(root, self.rerank_name, rerank_config)
+            if self.rerank_name != "none"
+            else None
+        )
+        self.reranker_ready = False
+        self.reranker_error = ""
 
     def apply_embedder(self) -> None:
         """Adopt the embedder resolved from config; a new model re-embeds in the background.
@@ -1171,6 +1181,48 @@ class ResearchRuntime:
             raise RuntimeError("Entailment model is not ready")
         return await self.entailment.score(list(pairs))
 
+    async def warm_reranker(self) -> None:
+        """Load the reranker at startup so the first answer need not download it.
+
+        Until it is ready, answers use keyword and vector order. A failed load is retried
+        every 5 minutes and shown as degraded.
+        """
+        if self.reranker is None:
+            return
+        while not self.reranker_ready:
+            try:
+                await self.reranker.score("ARIE warm-up question", ["Warm-up passage."], 600.0)
+                self.reranker_ready, self.reranker_error = True, ""
+            except Exception as exc:
+                logger.warning("Reranker %s failed to load", self.rerank_name, exc_info=True)
+                self.reranker_error = str(exc) or type(exc).__name__
+                await asyncio.sleep(300.0)
+
+    async def rerank_scores(self, query: str, passages: Sequence[str]) -> Sequence[float]:
+        """Relevance of each passage to ``query``; raises while the model is unavailable."""
+        if self.reranker is None or not self.reranker_ready:
+            raise RuntimeError("Reranker is not ready")
+        return await self.reranker.score(query, list(passages))
+
+    def reranker_status(self) -> Document:
+        """Report whether answers currently choose passages with the reranker."""
+        if self.reranker is None:
+            return {
+                "plugin": "none",
+                "status": "disabled",
+                "detail": "Reranking is off; passages are chosen by keyword and vector search.",
+            }
+        status = "healthy" if self.reranker_ready else "loading"
+        if not self.reranker_ready and self.reranker_error:
+            status = "degraded"
+        detail = {
+            "healthy": "Passages are reranked by relevance to each question.",
+            "loading": "Loading the reranker; passages use keyword and vector order until then.",
+            "degraded": f"Reranker unavailable ({self.reranker_error}); passages use keyword "
+            "and vector order.",
+        }[status]
+        return {"plugin": self.rerank_name, "status": status, "detail": detail}
+
     def entailment_status(self) -> Document:
         """Report whether model-written claims can currently pass Tier 3."""
         if self.entailment is None:
@@ -1273,3 +1325,5 @@ class ResearchRuntime:
             self.embedding.close()
         if self.entailment is not None:
             self.entailment.close()
+        if self.reranker is not None:
+            self.reranker.close()

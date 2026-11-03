@@ -37,6 +37,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_APIClie
         file_storage={"use": "local", "root": str(tmp_path / "papers")},
         embedder={"use": "none"},
         entailment={"use": "none"},
+        reranker={"use": "none"},
         sources=["arxiv"],
     )
     runtime = ResearchRuntime(ROOT, config.model_copy(update={"plugins": plugins}))

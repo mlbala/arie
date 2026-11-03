@@ -80,6 +80,7 @@ def runtime_at(tmp_path: Path) -> ResearchRuntime:
         file_storage={"use": "local", "root": str(tmp_path / "papers")},
         embedder={"use": "none"},
         entailment={"use": "none"},
+        reranker={"use": "none"},
         sources=["arxiv"],
     )
     return ResearchRuntime(ROOT, config.model_copy(update={"plugins": plugins}))

@@ -13,6 +13,7 @@ from arie_core.harness.guardrails import InputDecision, inspect_question
 from arie_core.harness.intent import AnswerPlan, DialogueTurn, plan_answer
 from arie_core.harness.planner import plan_research
 from arie_core.harness.reader import EvidenceChunk, is_untrusted_instruction
+from arie_core.harness.rerank import RerankCheck, rerank_reading
 from arie_core.harness.research import ReadingResult, read_for_answer
 from arie_core.harness.session import ModelSession
 from arie_core.harness.verifier import MIN_ENTAILMENT, EntailmentCheck
@@ -44,14 +45,17 @@ async def answer_question(
     semantic: SemanticSearch | None = None,
     entail: EntailmentCheck | None = None,
     entail_floor: float = MIN_ENTAILMENT,
+    rerank: RerankCheck | None = None,
 ) -> ResearchAnswer:
-    """Coordinate guard → plan → bounded paper reads → synthesis → independent review.
+    """Coordinate guard → plan → bounded paper reads → rerank → synthesis → verification.
 
     Scope and budgets are enforced by code, not delegated to model judgment. The
     caller supplies a 25-second deadline; provider failure retains exact source excerpts.
     ``semantic`` must already be bound to ``paper_id`` (I1); its failure or timeout
     falls back to keyword retrieval. ``entail`` is the Tier 3 entailment model for
     model-written claims; without it, claims rest on Tiers 1-2 and the model reviewer.
+    ``rerank`` is the cross-encoder that picks the final passages from the keyword and
+    vector candidates; its failure or timeout keeps the keyword/vector choice.
     """
     guard = inspect_question(question)
     if not guard.allowed:
@@ -78,6 +82,8 @@ async def answer_question(
     )
     ranked = await _semantic_ranking(ctx, semantic, (plan.question, *plan.queries))
     reading = read_for_answer(ctx, paper_id, plan, scoped, ranked)
+    if rerank is not None:
+        reading = await rerank_reading(ctx, paper_id, plan, reading, rerank)
     answer = await compose_answer(
         ctx,
         paper_id,

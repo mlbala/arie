@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, Database, HardDrive, Layers3, ShieldCheck, Trash2, X } from "lucide-react";
+import { Activity, Database, HardDrive, Layers3, ListOrdered, ShieldCheck, Trash2, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { deletePaper, getStorageHealth, type PaperSummary } from "../api/client";
 
@@ -46,6 +46,10 @@ export function StorageHealth() {
             {data?.entailment && <article><div><ShieldCheck size={14} /><strong>Claim checker</strong><span className={`health-pill ${data.entailment.status}`}>{data.entailment.status}</span></div>
               <p>{data.entailment.plugin} · Tier 3 entailment</p>
               <small>{data.entailment.detail}</small>
+            </article>}
+            {data?.reranker && <article><div><ListOrdered size={14} /><strong>Passage reranker</strong><span className={`health-pill ${data.reranker.status}`}>{data.reranker.status}</span></div>
+              <p>{data.reranker.plugin} · question relevance</p>
+              <small>{data.reranker.detail}</small>
             </article>}
             <article><div><HardDrive size={14} /><strong>PDF storage</strong><span className={`health-pill ${data?.file_storage.status ?? "unknown"}`}>{data?.file_storage.status ?? "Checking"}</span></div>
               <p>{data?.file_storage.provider ?? "—"} · {bytes(data?.file_storage.size_bytes)}{data?.file_storage.status === "partial" ? " (partial)" : ""}</p>

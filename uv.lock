@@ -12,11 +12,9 @@ resolution-markers = [
 members = [
     "arie-api",
     "arie-core",
-    "arie-db-postgres",
     "arie-db-sqlite",
     "arie-embed-gemini",
     "arie-embed-openai",
-    "arie-files-s3",
     "arie-llm-deepseek",
     "arie-llm-gemini",
     "arie-llm-openai-compatible",
@@ -26,13 +24,12 @@ members = [
     "arie-plugin-files-local",
     "arie-plugin-parser-docling",
     "arie-plugin-parser-pymupdf4llm",
+    "arie-plugin-rerank-onnx",
     "arie-plugin-source-arxiv",
     "arie-plugin-source-deepmind",
     "arie-plugin-source-openreview",
     "arie-plugin-vector-exact",
     "arie-sdk",
-    "arie-vector-pgvector",
-    "arie-vector-qdrant",
     "arie-worker",
     "arie-workspace",
 ]
@@ -124,21 +121,6 @@ requires-dist = [
 ]
 
 [[package]]
-name = "arie-db-postgres"
-version = "0.1.0"
-source = { editable = "plugins/db-postgres" }
-dependencies = [
-    { name = "arie-core" },
-    { name = "arie-db-sqlite" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "arie-core", editable = "core" },
-    { name = "arie-db-sqlite", editable = "plugins/db-sqlite" },
-]
-
-[[package]]
 name = "arie-db-sqlite"
 version = "0.1.0"
 source = { editable = "plugins/db-sqlite" }
@@ -177,21 +159,6 @@ dependencies = [
 requires-dist = [
     { name = "arie-core", editable = "core" },
     { name = "httpx", specifier = ">=0.28.0" },
-]
-
-[[package]]
-name = "arie-files-s3"
-version = "0.1.0"
-source = { editable = "plugins/files-s3" }
-dependencies = [
-    { name = "arie-core" },
-    { name = "arie-plugin-files-local" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "arie-core", editable = "core" },
-    { name = "arie-plugin-files-local", editable = "plugins/files-local" },
 ]
 
 [[package]]
@@ -336,6 +303,27 @@ requires-dist = [
 ]
 
 [[package]]
+name = "arie-plugin-rerank-onnx"
+version = "0.1.0"
+source = { editable = "plugins/rerank-onnx" }
+dependencies = [
+    { name = "arie-core" },
+    { name = "huggingface-hub" },
+    { name = "numpy" },
+    { name = "onnxruntime" },
+    { name = "tokenizers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "arie-core", editable = "core" },
+    { name = "huggingface-hub", specifier = ">=0.24" },
+    { name = "numpy", specifier = ">=2.0" },
+    { name = "onnxruntime", specifier = ">=1.20" },
+    { name = "tokenizers", specifier = ">=0.20" },
+]
+
+[[package]]
 name = "arie-plugin-source-arxiv"
 version = "0.1.0"
 source = { editable = "plugins/source-arxiv" }
@@ -401,42 +389,13 @@ version = "0.1.0"
 source = { editable = "sdk" }
 
 [[package]]
-name = "arie-vector-pgvector"
-version = "0.1.0"
-source = { editable = "plugins/vector-pgvector" }
-dependencies = [
-    { name = "arie-core" },
-    { name = "numpy" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "arie-core", editable = "core" },
-    { name = "numpy", specifier = ">=2.1.0" },
-]
-
-[[package]]
-name = "arie-vector-qdrant"
-version = "0.1.0"
-source = { editable = "plugins/vector-qdrant" }
-dependencies = [
-    { name = "arie-core" },
-    { name = "numpy" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "arie-core", editable = "core" },
-    { name = "numpy", specifier = ">=2.1.0" },
-]
-
-[[package]]
 name = "arie-worker"
 version = "0.1.0"
 source = { editable = "worker" }
 dependencies = [
     { name = "arie-core" },
     { name = "psutil" },
+    { name = "pydantic" },
     { name = "types-psutil" },
 ]
 
@@ -444,6 +403,7 @@ dependencies = [
 requires-dist = [
     { name = "arie-core", editable = "core" },
     { name = "psutil", specifier = ">=7.0.0" },
+    { name = "pydantic", specifier = ">=2.10.0" },
     { name = "types-psutil", specifier = ">=7.0.0" },
 ]
 
@@ -462,6 +422,7 @@ dependencies = [
     { name = "arie-plugin-entail-nli-onnx" },
     { name = "arie-plugin-files-local" },
     { name = "arie-plugin-parser-pymupdf4llm" },
+    { name = "arie-plugin-rerank-onnx" },
     { name = "arie-plugin-source-arxiv" },
     { name = "arie-plugin-source-deepmind" },
     { name = "arie-plugin-vector-exact" },
@@ -506,6 +467,7 @@ requires-dist = [
     { name = "arie-plugin-files-local", editable = "plugins/files-local" },
     { name = "arie-plugin-parser-docling", marker = "extra == 'docling'", editable = "plugins/parser-docling" },
     { name = "arie-plugin-parser-pymupdf4llm", editable = "plugins/parser-pymupdf4llm" },
+    { name = "arie-plugin-rerank-onnx", editable = "plugins/rerank-onnx" },
     { name = "arie-plugin-source-arxiv", editable = "plugins/source-arxiv" },
     { name = "arie-plugin-source-deepmind", editable = "plugins/source-deepmind" },
     { name = "arie-plugin-vector-exact", editable = "plugins/vector-exact" },

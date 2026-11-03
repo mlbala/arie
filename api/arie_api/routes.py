@@ -102,6 +102,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
             imports = group.create_task(supervised(service.run_imports)())
             vectors = group.create_task(supervised(service.run_vector_index)())
             entailment = group.create_task(supervised(service.warm_entailment)())
+            reranker = group.create_task(supervised(service.warm_reranker)())
             lag = EventLoopLagMonitor(
                 threshold_ms=service.config.runtime_qos.slow_callback_threshold_ms
             )
@@ -109,7 +110,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
             try:
                 yield
             finally:
-                for task in (worker, imports, vectors, entailment, lag_monitor):
+                for task in (worker, imports, vectors, entailment, reranker, lag_monitor):
                     task.cancel()
                 service.close()
 
@@ -238,6 +239,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
                         semantic=semantic,
                         entail=runtime.entailment_scores if runtime.entailment else None,
                         entail_floor=runtime.entail_floor,
+                        rerank=runtime.rerank_scores if runtime.reranker else None,
                     )
                     plan, reading, result = run.plan, run.reading, run.answer
                     excerpts = result.excerpts
@@ -272,6 +274,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
                             "depth": plan.depth,
                             "follow_up": plan.follow_up,
                             "reading_steps": list(reading.actions),
+                            "reranked": reading.reranked,
                             "model_calls": result.model_calls,
                             "reviewed_claims": result.reviewed_claims,
                             "rejected_claims": result.rejected_claims,
@@ -482,6 +485,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
             "file_storage",
             "parser",
             "entailment",
+            "reranker",
         ]
         return {
             "plugins": [

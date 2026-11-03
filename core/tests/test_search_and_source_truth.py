@@ -25,6 +25,7 @@ def runtime_at(tmp_path: Path) -> ResearchRuntime:
         file_storage={"use": "local", "root": str(tmp_path / "papers")},
         embedder={"use": "none"},
         entailment={"use": "none"},
+        reranker={"use": "none"},
     )
     return ResearchRuntime(ROOT, config.model_copy(update={"plugins": plugins}))
 
@@ -177,7 +178,10 @@ async def test_tier_3_entailment_marks_claims_that_reach_the_reviewer() -> None:
     )
     assert result.mode == "grounded_summary"
     assert result.excerpts[0].checks == ("tier_1", "llm_review", "tier_3_entailment")
-    assert seen == [(SOURCE.split(". ")[0] + ".", text)]
+    # The premise is the quote in the third person: "We propose" -> "The authors propose".
+    quote = SOURCE.split(". ")[0] + "."
+    assert quote.startswith("We propose")
+    assert seen == [(quote.replace("We propose", "The authors propose", 1), text)]
 
 
 @pytest.mark.parametrize(
