@@ -77,6 +77,9 @@ STOP = frozenset(
         "would",
         "they",
         "them",
+        "discussed",
+        "mentioned",
+        "described",
     ]
 )
 OVERVIEW = re.compile(
@@ -171,20 +174,26 @@ def _overview_score(row: EvidenceChunk) -> int:
     return base + (8 if finding else 0)
 
 
+def eligible(question: str, rows: Sequence[EvidenceChunk]) -> list[EvidenceChunk]:
+    """Drop contributor notes and bibliography unless the question asks about authors."""
+    if re.search(r"\b(?:who|authors?|contributors?)\b", question, re.I):
+        return list(rows)
+    return [
+        row
+        for row in rows
+        if not re.search(
+            r"equal contribution|listing order is random|work performed while",
+            row.text,
+            re.I,
+        )
+        and not re.search(r"author contributions|acknowledg|references", row.section, re.I)
+    ]
+
+
 def retrieve(paper_id: str, question: str, rows: Sequence[EvidenceChunk]) -> list[EvidenceChunk]:
     """Retrieve within the bound paper; route overviews to narrative sections."""
     scoped = annotate_sections([row for row in rows if row.paper_id == paper_id])
-    if not re.search(r"\b(?:who|authors?|contributors?)\b", question, re.I):
-        scoped = [
-            row
-            for row in scoped
-            if not re.search(
-                r"equal contribution|listing order is random|work performed while",
-                row.text,
-                re.I,
-            )
-            and not re.search(r"author contributions|acknowledg|references", row.section, re.I)
-        ]
+    scoped = eligible(question, scoped)
     if is_overview(question):
         ranked = sorted(scoped, key=_overview_score, reverse=True)
         selected: list[EvidenceChunk] = []
@@ -212,7 +221,7 @@ def retrieve(paper_id: str, question: str, rows: Sequence[EvidenceChunk]) -> lis
     elif terms & {"result", "results", "findings", "performance", "evaluation"}:
         route = "result|experiment|evaluation"
     elif terms & {"limitations", "limitation", "weakness", "weaknesses"}:
-        route = "limitation|discussion"
+        route = "limitation|discussion|conclu|future work"
     scored: list[tuple[int, EvidenceChunk]] = []
     for row in scoped:
         overlap = len(terms & query_terms(row.text))
@@ -376,10 +385,8 @@ def _fallback(
             for existing in selected
         ):
             continue
-        if (
-            sum(len(item.encode("utf-8")) for item in selected) + len(quote.encode("utf-8"))
-            > max_bytes
-        ):
+        # Budget the rendered size, as verification does: attribution rewrites lengthen quotes.
+        if sum(map(_rendered_bytes, selected)) + _rendered_bytes(quote) > max_bytes:
             continue
         selected.append(quote)
         if len(selected) == max_quotes:
@@ -418,8 +425,17 @@ def locate_quote(text: str, quote: str) -> tuple[int, int] | None:
     return offsets[start], offsets[start + len(needle) - 1] + 1
 
 
+def _plain_text(quote: str) -> str:
+    """Drop PDF Markdown emphasis for display; the cited quote keeps the exact saved text."""
+    # Acronym expansions arrive as "**_A_** _lign_" or "**M** utual"; rejoin initial and word.
+    text = re.sub(r"\*\*_?([A-Za-z])_?\*\*\s*(_?)(?=[a-z])", r"\2\1", quote)
+    text = re.sub(r"\*\*|(?<!\w)_|_(?!\w)", "", text)
+    return re.sub(r"\(\s+", "(", re.sub(r"\s+([),.;:])", r"\1", text))
+
+
 def _answer_text(quote: str) -> str:
     # Fixed attribution changes keep every factual word, number, and negation from the source.
+    quote = _plain_text(quote)
     for verb, reported in (
         ("propose", "proposes"),
         ("introduce", "introduces"),
@@ -433,6 +449,10 @@ def _answer_text(quote: str) -> str:
     if re.match(r"^We (?:evaluated|compared|investigated|examined)\b", quote):
         return re.sub(r"^We ", "The study ", quote, count=1)
     return quote
+
+
+def _rendered_bytes(quote: str) -> int:
+    return max(len(quote.encode("utf-8")), len(_answer_text(quote).encode("utf-8")))
 
 
 async def select_excerpts(
@@ -528,7 +548,7 @@ async def select_excerpts(
                 claim = Claim(text, [evidence])
                 if not EvidenceVerifier().verify(claim, chunk_text=row.text):
                     continue
-                size = max(len(quote.encode("utf-8")), len(text.encode("utf-8")))
+                size = _rendered_bytes(quote)
                 if output_bytes + size > min(700, max_bytes):
                     break
                 results.append(

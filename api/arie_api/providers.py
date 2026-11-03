@@ -18,12 +18,144 @@ from arie_core.budget import BudgetHandle
 from arie_core.plugin_api import LLM, LLMRequest, configured_api_key
 from arie_core.registry.manager import ArieConfig, LLMProviderConfig, RegistryManager
 
+
+def config_path(root: Path) -> Path:
+    """Return the active arie.yaml: ``ARIE_CONFIG`` when set, else ``root / "arie.yaml"``.
+
+    Saves replace the file atomically through a sibling temporary file, so its directory
+    must be writable (containers mount a directory here, never the file itself).
+    """
+    override = os.getenv("ARIE_CONFIG")
+    return Path(override) if override else root / "arie.yaml"
+
+
+# ARIE ships on DeepSeek; other providers work once the customer adds their own key.
+DEFAULT_LLM = "deepseek"
+
 _LABELS = {
     "openai": "OpenAI",
     "gemini": "Gemini",
     "deepseek": "DeepSeek",
     "openai-compatible": "OpenAI-compatible",
 }
+
+
+def save_plugin_selection(root: Path, slot: str, selection: dict[str, object]) -> None:
+    """Atomically rewrite one ``plugins.<slot>`` entry, keeping other lines and comments.
+
+    A one-line entry is replaced in place with its trailing comment; otherwise the whole
+    ``plugins`` block is re-serialized. The result must validate as ``ArieConfig``.
+    """
+    path = config_path(root)
+    original = path.read_text(encoding="utf-8")
+    flow = yaml.safe_dump(selection, default_flow_style=True, sort_keys=False).strip()
+    changed, count = re.subn(
+        rf"(?m)^([ \t]+){re.escape(slot)}:[ \t]*\{{[^\n#]*\}}([ \t]*#[^\n]*)?$",
+        lambda match: f"{match[1]}{slot}: {flow}{match[2] or ''}",
+        original,
+        count=1,
+    )
+    if not count:
+        loaded = cast(dict[str, object], yaml.safe_load(original))
+        plugins = dict(cast(dict[str, object], loaded.get("plugins", {})))
+        plugins[slot] = selection
+        block = yaml.safe_dump({"plugins": plugins}, sort_keys=False)
+        changed, count = re.subn(
+            r"(?m)^plugins:[^\n]*\n(?:(?:[ \t]+[^\n]*|[ \t]*)\n)*",
+            lambda _: block,
+            original,
+            count=1,
+        )
+        if not count:
+            changed = original.rstrip() + "\n" + block
+    ArieConfig.model_validate(yaml.safe_load(changed))
+    descriptor, temporary = tempfile.mkstemp(prefix=".arie-", suffix=".yaml", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(changed)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+AUTO_EMBEDDER = "auto"
+# Model providers without an embeddings API keep the local embedder in automatic mode.
+_EMBEDDING_LABELS = {"fastembed": "FastEmbed (local)", "openai": "OpenAI", "gemini": "Gemini"}
+
+
+@dataclass(frozen=True)
+class EmbedderChoice:
+    name: str
+    settings: dict[str, object]
+    min_score: float
+    reason: str
+
+
+def embedding_key_configured(name: str, config: ArieConfig) -> bool:
+    profile = config.embedding_providers.get(name)
+    if profile is None or profile.api_key_env is None:
+        return True
+    key = configured_api_key(os.getenv(profile.api_key_env))
+    if not key and profile.api_key_env == "GEMINI_API_KEY":
+        key = configured_api_key(os.getenv("GOOGLE_API_KEY"))
+    return bool(key)
+
+
+def resolve_embedder(config: ArieConfig) -> EmbedderChoice | None:
+    """Resolve the effective embedder; ``None`` turns vector search off.
+
+    ``auto`` follows the active model provider when it offers embeddings and its key is
+    set, else uses local FastEmbed. A named embedder is used as configured.
+    """
+    configured = dict(cast(dict[str, object], config.plugins.get("embedder", {})))
+    choice = str(configured.pop("use", "") or "none")
+    if choice == "none":
+        return None
+    if choice != AUTO_EMBEDDER:
+        profile = config.embedding_providers.get(choice)
+        floor = configured.pop("min_score", profile.min_score if profile else 0.6)
+        if profile is not None:
+            configured.setdefault("model", profile.model)
+        return EmbedderChoice(choice, configured, float(cast(float, floor)), "Selected in Settings")
+    llm = str(cast(dict[str, object], config.plugins.get("llm", {})).get("use") or DEFAULT_LLM)
+    label = _LABELS.get(llm, llm)
+    if llm in config.embedding_providers and llm != "fastembed":
+        if embedding_key_configured(llm, config):
+            name, reason = llm, f"Following the {label} model provider"
+        else:
+            env = config.embedding_providers[llm].api_key_env
+            name, reason = "fastembed", f"{env} is not set, so local FastEmbed is used"
+    else:
+        name, reason = "fastembed", f"{label} has no embeddings API, so local FastEmbed is used"
+    profile = config.embedding_providers["fastembed" if name == "fastembed" else llm]
+    return EmbedderChoice(name, {"model": profile.model}, profile.min_score, reason)
+
+
+def embedder_options(config: ArieConfig, available: list[str]) -> list[dict[str, object]]:
+    """Describe automatic mode plus each installed embedder and its key presence."""
+    options: list[dict[str, object]] = [
+        {
+            "name": AUTO_EMBEDDER,
+            "label": "Automatic: match the model provider",
+            "model": "",
+            "key_env": None,
+            "key_configured": True,
+        }
+    ]
+    for name in available:
+        profile = config.embedding_providers.get(name)
+        options.append(
+            {
+                "name": name,
+                "label": _EMBEDDING_LABELS.get(name, name),
+                "model": profile.model if profile else "",
+                "key_env": profile.api_key_env if profile else None,
+                "key_configured": embedding_key_configured(name, config),
+            }
+        )
+    return options
 
 
 @dataclass(frozen=True)
@@ -56,7 +188,7 @@ class LLMProviders:
 
     def profile(self, name: str) -> LLMProviderConfig:
         if name == "openai-compatible" and name not in self.config.llm_providers:
-            return LLMProviderConfig(model="gpt-4.1-mini", api_key_env="OPENAI_API_KEY")
+            return LLMProviderConfig(model="gpt-5.4-mini", api_key_env="OPENAI_API_KEY")
         if name not in self.config.llm_providers:
             raise ValueError(f"No LLM defaults are configured for {name!r}")
         return self.config.llm_providers[name]
@@ -109,6 +241,7 @@ class LLMProviders:
         return {
             "name": name,
             "label": _LABELS.get(name, name),
+            "default": name == DEFAULT_LLM,
             "model": settings["model"],
             "key_env": key_env,
             "key_configured": configured,
@@ -193,36 +326,8 @@ class LLMProviders:
         settings = self.settings(name, changes)
         selection = {"use": name, "model": settings["model"]}
 
-        def save() -> None:
-            path = self.root / "arie.yaml"
-            original = path.read_text(encoding="utf-8")
-            loaded = cast(dict[str, object], yaml.safe_load(original))
-            plugins = dict(cast(dict[str, object], loaded.get("plugins", {})))
-            plugins["llm"] = selection
-            block = yaml.safe_dump({"plugins": plugins}, sort_keys=False)
-            changed, count = re.subn(
-                r"(?m)^plugins:[^\n]*\n(?:(?:[ \t]+[^\n]*|[ \t]*)\n)*",
-                lambda _: block,
-                original,
-                count=1,
-            )
-            if not count:
-                changed = original.rstrip() + "\n" + block
-            ArieConfig.model_validate(yaml.safe_load(changed))
-            descriptor, temporary = tempfile.mkstemp(
-                prefix=".arie-", suffix=".yaml", dir=path.parent
-            )
-            try:
-                with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                    handle.write(changed)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                os.replace(temporary, path)
-            finally:
-                Path(temporary).unlink(missing_ok=True)
-
         async with self.lock:
-            await asyncio.to_thread(save)
+            await asyncio.to_thread(save_plugin_selection, self.root, "llm", selection)
             self.manager.activate_plugin("llm", name, instance)
             self.config.plugins["llm"] = selection
         return {"slot": "llm", "plugin": name, "config": selection}

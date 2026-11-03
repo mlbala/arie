@@ -13,6 +13,7 @@ from arie_core.harness.guardrails import inspect_question
 from arie_core.harness.intent import DialogueTurn
 from arie_core.harness.orchestrator import answer_question
 from arie_core.harness.reader import EvidenceChunk
+from arie_core.harness.session import ModelSession
 from arie_core.plugin_api import LLM, Ctx
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -135,7 +136,7 @@ async def test_general_plans_control_reads_and_require_reviewed_question_coverag
     assert [item.quote for item in run.answer.excerpts] == [FACTS[i][1] for i in sources]
     assert 1 <= len(run.reading.actions) <= 3 and run.answer.model_calls == 3
     assert sum(request.max_output_tokens for request in model.requests) == 700
-    assert run.answer.input_bytes <= 12000 and run.answer.output_tokens <= 700
+    assert run.answer.input_tokens <= 12000 and run.answer.output_tokens <= 700
     assert all(row.paper_id == "paper" for row in run.reading.rows)
     for request in model.requests:
         assert not request.tools and "Foreign content" not in request.prompt
@@ -143,6 +144,33 @@ async def test_general_plans_control_reads_and_require_reviewed_question_coverag
     for item in run.answer.excerpts:
         row = next(row for row in ROWS if row.chunk_id == item.chunk_id)
         assert row.text[item.char_start - 10 : item.char_end - 10] == item.quote
+
+
+@pytest.mark.parametrize(
+    ("question", "task", "planned", "depth"),
+    [
+        ("What is this paper about?", "overview", "brief", "detailed"),
+        ("Briefly, what is this paper about?", "overview", "detailed", "brief"),
+        ("What were the results and limits?", "results", "brief", "detailed"),
+        ("How is the method trained?", "answer", "standard", "detailed"),
+        ("How many CPU workers are used?", "lookup", "brief", "standard"),
+        ("How does the method work?", "overview", "standard", "detailed"),
+        ("What is this paper about?", "answer", "standard", "detailed"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_depth_fits_overviews_and_required_aspects(
+    question: str, task: str, planned: str, depth: str
+) -> None:
+    # Brief allows two claims; three required aspects must never be planned into it.
+    aspects = ["contribution", "method", "results"]
+    model = PlanningModel(
+        {"task": task, "depth": planned, "queries": ["Cedar"], "aspects": aspects}, (0, 1, 2)
+    )
+    run = await answer_question(context(task), "paper", question, ROWS, cast(LLM, model))
+    assert run.planner_status == "model" and run.plan.depth == depth
+    assert len(run.plan.aspects) <= run.plan.max_claims
+    assert run.plan.overview == ("what is this paper" in question.lower())
 
 
 @pytest.mark.parametrize(
@@ -328,3 +356,29 @@ def test_evaluation_checks_task_and_guardrail_outcomes_independently() -> None:
     assert score_answer(case, result, tool_calls=0, guardrail="instruction_override").passed
     assert not score_answer(case, result, tool_calls=0).passed
     assert msgspec.json.encode(case)
+
+
+class CountedModel:
+    """Report a fixed provider prompt-token count for every call."""
+
+    def __init__(self, prompt_tokens: int) -> None:
+        self.prompt_tokens = prompt_tokens
+
+    async def complete(self, ctx: Ctx, request: LLMRequest) -> LLMResponse:
+        del ctx, request
+        return LLMResponse("{}", TokenUsage(prompt=self.prompt_tokens, completion=1))
+
+
+@pytest.mark.asyncio
+async def test_input_budget_uses_estimates_then_provider_token_counts() -> None:
+    session = ModelSession(context("tokens"), cast(LLM, CountedModel(500)))
+    await session.call("system", {"text": "x" * 3000}, 10, 5.0)
+    assert session.input_tokens == 500  # the ~1,010-token estimate is corrected down
+    over = ModelSession(context("over"), cast(LLM, CountedModel(12_001)))
+    with pytest.raises(ValueError, match="12,000-token"):
+        await over.call("system", {"text": "x"}, 10, 5.0)
+    huge = CountedModel(1)
+    with pytest.raises(ValueError, match="budget exhausted"):
+        await ModelSession(context("huge"), cast(LLM, huge)).call(
+            "system", {"text": "x" * 36_010}, 10, 5.0
+        )

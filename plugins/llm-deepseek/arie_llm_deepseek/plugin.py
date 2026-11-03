@@ -25,7 +25,7 @@ class DeepSeekLLM:
     def __init__(
         self,
         *,
-        model: str = "deepseek-chat",
+        model: str = "deepseek-flash",
         base_url: str | None = None,
         api_key: str | None = None,
     ) -> None:
@@ -60,6 +60,8 @@ class DeepSeekLLM:
                         "max_tokens": min(700, request.max_output_tokens),
                         "response_format": {"type": "json_object"},
                         "temperature": 0,
+                        # Hidden reasoning would spend the bounded output budget (I3).
+                        "thinking": {"type": "disabled"},
                     },
                 )
                 response.raise_for_status()

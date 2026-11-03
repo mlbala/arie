@@ -16,12 +16,15 @@ from arie_core.contracts import (
     ChunkRow,
     Claim,
     Evidence,
+    Hit,
     LLMDelta,
     LLMRequest,
     LLMResponse,
     ParsedDoc,
     TokenUsage,
     ToolCall,
+    VectorRow,
+    VectorStats,
 )
 
 T = TypeVar("T")
@@ -138,19 +141,43 @@ class LLM(Protocol):
 
 
 class Embedder(Protocol):
+    """Turn text into fixed-width vectors; runs only inside arie-worker processes.
+
+    Contract: return exactly one vector per input text, in input order, all with the
+    same dimension for a given configured model. Errors propagate to the caller, which
+    keeps the paper keyword-searchable and retries indexing later.
+    """
+
     async def embed(self, ctx: Ctx, texts: Sequence[str]) -> list[list[float]]: ...
 
 
 class VectorStore(Protocol):
-    async def upsert(self, ctx: Ctx, rows: Sequence[object]) -> None: ...
+    """Paper-scoped vector index; bring your own by registering ``@plugin(slot="vector_store")``.
+
+    Every ``VectorRow`` carries ``metadata["paper_id"]`` and ``metadata["model"]`` (the
+    embedder identity). Contract, checked by ``contract_tests/test_vector_store_contract.py``:
+
+    - ``upsert`` replaces rows by ``id``; a row missing ``paper_id`` or ``model`` raises
+      ``ValueError``, and a failed batch must not leave a partial write.
+    - ``search`` returns at most ``k`` hits by descending cosine similarity, only rows whose
+      metadata equals every ``filters`` item, with that metadata echoed in ``Hit.payload``.
+    - ``delete`` removes every row matching all ``filters`` (at least ``paper_id``).
+    - ``stats`` reports the total row count and, when measurable, bytes on disk.
+
+    Core still post-filters hits by ``paper_id`` (I1), so a faulty store cannot mix papers.
+    """
+
+    async def upsert(self, ctx: Ctx, rows: Sequence[VectorRow]) -> None: ...
     async def search(
         self,
         ctx: Ctx,
         query: Sequence[float],
         k: int,
         *,
-        filters: Mapping[str, str] | None = None,
-    ) -> list[object]: ...
+        filters: Mapping[str, str],
+    ) -> list[Hit]: ...
+    async def delete(self, ctx: Ctx, *, filters: Mapping[str, str]) -> None: ...
+    async def stats(self, ctx: Ctx) -> VectorStats: ...
 
 
 class Database(Protocol):
@@ -200,6 +227,18 @@ class Reranker(Protocol):
 
 class Verifier(Protocol):
     async def verify(self, ctx: Ctx, claim: Claim) -> bool: ...
+
+
+class Entailment(Protocol):
+    """Tier 3 of the quote verifier; runs only inside arie-worker processes.
+
+    Contract: for each ``(premise, hypothesis)`` pair return the probability in [0, 1]
+    that the premise (an exact source quote) entails the hypothesis (a drafted claim),
+    one score per pair in input order. Errors propagate; the caller then abstains to
+    source excerpts rather than showing unverified claims (I2).
+    """
+
+    async def score(self, ctx: Ctx, pairs: Sequence[tuple[str, str]]) -> list[float]: ...
 
 
 class Feature(Protocol):
@@ -361,6 +400,7 @@ __all__ = [
     "configured_api_key",
     "Database",
     "Embedder",
+    "Entailment",
     "Evidence",
     "Feature",
     "FileStorage",

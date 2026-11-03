@@ -1,0 +1,36 @@
+# Development overlay: live-reload API source and the Vite dev server.
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+services:
+  api:
+    command:
+      - uvicorn
+      - arie_api.routes:app
+      - --host=0.0.0.0
+      - --port=8000
+      - --loop=uvloop
+      - --reload
+      - --reload-dir=/app/api
+      - --reload-dir=/app/core
+      - --reload-dir=/app/worker
+      - --reload-dir=/app/plugins
+    volumes:
+      - arie-data:/app/data
+      - ./api/arie_api:/app/api/arie_api:ro
+      - ./core/arie_core:/app/core/arie_core:ro
+      - ./worker/arie_worker:/app/worker/arie_worker:ro
+      - ./plugins:/app/plugins:ro
+      - ./prompts:/app/prompts:ro
+
+  web:
+    build:
+      target: web-build
+    image: arie-web:dev
+    command: ["npx", "vite", "--host", "0.0.0.0", "--port", "80"]
+    environment:
+      VITE_API_PROXY: http://api:8000
+    volumes:
+      - ./web/src:/web/src:ro
+      - ./web/public:/web/public:ro
+      - ./web/index.html:/web/index.html:ro
+    healthcheck:
+      disable: true

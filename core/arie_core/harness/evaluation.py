@@ -244,7 +244,7 @@ def score_answer(
     bounded = (
         answer.model_calls <= min(3, tool_calls + 2)
         and tool_calls <= 3
-        and answer.input_bytes <= 12000
+        and answer.input_tokens <= 12000
         and answer.output_tokens <= 700
     )
     return EvaluationScore(

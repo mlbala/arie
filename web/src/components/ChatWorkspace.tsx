@@ -10,8 +10,9 @@ import {
   ShieldCheck,
   Sparkles,
   Square,
+  X,
 } from "lucide-react";
-import { apiUrl, type CitationRange, type PaperSummary } from "../api/client";
+import { apiUrl, getChat, type CitationRange, type PaperSummary } from "../api/client";
 
 export interface ChatProgress {
   stage: string;
@@ -21,6 +22,8 @@ interface ChatWorkspaceProps {
   papers: PaperSummary[];
   activePaperId: string | null;
   onSelectPaper: (paperId: string) => void;
+  /** Unpin a paper from the top pane; the parent shifts it into sidebar history. */
+  onClosePaper: (paperId: string) => void;
   onCitation: (citation: CitationRange) => void;
   onProgress?: (paperId: string, progress: ChatProgress) => void;
 }
@@ -56,6 +59,7 @@ export function ChatWorkspace({
   papers,
   activePaperId,
   onSelectPaper,
+  onClosePaper,
   onCitation,
   onProgress,
 }: ChatWorkspaceProps) {
@@ -79,21 +83,33 @@ export function ChatWorkspace({
   };
   return (
     <section className="research-chat" aria-label="Grounded paper Q&A">
-      {papers.length > 1 && (
+      {papers.length > 0 && (
         <nav
           className="conversation-tabs"
-          aria-label="Recent paper conversations"
+          aria-label="Active paper conversations"
         >
-          {papers.slice(0, 5).map((paper) => (
-            <button
+          {papers.map((paper) => (
+            <div
               key={paper.id}
-              title={paper.title}
-              aria-current={paper.id === activePaperId ? "page" : undefined}
-              onClick={() => onSelectPaper(paper.id)}
+              className={`conversation-tab${paper.id === activePaperId ? " active" : ""}`}
             >
-              <FileText size={12} />
-              <span>{paper.title}</span>
-            </button>
+              <button
+                title={paper.title}
+                aria-current={paper.id === activePaperId ? "page" : undefined}
+                onClick={() => onSelectPaper(paper.id)}
+              >
+                <FileText size={12} />
+                <span>{paper.title}</span>
+              </button>
+              <button
+                className="conversation-tab-close"
+                aria-label={`Close ${paper.title}`}
+                title="Close conversation"
+                onClick={() => onClosePaper(paper.id)}
+              >
+                <X size={11} />
+              </button>
+            </div>
           ))}
         </nav>
       )}
@@ -129,7 +145,7 @@ export function ChatWorkspace({
           </p>
         </div>
       ) : (
-        papers.slice(0, 5).map((paper) => (
+        papers.map((paper) => (
           <Activity
             key={`${paper.id}:${paper.revision ?? ""}`}
             mode={paper.id === activePaperId ? "visible" : "hidden"}
@@ -173,6 +189,18 @@ function ChatPanel({
     logEnd.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
   }, [entries, status]);
   useEffect(() => () => controllerRef.current?.abort(), []);
+  // Restore this paper's saved turns, replayed through the same event handling as live answers.
+  useEffect(() => {
+    const controller = new AbortController();
+    getChat(paper.id, controller.signal).then(({ turns }) => {
+      const restored = turns.map((turn, index) => turn.events
+        .filter(({ data }) => data.paper_id === paper.id)
+        .reduce<ChatEntry>((entry, { event, data }) => applyAnswerEvent(entry, event, data),
+          { id: `saved-${index}`, question: turn.question, claims: [] }));
+      if (restored.length) setEntries((current) => [...restored, ...current]);
+    }).catch(() => { /* Without saved history the chat simply starts empty. */ });
+    return () => controller.abort();
+  }, [paper.id]);
   const ready = ["INDEXED", "BRIEFED"].includes(paper.status);
 
   const submitQuestion = async (suggestion?: string) => {
@@ -242,48 +270,15 @@ function ChatPanel({
           if (parsed.paper_id !== paper.id) continue;
           if (kind === "progress" && typeof parsed.status === "string")
             report(parsed.status, String(parsed.message ?? parsed.status));
-          if (kind === "claim" && parsed.verified === true) {
-            const claim = normalizeClaim(parsed.claim);
-            if (claim)
-              setEntries((current) =>
-                current.map((entry) =>
-                  entry.id === id
-                    ? { ...entry, claims: [...entry.claims, claim] }
-                    : entry,
-                ),
-              );
-          }
-          if (kind === "answer")
-            patchEntry({
-              mode: String(parsed.mode ?? ""),
-              heading: String(parsed.heading ?? "Answer"),
-              contextQuestion: typeof parsed.context_question === "string" ? parsed.context_question.slice(0, 700) : prompt,
-              reviewedClaims: typeof parsed.evaluation === "object" && parsed.evaluation !== null
-                && "reviewed_claims" in parsed.evaluation
-                ? Number(parsed.evaluation.reviewed_claims) : 0,
-              rejectedClaims: typeof parsed.evaluation === "object" && parsed.evaluation !== null
-                && "rejected_claims" in parsed.evaluation ? Number(parsed.evaluation.rejected_claims) : 0,
-              answerRelevant: typeof parsed.evaluation === "object" && parsed.evaluation !== null
-                && "answer_relevant" in parsed.evaluation && parsed.evaluation.answer_relevant === true,
-              fallbackReason: typeof parsed.evaluation === "object" && parsed.evaluation !== null
-                && "fallback_reason" in parsed.evaluation
-                ? String(parsed.evaluation.fallback_reason) : "",
-              coveredAspects: typeof parsed.evaluation === "object" && parsed.evaluation !== null
-                && "covered_aspects" in parsed.evaluation && typeof parsed.evaluation.covered_aspects === "number"
-                ? parsed.evaluation.covered_aspects : 0,
-              requiredAspects: typeof parsed.evaluation === "object" && parsed.evaluation !== null
-                && "required_aspects" in parsed.evaluation && Array.isArray(parsed.evaluation.required_aspects)
-                ? parsed.evaluation.required_aspects.length : 0,
-            });
-          if (kind === "abstention")
-            patchEntry({ message: String(parsed.message) });
+          setEntries((current) =>
+            current.map((entry) => entry.id === id ? applyAnswerEvent(entry, kind, parsed) : entry),
+          );
           if (kind === "error") {
             finished = true;
             throw new Error(String(parsed.message ?? "Answer failed."));
           }
           if (kind === "done") {
             finished = true;
-            patchEntry({ mode: String(parsed.mode ?? "") });
             report("complete", "Source quotes and page citations checked.");
           }
         }
@@ -407,6 +402,10 @@ function ChatPanel({
                       <p className="excerpt-mode">
                         {["provider_http_401", "provider_http_403"].includes(entry.fallbackReason ?? "")
                           ? "Model connection rejected. This extractive answer uses saved paper text. Reconnect in Settings for a model-reviewed summary."
+                          : entry.fallbackReason === "entailment_rejected"
+                            ? "The drafted summary was not supported by its quotations, so exact source excerpts are shown."
+                          : ["entailment_unavailable", "entailment_timeout"].includes(entry.fallbackReason ?? "")
+                            ? "The claim checker is loading or unavailable, so exact source excerpts are shown. See Storage & health."
                           : entry.mode === "extractive_summary"
                             ? "Extractive summary from this paper. A reviewed model summary was unavailable."
                             : "Showing source excerpts. A reviewed model answer was unavailable."}
@@ -491,6 +490,8 @@ function ChatPanel({
 }
 
 /** Assemble only verified sentences; keep original evidence separate from the answer. */
+const THEMES = new Set(["Contribution", "Method", "Evaluation", "Findings", "Limitations"]);
+
 function GroundedAnswer({ entry, onCitation }: { entry: ChatEntry; onCitation: (citation: CitationRange) => void }) {
   const cite = (claim: VerifiedClaim) => {
     if (claim.citation) onCitation({ ...claim.citation, quote: claim.quote });
@@ -498,8 +499,13 @@ function GroundedAnswer({ entry, onCitation }: { entry: ChatEntry; onCitation: (
   const reviewed = entry.answerRelevant && Boolean(entry.reviewedClaims)
     && ["grounded_summary", "reviewed_answer"].includes(entry.mode ?? "");
   const paragraphs = [...new Set(entry.claims.map((claim) => claim.paragraph ?? 0))].sort((a, b) => a - b);
+  // A multi-paragraph answer leads each paragraph with its theme, e.g. "Method." or "Findings."
+  const theme = (paragraph: number) => {
+    const label = entry.claims.find((claim) => (claim.paragraph ?? 0) === paragraph)?.label;
+    return paragraphs.length > 1 && label && THEMES.has(label) ? label : undefined;
+  };
   return <div className="grounded-answer">
-    {paragraphs.map((paragraph) => <p className="answer-summary" key={paragraph}>{entry.claims.map((claim, index) => (claim.paragraph ?? 0) === paragraph && <Fragment key={index}>
+    {paragraphs.map((paragraph) => <p className="answer-summary" key={paragraph}>{theme(paragraph) && <strong className="answer-theme">{theme(paragraph)}. </strong>}{entry.claims.map((claim, index) => (claim.paragraph ?? 0) === paragraph && <Fragment key={index}>
       {index > 0 ? " " : ""}{displaySourceText(claim.text)}
       <button className="inline-citation" aria-label={`Source ${index + 1}, page ${claim.citation?.page_start}`} onClick={() => cite(claim)}>[{index + 1}]</button>
     </Fragment>)}</p>)}
@@ -518,6 +524,31 @@ function GroundedAnswer({ entry, onCitation }: { entry: ChatEntry; onCitation: (
       </details>}
     </section>
   </div>;
+}
+
+/** Fold one streamed answer event into its chat entry; used for live and restored turns. */
+function applyAnswerEvent(entry: ChatEntry, kind: string | undefined, parsed: Record<string, unknown>): ChatEntry {
+  const evaluation = typeof parsed.evaluation === "object" && parsed.evaluation !== null
+    ? parsed.evaluation as Record<string, unknown> : {};
+  if (kind === "claim" && parsed.verified === true) {
+    const claim = normalizeClaim(parsed.claim);
+    return claim ? { ...entry, claims: [...entry.claims, claim] } : entry;
+  }
+  if (kind === "answer") return {
+    ...entry,
+    mode: String(parsed.mode ?? ""),
+    heading: String(parsed.heading ?? "Answer"),
+    contextQuestion: typeof parsed.context_question === "string" ? parsed.context_question.slice(0, 700) : entry.question,
+    reviewedClaims: "reviewed_claims" in evaluation ? Number(evaluation.reviewed_claims) : 0,
+    rejectedClaims: "rejected_claims" in evaluation ? Number(evaluation.rejected_claims) : 0,
+    answerRelevant: evaluation.answer_relevant === true,
+    fallbackReason: "fallback_reason" in evaluation ? String(evaluation.fallback_reason) : "",
+    coveredAspects: typeof evaluation.covered_aspects === "number" ? evaluation.covered_aspects : 0,
+    requiredAspects: Array.isArray(evaluation.required_aspects) ? evaluation.required_aspects.length : 0,
+  };
+  if (kind === "abstention") return { ...entry, message: String(parsed.message) };
+  if (kind === "done") return { ...entry, mode: String(parsed.mode ?? "") };
+  return entry;
 }
 
 function normalizeClaim(value: unknown): VerifiedClaim | null {

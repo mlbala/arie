@@ -1754,34 +1754,78 @@ button:disabled {
 }
 .conversation-tabs {
   display: flex;
-  gap: 16px;
+  gap: 14px;
   flex-shrink: 0;
   padding: 0 36px;
   min-height: 39px;
   border-bottom: 1px solid var(--line);
   overflow-x: auto;
+  scrollbar-width: thin;
 }
-.conversation-tabs button {
+.conversation-tab {
   display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 110px;
+  max-width: 220px;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  transition: border-color 160ms ease, color 160ms ease;
+  animation: tab-in 180ms ease-out;
+}
+.conversation-tab.active {
+  border-bottom-color: var(--green-strong);
+  color: var(--ink);
+}
+.conversation-tab > button:first-child {
+  display: flex;
+  flex: 1;
   gap: 6px;
   align-items: center;
-  max-width: 200px;
-  min-width: 90px;
+  min-width: 0;
   border: 0;
-  border-bottom: 2px solid transparent;
   padding: 8px 0;
   background: transparent;
-  color: var(--muted);
+  color: inherit;
   font-size: 10px;
 }
-.conversation-tabs button span {
+.conversation-tab > button:first-child span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.conversation-tabs button[aria-current] {
-  border-bottom-color: var(--green-strong);
+.conversation-tab-close {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 4px;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+  opacity: 0.6;
+  transition: opacity 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+.conversation-tab:hover .conversation-tab-close,
+.conversation-tab.active .conversation-tab-close,
+.conversation-tab-close:focus-visible {
+  opacity: 1;
+}
+.conversation-tab-close:hover {
+  background: var(--green-soft);
   color: var(--ink);
+}
+@keyframes tab-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 .paper-conversation {
   display: flex;
@@ -2597,8 +2641,8 @@ button:disabled {
 .active-document { padding-bottom: 12px; }
 .active-document strong { margin-top: 7px; }
 .health-pill { display: inline-flex; flex-shrink: 0; border: 1px solid var(--line); border-radius: 4px; background: var(--green-soft); padding: 2px 5px; color: var(--muted); font-size: 8px; text-transform: capitalize; }
-.health-pill.healthy, .health-pill.running { border-color: var(--line); background: var(--green-soft); color: var(--green); }
-.health-pill.unavailable { border-color: var(--line); background: var(--amber-soft); color: var(--amber); }
+.health-pill.healthy, .health-pill.running, .health-pill.indexing { border-color: var(--line); background: var(--green-soft); color: var(--green); }
+.health-pill.unavailable, .health-pill.degraded { border-color: var(--line); background: var(--amber-soft); color: var(--amber); }
 .storage-section article { margin: 0 0 18px; }
 .storage-section article > div { display: flex; align-items: center; gap: 6px; color: var(--muted); }
 .storage-section article strong { flex: 1; }
@@ -2675,6 +2719,61 @@ button:disabled {
   scrollbar-gutter: stable;
 }
 .library-heading { margin-left: 2px; margin-right: 2px; }
+.history-section {
+  margin-bottom: 18px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+  animation: fade-in 180ms ease-out;
+}
+.history-section .library-heading { margin-bottom: 8px; }
+.history-clear {
+  margin-top: 0;
+  padding: 2px 4px;
+  border-radius: 4px;
+  text-decoration: none;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.history-clear:hover,
+.history-clear:focus-visible {
+  background: var(--green-soft);
+  color: var(--ink);
+}
+.history-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.history-list li { animation: tab-in 180ms ease-out; }
+.history-list button {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10.5px;
+  text-align: left;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.history-list button svg { flex-shrink: 0; opacity: 0.7; }
+.history-list button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.history-list button:hover,
+.history-list button:focus-visible {
+  background: var(--green-soft);
+  color: var(--ink);
+}
+.history-caption {
+  margin: 6px 8px 0;
+  color: var(--muted);
+  font-size: 9px;
+}
 .library-filters { margin-left: 2px; margin-right: 2px; }
 .library-paper { padding-left: 8px; padding-right: 8px; }
 .library-paper strong, .library-paper small, .topic-tags > span { overflow-wrap: anywhere; }
@@ -2787,8 +2886,8 @@ input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
 .delete-confirm { background: var(--amber-soft); border-color: var(--line); }
 .danger-button { color: var(--red); background: var(--paper); }
 .health-pill { font-size: 9px; color: var(--muted); }
-.health-pill.healthy, .health-pill.running { color: var(--green); }
-.health-pill.unavailable { color: var(--red); }
+.health-pill.healthy, .health-pill.running, .health-pill.indexing { color: var(--green); }
+.health-pill.unavailable, .health-pill.degraded { color: var(--red); }
 .workspace-title { color: var(--ink); font-weight: 600; white-space: nowrap; }
 .conversation-topbar { padding-inline: 24px; gap: 10px; }
 .conversation-topbar > div { gap: 10px; min-width: 0; }
@@ -2893,6 +2992,7 @@ html, body { overflow: hidden; }
 /* Read the answer as one paragraph, then inspect its evidence as a group. */
 .grounded-answer { margin-left: 35px; }
 .answer-summary { margin: 12px 0 18px; color: var(--ink); font-size: 14px; line-height: 1.9; overflow-wrap: anywhere; }
+.answer-theme { font-weight: 600; color: var(--ink); }
 .inline-citation { display: inline; margin-left: 4px; padding: 1px; border: 0; background: transparent; color: var(--green); font-size: 10px; font-weight: 600; vertical-align: super; line-height: 1; }
 .inline-citation:hover { text-decoration: underline; }
 .answer-evidence { padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); }

@@ -78,6 +78,8 @@ def runtime_at(tmp_path: Path) -> ResearchRuntime:
     plugins.update(
         database={"use": "sqlite", "path": str(tmp_path / "arie.db")},
         file_storage={"use": "local", "root": str(tmp_path / "papers")},
+        embedder={"use": "none"},
+        entailment={"use": "none"},
         sources=["arxiv"],
     )
     return ResearchRuntime(ROOT, config.model_copy(update={"plugins": plugins}))
@@ -190,7 +192,7 @@ async def test_library_filters_topics_deletion_and_storage(tmp_path: Path) -> No
         assert snapshot["database"]["status"] == "healthy"
         assert snapshot["file_storage"]["files"] == 1
         assert snapshot["file_storage"]["size_bytes"] == len(b"%PDF- test file")
-        assert snapshot["vector_store"]["status"] == "inactive"
+        assert snapshot["vector_store"]["status"] == "disabled"
         assert snapshot["vector_store"]["size_bytes"] is None
         await runtime.delete_paper("first", pdf_only=True)
         assert not pdf.exists()
@@ -277,6 +279,7 @@ async def test_library_2026_windows_include_date_only_boundaries(tmp_path: Path)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=create_app(runtime)), base_url="http://test"
         ) as client:
+
             async def ids(query: str) -> set[str]:
                 response = await client.get(f"/v1/papers?{query}")
                 assert response.status_code == 200, response.text
@@ -285,14 +288,16 @@ async def test_library_2026_windows_include_date_only_boundaries(tmp_path: Path)
             assert await ids("month=2026-01") == {"jan-first", "jan-last"}
             assert await ids("year=2026") == {"jan-first", "jan-last", "feb-first", "recent"}
             assert await ids("start_month=2026-01&end_month=2026-01") == {
-                "jan-first", "jan-last",
+                "jan-first",
+                "jan-last",
             }
             assert "recent" in await ids("months=6")
             assert "old" not in await ids("months=6")
             assert "old" not in await ids("start_month=2026-02")
             assert await ids("month=9998-12") == set()
             for query in (
-                "year=2026&month=2026-01", "end_month=2026-01",
+                "year=2026&month=2026-01",
+                "end_month=2026-01",
                 "start_month=2026-02&end_month=2026-01",
             ):
                 assert (await client.get(f"/v1/papers?{query}")).status_code == 400

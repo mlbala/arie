@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
 from pathlib import Path
 
+import pytest
 from arie_core.contracts import ChunkRow, Claim, Evidence
 from arie_core.harness import (
     EvidenceVerifier,
@@ -96,6 +98,35 @@ def test_verifier_strips_short_and_fabricated_quotes() -> None:
     assert (
         verifier.verify(claim, chunk_text="The method uses dropout and data augmentation.") is True
     )
+
+
+def test_lexical_pre_filter_needs_shared_content_and_unchanged_anchors() -> None:
+    quote = "The model performs well on all benchmarks, improving accuracy from 71.2% to 78.4%."
+    assert EvidenceVerifier.lexical_support("The model improves accuracy to 78.4%.", [quote])
+    assert not EvidenceVerifier.lexical_support("The model improves accuracy to 91%.", [quote])
+    assert not EvidenceVerifier.lexical_support("Cedar cures rare diseases quickly.", [quote])
+    # A polarity flip shares every content word; only the Tier 3 model can reject it.
+    assert EvidenceVerifier.lexical_support("The model performs badly on benchmarks.", [quote])
+
+
+@pytest.mark.asyncio
+async def test_tier_3_applies_the_entailment_floor_and_rejects_malformed_scores() -> None:
+    async def scores(pairs: Sequence[tuple[str, str]]) -> list[float]:
+        return [0.98 if "well" in claim else 0.001 for _, claim in pairs]
+
+    pairs = [("It performs well.", "It performs well."), ("It performs well.", "It is bad.")]
+    assert await EvidenceVerifier.tier_3(scores, pairs) == [True, False]
+    assert await EvidenceVerifier.tier_3(scores, []) == []
+
+    async def short(pairs: Sequence[tuple[str, str]]) -> list[float]:
+        return [1.0]
+
+    async def out_of_range(pairs: Sequence[tuple[str, str]]) -> list[float]:
+        return [1.5 for _ in pairs]
+
+    for broken in (short, out_of_range):
+        with pytest.raises(ValueError, match="malformed"):
+            await EvidenceVerifier.tier_3(broken, pairs)
 
 
 def test_verifier_normalizes_ligatures_and_silences_fabricated_offsets() -> None:

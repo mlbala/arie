@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, Database, HardDrive, Layers3, Trash2, X } from "lucide-react";
+import { Activity, Database, HardDrive, Layers3, ShieldCheck, Trash2, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { deletePaper, getStorageHealth, type PaperSummary } from "../api/client";
 
@@ -39,10 +39,14 @@ export function StorageHealth() {
               <p>{data?.database.provider ?? "—"} · {bytes(data?.database.size_bytes)}</p>
               <small>{data?.database.papers ?? "—"} papers · {data?.database.evidence_chunks ?? "—"} evidence chunks</small>
             </article>
-            <article><div><Layers3 size={14} /><strong>Vector index</strong><span className="health-pill inactive">{data?.vector_store.status ?? "Unknown"}</span></div>
-              <p>{data?.vector_store.provider ?? "—"} · {bytes(data?.vector_store.size_bytes)}</p>
+            <article><div><Layers3 size={14} /><strong>Vector index</strong><span className={`health-pill ${data?.vector_store.status ?? "unknown"}`}>{data?.vector_store.status ?? "Checking"}</span></div>
+              <p>{data?.vector_store.provider ?? "—"} · {data?.vector_store.vectors ?? "—"} vectors · {bytes(data?.vector_store.size_bytes)}</p>
               <small>{data?.vector_store.detail ?? "Waiting for provider status."}</small>
             </article>
+            {data?.entailment && <article><div><ShieldCheck size={14} /><strong>Claim checker</strong><span className={`health-pill ${data.entailment.status}`}>{data.entailment.status}</span></div>
+              <p>{data.entailment.plugin} · Tier 3 entailment</p>
+              <small>{data.entailment.detail}</small>
+            </article>}
             <article><div><HardDrive size={14} /><strong>PDF storage</strong><span className={`health-pill ${data?.file_storage.status ?? "unknown"}`}>{data?.file_storage.status ?? "Checking"}</span></div>
               <p>{data?.file_storage.provider ?? "—"} · {bytes(data?.file_storage.size_bytes)}{data?.file_storage.status === "partial" ? " (partial)" : ""}</p>
               <small>{data?.file_storage.files ?? "—"} PDF files · {bytes(data?.file_storage.disk_free_bytes)} free</small>
