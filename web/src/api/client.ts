@@ -45,17 +45,8 @@ export interface CitationRange {
   chunk_id?: string | undefined;
 }
 
-export interface BriefPart {
-  label: string;
-  title: string;
-  content: string;
-  citations?: CitationRange[] | undefined;
-}
-
 export interface Paper extends PaperSummary {
   outline: string[];
-  brief: { parts: BriefPart[] };
-  verified_5_part_brief: BriefPart[];
   pdf_url?: string | undefined;
 }
 
@@ -176,8 +167,114 @@ export async function getPaper(paperId: string): Promise<Paper> {
 
 /** One saved Q&A turn: the question and the events the server streamed for its answer. */
 export interface SavedChatTurn {
+  turn_id?: string;
   question: string;
   events: { event: string; data: Record<string, unknown> }[];
+  rating?: AnswerRating;
+}
+
+export type AnswerRating = "up" | "down" | null;
+
+/** Rate a saved answer; `null` clears it. Answers rated down join the paper's evaluation. */
+export function rateAnswer(
+  paperId: string,
+  turnId: string,
+  rating: AnswerRating,
+  note = "",
+): Promise<{ turn_id: string; rating: AnswerRating }> {
+  return requestJson(
+    `/v1/papers/${encodeURIComponent(paperId)}/chat/${encodeURIComponent(turnId)}/feedback`,
+    { method: "PUT", body: JSON.stringify({ rating, note }) },
+  );
+}
+
+/** A question written from one exact sentence of the paper (the ground truth). */
+export interface EvalCase {
+  case_id: string;
+  question: string;
+  kind: "fact" | "abstain" | "feedback";
+  origin: string;
+  answer_quote: string;
+  page_start: number;
+  key_facts: string[];
+  note: string;
+}
+
+export interface EvalResult {
+  variant: "configured" | "no_reranker";
+  case_id: string;
+  question: string;
+  kind: EvalCase["kind"];
+  /** null for feedback cases, which have no reference answer. */
+  passed: boolean | null;
+  grounded: boolean;
+  evidence_hit: boolean;
+  fact_recall: number;
+  abstained: boolean;
+  mode: string;
+  claims: number;
+  seconds: number;
+  reranked: boolean;
+  answer: string;
+  cited_pages: number[];
+  error: string;
+}
+
+export interface EvalSummary {
+  cases: number;
+  scored: number;
+  passed: number;
+  pass_rate: number | null;
+  grounded_rate: number | null;
+  evidence_hit_rate: number | null;
+  mean_fact_recall: number | null;
+  answered_rate: number | null;
+  abstain_correct_rate: number | null;
+  errors: number;
+  median_seconds: number | null;
+  review: number;
+}
+
+export interface EvalRun {
+  run_id: string;
+  paper_id: string;
+  status: "queued" | "running" | "complete" | "failed" | "interrupted";
+  message: string;
+  created_at: string;
+  finished_at: string | null;
+  settings: Record<string, string>;
+  compare_reranker: boolean;
+  progress: { done: number; total: number };
+  summary: Partial<Record<EvalResult["variant"], EvalSummary>>;
+  results: EvalResult[];
+}
+
+export interface PaperEvaluation {
+  paper_id: string;
+  cases: EvalCase[];
+  runs: Omit<EvalRun, "results">[];
+  latest: EvalRun | null;
+  feedback: { turn_id: string; question: string; rating: string; note: string; created_at: string }[];
+}
+
+export function getPaperEvaluation(paperId: string): Promise<PaperEvaluation> {
+  return requestJson(`/v1/papers/${encodeURIComponent(paperId)}/eval`);
+}
+
+export function startPaperEvaluation(
+  paperId: string,
+  options: { regenerate?: boolean; compare_reranker?: boolean } = {},
+): Promise<EvalRun> {
+  return requestJson(`/v1/papers/${encodeURIComponent(paperId)}/eval/runs`, {
+    method: "POST",
+    body: JSON.stringify(options),
+  });
+}
+
+export function getEvalRun(paperId: string, runId: string): Promise<EvalRun> {
+  return requestJson(
+    `/v1/papers/${encodeURIComponent(paperId)}/eval/runs/${encodeURIComponent(runId)}`,
+  );
 }
 
 /** The last saved turns for a paper, oldest first (the server keeps 10 per paper). */
@@ -335,6 +432,7 @@ export interface StorageHealth {
     embedder?: string; vectors?: number | null; papers_indexed?: number | null; papers_total?: number | null;
   };
   entailment?: { plugin: string; status: string; detail: string };
+  reranker?: { plugin: string; status: string; detail: string };
   active_jobs: SyncJob[];
 }
 

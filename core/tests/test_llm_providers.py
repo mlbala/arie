@@ -111,6 +111,7 @@ async def runtime_at(tmp_path: Path) -> ResearchRuntime:
         file_storage={"use": "local", "root": str(tmp_path / "papers")},
         embedder={"use": "none"},
         entailment={"use": "none"},
+        reranker={"use": "none"},
     )
     runtime = ResearchRuntime(ROOT, config.model_copy(update={"plugins": plugins}))
     runtime.providers.root = tmp_path

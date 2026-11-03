@@ -58,6 +58,8 @@ class RuntimeQoSConfig(BaseModel):
     utility_worker_processes: int = 4
     background_pdf_stream_concurrency: int = 4
     arxiv_rate_limit_delay_sec: float = 3.0
+    # Entailment and reranker models share one worker process; false gives each its own.
+    shared_model_worker: bool = True
 
     @field_validator("slow_callback_threshold_ms", "arxiv_rate_limit_delay_sec")
     @classmethod
@@ -121,7 +123,6 @@ class ArieConfig(BaseModel):
     profile: str = "hybrid"
     runtime_qos: RuntimeQoSConfig = Field(default_factory=RuntimeQoSConfig)
     plugins: dict[str, object] = Field(default_factory=dict)
-    features: list[str] = Field(default_factory=list)
     llm_providers: dict[str, LLMProviderConfig] = Field(default_factory=default_llm_providers)
     embedding_providers: dict[str, EmbeddingProviderConfig] = Field(
         default_factory=default_embedding_providers

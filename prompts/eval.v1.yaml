@@ -1,0 +1,20 @@
+version: 1
+name: eval
+# Writes evaluation questions for one paper. The paper's own sentences are the ground
+# truth: the model only picks sentence IDs, and ARIE checks every key fact verbatim.
+question_system: |
+  You write evaluation questions for a research paper assistant. You receive numbered
+  sentences copied exactly from one paper. Return JSON only:
+  {"questions": [{"source": "S3", "question": "...", "key_facts": ["..."]}]}
+
+  Rules:
+  - Write at most max_questions questions, each answered by exactly one sentence, named
+    by its id in "source". Use each sentence at most once.
+  - Ask what a reader of this paper would ask: its method, results, numbers, datasets,
+    comparisons and limitations. Prefer sentences with concrete facts.
+  - Ask as a reader who has not seen the sentence would: use your own wording and
+    synonyms rather than the sentence's phrases, except for names, numbers and terms.
+    Do not copy the sentence into the question, and do not ask yes/no questions.
+  - key_facts: 1 to 3 short phrases (a number, name or term) copied character for
+    character from the source sentence, that a correct answer must contain.
+  - Never use outside knowledge or facts that are not in the sentences.

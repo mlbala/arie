@@ -90,6 +90,9 @@ export default function App() {
   const dateParams = publicationParams(dateWindow);
   const [domain, setDomain] = useState("");
   const [sort, setSort] = useState("newest");
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const filtersRef = useRef<HTMLElement>(null);
+  const filtersActive = publicationLabel(dateWindow) !== publicationLabel(RECENT_WINDOW) || Boolean(domain || source) || sort !== "newest";
   const [layout, setLayout] = useState<Layout>(savedLayout);
   const width = useSyncExternalStore(subscribeToViewport, viewportWidth);
   const activityBreakpoint = layout.sizing === "custom"
@@ -167,6 +170,7 @@ export default function App() {
         searchInput.current?.focus();
       }
       if (event.key === "Escape") {
+        setFiltersOpen(false);
         setLibraryOpen(false);
         setSystemOpen(false);
       }
@@ -174,6 +178,15 @@ export default function App() {
     window.addEventListener("keydown", shortcut);
     return () => window.removeEventListener("keydown", shortcut);
   }, [setLibraryOpen, setSystemOpen]);
+  useEffect(() => {
+    if (!filtersOpen) return;
+    // Close the filter popover on a click outside the library section.
+    const outside = (event: PointerEvent) => {
+      if (!filtersRef.current?.contains(event.target as Node)) setFiltersOpen(false);
+    };
+    document.addEventListener("pointerdown", outside);
+    return () => document.removeEventListener("pointerdown", outside);
+  }, [filtersOpen]);
   const loadedPapers = useMemo(
     () => papersQuery.data?.pages.flatMap((page) => page.items) ?? [],
     [papersQuery.data],
@@ -273,12 +286,22 @@ export default function App() {
             <p className="history-caption">{historyPapers.length} of {MAX_HISTORY} · reopen to pin again</p>
           </section>
         )}
-        <section className="library-section" aria-label="Library papers">
+        <section className="library-section" aria-label="Library papers" ref={filtersRef}>
         <div className="library-heading">
           <span>
             <FolderOpen size={15} /> Your library
+            <span className="library-count">{loadedPapers.length}{papersQuery.hasNextPage ? "+" : ""}</span>
           </span>
-          <span>{loadedPapers.length}{papersQuery.hasNextPage ? "+" : ""}</span>
+          <button
+            className={`icon-button library-filter-toggle${filtersActive ? " is-active" : ""}`}
+            aria-label="Filter & sort"
+            aria-expanded={filtersOpen}
+            aria-controls="library-filter-panel"
+            title={`Filter & sort · ${publicationLabel(dateWindow)}`}
+            onClick={() => setFiltersOpen((open) => !open)}
+          >
+            <SlidersHorizontal size={14} />
+          </button>
         </div>
         <label className="library-search">
           <Search size={14} />
@@ -296,9 +319,9 @@ export default function App() {
           />
           <kbd>/</kbd>
         </label>
-        <details className="library-filters">
-          <summary><SlidersHorizontal size={13} /> Filter & sort <span>{publicationLabel(dateWindow)}</span></summary>
-          <div className="library-filter-body">
+        {filtersOpen && (
+        <div className="library-filters" id="library-filter-panel" role="group" aria-label="Filter and sort papers">
+          <p className="library-filter-summary">{publicationLabel(dateWindow)}</p>
           <PublicationWindowFields value={dateWindow} allowAll onChange={setDateWindow} />
           <label>Source<select value={source} onChange={(event) => setSource(event.target.value)}>
             <option value="">All sources</option>{[...new Set([...(syncQuery.data?.sources ?? []), ...loadedPapers.map((paper) => paper.source)])].sort().map((name) => <option key={name} value={name}>{name}</option>)}
@@ -311,9 +334,9 @@ export default function App() {
             <option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="domain">Research domain</option>
           </select></label>
           <button className="text-button" onClick={() => { setDateWindow(RECENT_WINDOW); setDomain(""); setSource(""); setSearch(""); setSort("newest"); }}>Reset filters</button>
-          <button className="button filter-results-button" onClick={(event) => { const details = event.currentTarget.closest("details"); if (details) details.open = false; }}>Show results</button>
-          </div>
-        </details>
+          <button className="button filter-results-button" onClick={() => setFiltersOpen(false)}>Show results</button>
+        </div>
+        )}
         {debouncedSearch && <p className="search-help" role="status">Relevant papers · choose one to ask questions</p>}
         <div className="library-list">
           {papersQuery.isPending ? (

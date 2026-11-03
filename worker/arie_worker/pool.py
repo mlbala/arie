@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import multiprocessing
+import os
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
@@ -9,7 +10,20 @@ from dataclasses import dataclass
 import psutil
 from arie_core.budget import BudgetHandle
 
-MAX_RSS = 1536 * 1024 * 1024
+# Default per-worker memory cap. Only the PDF parser pool may raise it, through
+# ``plugins.parser.max_rss_mb``; embedding and entailment pools always use this value.
+DEFAULT_MAX_RSS_MB = 1536
+MAX_RSS = DEFAULT_MAX_RSS_MB * 1024 * 1024
+# Niceness for background pools (PDF extraction, embedding). Linux then gives a nice-0
+# process (the API, the claim checker) about nine times their CPU share under contention,
+# while background work still uses every idle core.
+BACKGROUND_NICE = 10
+
+
+def _lower_priority(increment: int) -> None:
+    """Worker initializer: raise this process's niceness (needs no privileges)."""
+    if increment:
+        os.nice(increment)
 
 
 @dataclass(frozen=True)
@@ -23,14 +37,38 @@ class SupervisedPool:
     """Run CPU work in recycled spawn processes; kill hung or memory-heavy workers.
 
     Workers recycle after ``tasks_per_child`` tasks (default 20). A call that times out,
-    is cancelled, or exceeds the 1.5 GB RSS cap kills the whole pool, which is rebuilt
-    on the next call.
+    is cancelled, or lets any worker's RSS exceed ``max_rss_mb`` (default 1536, 1.5 GB)
+    kills the whole pool, which is rebuilt on the next call; the caller sees
+    ``TimeoutError``, ``CancelledError`` or ``MemoryError``. ``nice`` lowers the OS
+    priority of every worker so background pools yield the CPU to interactive work.
+
+    With ``keep_on_cancel``, a caller that gives up (its own deadline, not
+    ``kill_after``) leaves the worker running: the call finishes in the background and
+    the next call queues behind it, its ``kill_after`` covering that wait. Model pools
+    use this, so a reranker running past its budget does not unload the models it
+    shares a process with.
     """
 
-    def __init__(self, processes: int, label: str, tasks_per_child: int = 20) -> None:
+    def __init__(
+        self,
+        processes: int,
+        label: str,
+        tasks_per_child: int = 20,
+        max_rss_mb: int = DEFAULT_MAX_RSS_MB,
+        nice: int = 0,
+        keep_on_cancel: bool = False,
+    ) -> None:
+        if max_rss_mb <= 0:
+            raise ValueError("max_rss_mb must be positive")
+        if not 0 <= nice <= 19:
+            raise ValueError("nice must be 0-19")
         self.processes = processes
+        self.nice = nice
+        self.keep_on_cancel = keep_on_cancel
         self.label = label
         self.tasks_per_child = max(1, tasks_per_child)
+        self.max_rss_mb = max_rss_mb
+        self._max_rss = max_rss_mb * 1024 * 1024
         self._pool: ProcessPoolExecutor | None = None
         self._lock = asyncio.Lock()
 
@@ -42,9 +80,13 @@ class SupervisedPool:
                     max_workers=self.processes,
                     mp_context=multiprocessing.get_context("spawn"),
                     max_tasks_per_child=self.tasks_per_child,
+                    initializer=_lower_priority,
+                    initargs=(self.nice,),
                 )
             pool = self._pool
             future = asyncio.get_running_loop().run_in_executor(pool, func, *args)
+            # A call abandoned by its caller may still fail; consume that result quietly.
+            future.add_done_callback(lambda done: done.cancelled() or done.exception())
             try:
                 async with asyncio.timeout(kill_after):
                     while not future.done():
@@ -55,15 +97,24 @@ class SupervisedPool:
                             try:
                                 if (
                                     process.pid
-                                    and psutil.Process(process.pid).memory_info().rss > MAX_RSS
+                                    and psutil.Process(process.pid).memory_info().rss
+                                    > self._max_rss
                                 ):
                                     raise MemoryError(
-                                        f"{self.label} worker exceeded the 1.5 GB RSS limit"
+                                        f"{self.label} worker exceeded its "
+                                        f"{self.max_rss_mb} MB memory limit"
                                     )
                             except psutil.NoSuchProcess:
                                 pass
                         await asyncio.sleep(0.05)
                     return await future
+            except asyncio.CancelledError:
+                # Raised only by the caller's cancellation: kill_after surfaces as
+                # TimeoutError from the inner timeout.
+                if not self.keep_on_cancel:
+                    pool.kill_workers()
+                    self._pool = None
+                raise
             except BaseException:
                 pool.kill_workers()
                 self._pool = None

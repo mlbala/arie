@@ -15,8 +15,6 @@ it("opens an imported older paper even when it is outside the first library page
     overridden_by_user: 0,
     page_count: 15,
     outline: [],
-    brief: { parts: [] },
-    verified_5_part_brief: [],
     revision: "old-paper-version",
   };
   const recent = Array.from({ length: 20 }, (_, index) => ({
@@ -125,7 +123,8 @@ it("remembers panel placement and sends month/domain filters to the library API"
   fireEvent.change(screen.getByLabelText("Activity pane width"), { target: { value: "320" } });
   expect(document.querySelector(".research-shell")).toHaveStyle({ "--activity-width": "320px" });
   const library = within(screen.getByRole("region", { name: "Library papers" }));
-  fireEvent.click(library.getByText("Filter & sort"));
+  expect(library.queryByLabelText("Publication window")).not.toBeInTheDocument();
+  fireEvent.click(library.getByRole("button", { name: "Filter & sort" }));
   fireEvent.change(library.getByLabelText("Publication window"), { target: { value: "month" } });
   fireEvent.change(library.getByLabelText("Publication year"), { target: { value: "2026" } });
   fireEvent.click(library.getByRole("button", { name: "June" }));
@@ -144,7 +143,11 @@ it("remembers panel placement and sends month/domain filters to the library API"
   fireEvent.change(library.getByLabelText("Number of months"), { target: { value: "12" } });
   await vi.waitFor(() => expect(String(fetcher.mock.calls.at(-1)?.[0])).toBe("/v1/papers?months=12&domain=agents"));
   fireEvent.click(library.getByRole("button", { name: "Reset filters" }));
-  expect(library.getByText("Last 6 months", { selector: "summary span" })).toBeInTheDocument();
+  expect(library.getByText("Last 6 months", { selector: ".library-filter-summary" })).toBeInTheDocument();
+  expect(library.getByRole("button", { name: "Filter & sort" })).not.toHaveClass("is-active");
+  fireEvent.click(library.getByRole("button", { name: "Show results" }));
+  expect(library.queryByLabelText("Publication window")).not.toBeInTheDocument();
+  expect(library.getByRole("button", { name: "Filter & sort" })).toHaveAttribute("aria-expanded", "false");
   client.clear();
   localStorage.removeItem("arie.ui.layout");
 });

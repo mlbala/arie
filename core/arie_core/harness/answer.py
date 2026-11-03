@@ -23,6 +23,7 @@ from arie_core.harness.reader import (
 from arie_core.harness.session import ModelSession, failure_reason
 from arie_core.harness.verifier import (
     MIN_ENTAILMENT,
+    REVIEW_OPTIONAL_ENTAILMENT,
     EntailmentCheck,
     EvidenceVerifier,
     preserves_anchors,
@@ -67,6 +68,48 @@ def answer_prompts(project_root: Path) -> tuple[str, str]:
     return data["answer_system"], data["review_system"]
 
 
+TABLE_EXCERPT_BYTES = 1200
+_TABLE_CAPTION = re.compile(r"\s*[*_]*Table\s+[A-Z]?\d", re.IGNORECASE)
+
+
+def table_excerpt(text: str, limit: int = TABLE_EXCERPT_BYTES) -> str:
+    """The quotable start of a Markdown table: its caption, header and leading rows.
+
+    Returns an exact substring of ``text`` that ends on a whole row, so it passes the
+    quote checks like any sentence, or ``""`` when ``text`` has no table or not even
+    the header and one row fit in ``limit`` bytes. A "Table N" caption paragraph just
+    above the table is included.
+    """
+    lines = text.splitlines(keepends=True)
+    first = next((i for i, line in enumerate(lines) if line.lstrip().startswith("|")), None)
+    if first is None:
+        return ""
+    start = first
+    above = first - 1
+    while above >= 0 and not lines[above].strip():
+        above -= 1
+    if above >= 0:
+        paragraph = above
+        while paragraph > 0 and lines[paragraph - 1].strip():
+            paragraph -= 1
+        if _TABLE_CAPTION.match(lines[paragraph]):
+            start = paragraph
+    kept: list[str] = []
+    used = rows = 0
+    for index in range(start, len(lines)):
+        line = lines[index]
+        if index >= first and not line.lstrip().startswith("|"):
+            break
+        size = len(line.encode("utf-8"))
+        if used + size > limit:
+            break
+        kept.append(line)
+        used += size
+        rows += index >= first
+    # Header and separator alone say nothing; require at least one data row.
+    return "".join(kept).strip() if rows >= 3 else ""
+
+
 def _source_windows(
     rows: Sequence[EvidenceChunk], plan: AnswerPlan, *, max_bytes: int = 3500
 ) -> list[EvidenceChunk]:
@@ -82,6 +125,8 @@ def _source_windows(
             and ("|" in row.text or "=" in row.text)
         ):
             sentences = [row.text.strip()]
+        elif table := table_excerpt(row.text):
+            sentences.append(table)
 
         def score(text: str) -> int:
             purpose = bool(
@@ -119,6 +164,30 @@ def _source_windows(
             if len(windows) == (24 if plan.depth == "detailed" else 16):
                 return windows
     return windows
+
+
+# Single-point questions; every other task needs the reviewer's whole-answer judgment.
+DIRECT_TASKS = frozenset({"lookup", "definition", "answer"})
+
+
+def review_optional(plan: AnswerPlan, scores: Sequence[float]) -> bool:
+    """Decide whether Tier 3 alone suffices, so the LLM reviewer can be skipped (ADR 0008).
+
+    Tier 3 checks each sentence against its own quote; it cannot judge whether the
+    sentences together answer the question or cover every requested point. So only a
+    direct, single-aspect, non-detailed answer whose every claim scores at least
+    ``REVIEW_OPTIONAL_ENTAILMENT`` skips review. Overviews, explanations, comparisons,
+    critiques and multi-part questions are always reviewed.
+    """
+    return (
+        bool(scores)
+        and min(scores) >= REVIEW_OPTIONAL_ENTAILMENT
+        and plan.task in DIRECT_TASKS
+        and not plan.overview
+        and plan.depth != "detailed"
+        and not plan.detail_requested
+        and len(plan.aspects) <= 1
+    )
 
 
 def fit_evidence(claims: Sequence[Excerpt], allowance: int) -> list[str]:
@@ -241,6 +310,19 @@ async def compose_answer(
         claims = cast(dict[str, object], draft).get("claims")
         if not isinstance(claims, list):
             return await fallback("invalid_draft")
+        if not claims:
+            # The writer judged that this paper's evidence cannot answer: abstain rather
+            # than show excerpts that do not answer the question.
+            return AnswerResult(
+                [],
+                "abstention",
+                session.calls,
+                fallback_reason="not_in_paper",
+                input_bytes=session.input_bytes,
+                output_tokens=session.output_tokens,
+                required_aspects=len(plan.aspects),
+                input_tokens=session.input_tokens,
+            )
         candidates: list[Excerpt] = []
         allowed_labels = {
             "Contribution",
@@ -272,9 +354,10 @@ async def compose_answer(
             authoritative = row.text[start:end]
             if not preserves_anchors(text, authoritative):
                 continue
-            if any(
-                candidate.text == text or candidate.quote == authoritative
-                for candidate in candidates
+            # One passage may support several separately stated points (the writer is told
+            # to split sentences), but never the same point twice.
+            if any(candidate.text == text.strip() for candidate in candidates) or (
+                sum(candidate.quote == authoritative for candidate in candidates) >= 3
             ):
                 continue
             label = str(item.get("aspect", "Answer"))
@@ -306,24 +389,37 @@ async def compose_answer(
                 return await fallback("entailment_timeout")
             try:
                 async with asyncio.timeout(budget):
-                    verdicts = await EvidenceVerifier.tier_3(
-                        entail,
-                        [(item.quote, item.text) for item in candidates],
-                        floor=entail_floor,
+                    scores = await EvidenceVerifier.tier_3_scores(
+                        entail, [(item.quote, item.text) for item in candidates]
                     )
             except TimeoutError:
                 return await fallback("entailment_timeout")
             except Exception:
                 return await fallback("entailment_unavailable")
-            entailed = [
-                msgspec.structs.replace(item, checks=(*item.checks, "tier_3_entailment"))
-                for item, ok in zip(candidates, verdicts, strict=True)
-                if ok
+            kept = [
+                (msgspec.structs.replace(item, checks=(*item.checks, "tier_3_entailment")), score)
+                for item, score in zip(candidates, scores, strict=True)
+                if score >= entail_floor
             ]
-            rejected += len(candidates) - len(entailed)
-            candidates = entailed
+            rejected += len(candidates) - len(kept)
+            candidates = [item for item, _ in kept]
             if not candidates:
                 return await fallback("entailment_rejected")
+            if rejected == 0 and review_optional(plan, [score for _, score in kept]):
+                return AnswerResult(
+                    [
+                        msgspec.structs.replace(item, checks=("tier_1", "tier_3_entailment"))
+                        for item in candidates
+                    ],
+                    "entailed_answer",
+                    session.calls,
+                    0,
+                    0,
+                    session.input_bytes,
+                    session.output_tokens,
+                    required_aspects=len(plan.aspects),
+                    input_tokens=session.input_tokens,
+                )
         review_request: dict[str, object] = {
             "question": question,
             "user_question": plan.user_question or question,

@@ -1,10 +1,13 @@
 [project]
-name = "arie-files-s3"
+name = "arie-plugin-rerank-onnx"
 version = "0.1.0"
 requires-python = ">=3.14"
 dependencies = [
     "arie-core",
-    "arie-plugin-files-local",
+    "huggingface-hub>=0.24",
+    "numpy>=2.0",
+    "onnxruntime>=1.20",
+    "tokenizers>=0.20",
 ]
 
 [build-system]
@@ -13,7 +16,6 @@ build-backend = "hatchling.build"
 
 [tool.uv.sources]
 arie-core = { workspace = true }
-arie-plugin-files-local = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
-packages = ["arie_files_s3"]
+packages = ["arie_rerank_onnx"]

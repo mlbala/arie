@@ -77,23 +77,6 @@ CREATE TABLE IF NOT EXISTS outlines (
     FOREIGN KEY (paper_id) REFERENCES papers(paper_id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS briefs (
-    brief_id TEXT PRIMARY KEY,
-    paper_id TEXT NOT NULL,
-    content TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (paper_id) REFERENCES papers(paper_id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS answers (
-    answer_id TEXT PRIMARY KEY,
-    paper_id TEXT NOT NULL,
-    answer_text TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'draft',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (paper_id) REFERENCES papers(paper_id) ON DELETE CASCADE
-);
-
 CREATE TABLE IF NOT EXISTS skips (
     skip_id TEXT PRIMARY KEY,
     paper_id TEXT NOT NULL,
@@ -123,4 +106,3 @@ CREATE INDEX IF NOT EXISTS idx_papers_source ON papers(source, paper_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(status, lease_until, created_at);
 CREATE INDEX IF NOT EXISTS idx_chunks_paper ON chunks(paper_id, "order");
 CREATE INDEX IF NOT EXISTS idx_vectors_paper_model ON vectors(paper_id, model);
-CREATE INDEX IF NOT EXISTS idx_answers_paper_created ON answers(paper_id, created_at DESC);

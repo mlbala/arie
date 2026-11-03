@@ -1,4 +1,4 @@
-.PHONY: check lint boundaries types test test-unit test-api test-contracts web-check eval-llm
+.PHONY: check lint boundaries types test test-unit test-api test-contracts web-check eval-llm eval-paper
 
 # Everything CI runs for Python: lint, import boundaries, strict types, all test suites.
 check: lint boundaries types test
@@ -31,3 +31,8 @@ web-check:
 # Uses the configured provider and fixed synthetic source-of-truth cases.
 eval-llm:
 	uv run python -m arie_api.eval_answers
+
+# Evaluates answers on one ingested paper, its own text as the ground truth:
+# make eval-paper PAPER=2610.40325 [ARGS="--compare-reranker --regenerate"]
+eval-paper:
+	uv run python -m arie_api.eval_paper $(PAPER) $(ARGS)

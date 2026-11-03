@@ -338,3 +338,31 @@ it("restores saved turns as verified answers and uses them as follow-up context"
     { question: "How does the method work?", source_ids: ["paper-1:7"] },
   ]);
 });
+
+it("rates a saved answer and restores the rating, with a note for a down rating", async () => {
+  const quote = "The method uses isolated worker processes to read evidence.";
+  const citation = { page_start: 3, char_start: 10, char_end: 10 + quote.length, chunk_id: "paper-1:7" };
+  vi.mocked(getChat).mockResolvedValueOnce({ turns: [{
+    turn_id: "turn-1",
+    question: "How does the method work?",
+    rating: "up",
+    events: [
+      { event: "answer", data: { paper_id: "paper-1", mode: "source_excerpts", heading: "Answer" } },
+      { event: "claim", data: { paper_id: "paper-1", verified: true, claim: { text: "Isolated workers read the evidence.", quote, citation } } },
+      { event: "done", data: { paper_id: "paper-1", mode: "source_excerpts", turn_id: "turn-1" } },
+    ],
+  }] });
+  const fetcher = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ turn_id: "turn-1", rating: "down" })));
+  vi.stubGlobal("fetch", fetcher);
+  render(<ChatWorkspace papers={papers} activePaperId="paper-1" onSelectPaper={vi.fn()} onClosePaper={vi.fn()} onCitation={vi.fn()} />);
+  expect(await screen.findByRole("button", { name: "Helpful" })).toHaveAttribute("aria-pressed", "true");
+  fireEvent.click(screen.getByRole("button", { name: "Not helpful" }));
+  expect(screen.getByRole("button", { name: "Not helpful" })).toHaveAttribute("aria-pressed", "true");
+  fireEvent.change(screen.getByLabelText("What was wrong?"), { target: { value: "Missed the method" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+  const [url, init] = fetcher.mock.calls[1]!;
+  expect(String(url)).toContain("/v1/papers/paper-1/chat/turn-1/feedback");
+  expect(init.method).toBe("PUT");
+  expect(JSON.parse(String(init.body))).toEqual({ rating: "down", note: "Missed the method" });
+});
