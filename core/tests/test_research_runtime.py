@@ -119,6 +119,7 @@ with pymupdf.open() as doc:
         database={"use": "sqlite", "path": str(tmp_path / "arie.db")},
         file_storage={"use": "local", "root": str(tmp_path / "papers")},
         embedder={"use": "none"},
+        entailment={"use": "none"},
         sources=["arxiv"],
     )
     config = config.model_copy(update={"plugins": plugins})
@@ -254,6 +255,7 @@ async def test_interrupted_sync_resumes_saved_window_and_cursor(tmp_path: Path) 
         database={"use": "sqlite", "path": str(tmp_path / "resume.db")},
         file_storage={"use": "local", "root": str(tmp_path / "papers")},
         embedder={"use": "none"},
+        entailment={"use": "none"},
     )
     config = config.model_copy(update={"plugins": plugins})
     first = ResearchRuntime(ROOT, config)

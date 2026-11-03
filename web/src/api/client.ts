@@ -334,6 +334,7 @@ export interface StorageHealth {
     provider: string; status: string; size_bytes: number | null; detail: string;
     embedder?: string; vectors?: number | null; papers_indexed?: number | null; papers_total?: number | null;
   };
+  entailment?: { plugin: string; status: string; detail: string };
   active_jobs: SyncJob[];
 }
 

@@ -402,6 +402,10 @@ function ChatPanel({
                       <p className="excerpt-mode">
                         {["provider_http_401", "provider_http_403"].includes(entry.fallbackReason ?? "")
                           ? "Model connection rejected. This extractive answer uses saved paper text. Reconnect in Settings for a model-reviewed summary."
+                          : entry.fallbackReason === "entailment_rejected"
+                            ? "The drafted summary was not supported by its quotations, so exact source excerpts are shown."
+                          : ["entailment_unavailable", "entailment_timeout"].includes(entry.fallbackReason ?? "")
+                            ? "The claim checker is loading or unavailable, so exact source excerpts are shown. See Storage & health."
                           : entry.mode === "extractive_summary"
                             ? "Extractive summary from this paper. A reviewed model summary was unavailable."
                             : "Showing source excerpts. A reviewed model answer was unavailable."}

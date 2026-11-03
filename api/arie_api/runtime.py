@@ -18,6 +18,7 @@ from typing import Any, cast
 import yaml
 from arie_core.budget import BudgetHandle
 from arie_core.contracts import VectorRow
+from arie_core.harness.verifier import MIN_ENTAILMENT
 from arie_core.pipeline import IngestionPipeline
 from arie_core.pipeline.chunker import chunk_spans
 from arie_core.pipeline.topics import TOPICS, topic_tags
@@ -35,6 +36,7 @@ from arie_core.registry.sync import months_ago as months_ago
 from arie_core.sched import supervised
 from arie_core.search import score_paper
 from arie_worker.embedding import EmbeddingPool
+from arie_worker.entailment import EntailmentPool
 from arie_worker.extraction import ExtractionPool
 
 from arie_api.providers import (
@@ -81,11 +83,15 @@ class ResearchRuntime:
         self.db = cast(Database, self.instance("database"))
         file_config = cast(dict[str, object], self.config.plugins.get("file_storage", {}))
         self.storage_root = root / str(file_config.get("root") or "data/papers")
-        parser_config = cast(dict[str, object], self.config.plugins.get("parser", {}))
+        parser_config = dict(cast(dict[str, object], self.config.plugins.get("parser", {})))
+        parser_name = str(parser_config.pop("use", "") or "pymupdf4llm")
+        parse_timeout = float(cast(float, parser_config.pop("timeout_sec", 60.0)))
         self.pool = ExtractionPool(
             root,
-            str(parser_config.get("use") or "pymupdf4llm"),
+            parser_name,
             self.config.runtime_qos.utility_worker_processes,
+            parser_config,
+            parse_timeout,
         )
         self.file_storage = self.instance("file_storage")
         self.jobs: dict[str, Document] = {}
@@ -110,6 +116,16 @@ class ResearchRuntime:
         if vector_name != "none" and resolve_embedder(self.config) is not None:
             self.vector_store = cast(VectorStore, self.instance("vector_store"))
             self.apply_embedder()
+        entail_config = dict(cast(dict[str, object], self.config.plugins.get("entailment", {})))
+        self.entail_name = str(entail_config.pop("use", "") or "none")
+        self.entail_floor = float(cast(float, entail_config.pop("min_score", MIN_ENTAILMENT)))
+        self.entailment = (
+            EntailmentPool(root, self.entail_name, entail_config)
+            if self.entail_name != "none"
+            else None
+        )
+        self.entailment_ready = False
+        self.entailment_error = ""
 
     def apply_embedder(self) -> None:
         """Adopt the embedder resolved from config; a new model re-embeds in the background.
@@ -1130,6 +1146,52 @@ class ResearchRuntime:
             except TimeoutError:
                 pass
 
+    async def warm_entailment(self) -> None:
+        """Load the Tier 3 model at startup so the first answer need not download it.
+
+        Until it is ready, model-written claims cannot pass Tier 3 and answers use exact
+        source excerpts. A failed load is retried every 5 minutes and shown as degraded.
+        """
+        if self.entailment is None:
+            return
+        while not self.entailment_ready:
+            try:
+                await self.entailment.score([("ARIE warm-up premise.", "Warm-up.")], 600.0)
+                self.entailment_ready, self.entailment_error = True, ""
+            except Exception as exc:
+                logger.warning(
+                    "Entailment model %s failed to load", self.entail_name, exc_info=True
+                )
+                self.entailment_error = str(exc) or type(exc).__name__
+                await asyncio.sleep(300.0)
+
+    async def entailment_scores(self, pairs: Sequence[tuple[str, str]]) -> Sequence[float]:
+        """Tier 3 scores for (quote, claim) pairs; raises while the model is unavailable."""
+        if self.entailment is None or not self.entailment_ready:
+            raise RuntimeError("Entailment model is not ready")
+        return await self.entailment.score(list(pairs))
+
+    def entailment_status(self) -> Document:
+        """Report whether model-written claims can currently pass Tier 3."""
+        if self.entailment is None:
+            return {
+                "plugin": "none",
+                "status": "disabled",
+                "detail": "Tier 3 entailment is off; summaries rest on quote matching "
+                "and the model reviewer.",
+            }
+        status = "healthy" if self.entailment_ready else "loading"
+        if not self.entailment_ready and self.entailment_error:
+            status = "degraded"
+        detail = {
+            "healthy": "Every summary claim is checked for entailment by its own quote.",
+            "loading": "Loading the entailment model; answers use exact source excerpts "
+            "until then.",
+            "degraded": f"Entailment model unavailable ({self.entailment_error}); "
+            "answers use exact source excerpts.",
+        }[status]
+        return {"plugin": self.entail_name, "status": status, "detail": detail}
+
     async def semantic_search(self, paper_id: str, queries: Sequence[str]) -> list[str]:
         """Rank one paper's chunk IDs by best cosine similarity to any query, best first.
 
@@ -1209,3 +1271,5 @@ class ResearchRuntime:
         self.pool.close()
         if self.embedding is not None:
             self.embedding.close()
+        if self.entailment is not None:
+            self.entailment.close()

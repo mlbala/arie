@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import cast
@@ -20,6 +21,12 @@ from arie_core.harness.reader import (
     select_excerpts,
 )
 from arie_core.harness.session import ModelSession, failure_reason
+from arie_core.harness.verifier import (
+    MIN_ENTAILMENT,
+    EntailmentCheck,
+    EvidenceVerifier,
+    preserves_anchors,
+)
 from arie_core.plugin_api import LLM, Ctx
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -114,25 +121,6 @@ def _source_windows(
     return windows
 
 
-def preserves_anchors(text: str, quote: str) -> bool:
-    """Reject changed numbers, lost qualifications and new absolutes before model review."""
-
-    def numbers(value: str) -> set[str]:
-        return set(re.findall(r"\d+(?:\.\d+)?", value.replace(",", "")))
-
-    if not numbers(text) <= numbers(quote):
-        return False
-    groups = (
-        r"\b(?:not|no|never|without|cannot|neither|fails?|unable|lacks?|removes?|dispensing)\b|n't",
-        r"\b(?:may|might|could|suggests?|appears?|potentially|preliminary)\b",
-        r"\b(?:only|limited|small|restricted)\b",
-    )
-    if any(re.search(group, quote, re.I) and not re.search(group, text, re.I) for group in groups):
-        return False
-    absolutes = r"\b(?:always|never|every|guarantees?|proves?|perfect|all datasets)\b"
-    return not (re.search(absolutes, text, re.I) and not re.search(absolutes, quote, re.I))
-
-
 def fit_evidence(claims: Sequence[Excerpt], allowance: int) -> list[str]:
     """Fit review evidence into ``allowance`` bytes, keeping each claim's most relevant sentences.
 
@@ -176,11 +164,15 @@ async def compose_answer(
     project_root: Path | None = None,
     plan: AnswerPlan | None = None,
     session: ModelSession | None = None,
+    entail: EntailmentCheck | None = None,
+    entail_floor: float = MIN_ENTAILMENT,
 ) -> AnswerResult:
-    """Draft then review against exact, paper-scoped evidence; fall back if either stage fails.
+    """Draft, entailment-check, then review against exact, paper-scoped evidence.
 
     Writer and reviewer share the planner's input/output limits when orchestrated.
     The caller owns the 25-second request timeout. Neither model receives tools.
+    With ``entail``, each drafted claim must pass Tier 3 against its own quote before
+    review; a model failure or timeout abstains to source excerpts (I2), never skips it.
     """
     scoped = [
         row for row in rows if row.paper_id == paper_id and not is_untrusted_instruction(row.text)
@@ -307,6 +299,31 @@ async def compose_answer(
             rejected -= 1
         if not candidates:
             return await fallback("no_supported_draft")
+        if entail is not None:
+            # Tier 3 runs before review so coverage is judged only on entailed claims.
+            budget = min(4.0, ctx.deadline - time.monotonic() - 3.0)
+            if budget <= 0.2:
+                return await fallback("entailment_timeout")
+            try:
+                async with asyncio.timeout(budget):
+                    verdicts = await EvidenceVerifier.tier_3(
+                        entail,
+                        [(item.quote, item.text) for item in candidates],
+                        floor=entail_floor,
+                    )
+            except TimeoutError:
+                return await fallback("entailment_timeout")
+            except Exception:
+                return await fallback("entailment_unavailable")
+            entailed = [
+                msgspec.structs.replace(item, checks=(*item.checks, "tier_3_entailment"))
+                for item, ok in zip(candidates, verdicts, strict=True)
+                if ok
+            ]
+            rejected += len(candidates) - len(entailed)
+            candidates = entailed
+            if not candidates:
+                return await fallback("entailment_rejected")
         review_request: dict[str, object] = {
             "question": question,
             "user_question": plan.user_question or question,

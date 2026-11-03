@@ -192,6 +192,7 @@ with pymupdf.open() as doc:
         database={"use": "sqlite", "path": str(tmp_path / "import.db")},
         file_storage={"use": "local", "root": str(tmp_path / "papers")},
         embedder={"use": "none"},
+        entailment={"use": "none"},
     )
     runtime = ResearchRuntime(ROOT, config.model_copy(update={"plugins": plugins}))
     metadata_requests: list[dict[str, str | int]] = []
