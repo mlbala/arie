@@ -1,20 +1,49 @@
+# Python environments and build output
 .venv/
 .fdevenv/
 __pycache__/
 *.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Tool caches
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.hypothesis/
+.import_linter_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local library data: database, PDFs, vectors and downloaded models
 data/
 *.db
 *.db-wal
 *.db-shm
+*.sqlite3
 *.pdf
 *.part
 *.sock
-web/node_modules/
+# Model caches created by running ARIE or its tests outside Docker
+hf/
+models/
+.cache/
+
+# Web workspace
+node_modules/
 web/dist/
+web/coverage/
+
+# Secrets: keep keys in .env; only the example is committed
 .env
 .env.*
 !.env.example
+
+# Editors, OS and agent tooling
 .DS_Store
+.idea/
+*.swp
+*.log
 .playwright-mcp/
