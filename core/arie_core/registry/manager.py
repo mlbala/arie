@@ -9,6 +9,7 @@ import importlib
 import importlib.metadata
 import importlib.util
 import inspect
+import logging
 import random
 import sys
 import time
@@ -27,6 +28,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from arie_core.budget import BudgetHandle
 from arie_core.events import EventBus
 from arie_core.registry.sync import SyncConfig
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -85,9 +88,30 @@ class LLMProviderConfig(BaseModel):
 
 def default_llm_providers() -> dict[str, LLMProviderConfig]:
     return {
-        "deepseek": LLMProviderConfig(model="deepseek-chat", api_key_env="DEEPSEEK_API_KEY"),
-        "openai": LLMProviderConfig(model="gpt-4.1-mini", api_key_env="OPENAI_API_KEY"),
+        "deepseek": LLMProviderConfig(model="deepseek-flash", api_key_env="DEEPSEEK_API_KEY"),
+        "openai": LLMProviderConfig(model="gpt-5.4-mini", api_key_env="OPENAI_API_KEY"),
         "gemini": LLMProviderConfig(model="gemini-3.5-flash-lite", api_key_env="GEMINI_API_KEY"),
+    }
+
+
+class EmbeddingProviderConfig(BaseModel):
+    """Embedder defaults; ``min_score`` is the cosine floor calibrated for that model."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    model: str = Field(min_length=1, max_length=128)
+    min_score: float = Field(ge=-1.0, le=1.0)
+    api_key_env: str | None = Field(default=None, pattern=r"^[A-Z][A-Z0-9_]*$")
+
+
+def default_embedding_providers() -> dict[str, EmbeddingProviderConfig]:
+    return {
+        "fastembed": EmbeddingProviderConfig(model="BAAI/bge-small-en-v1.5", min_score=0.6),
+        "openai": EmbeddingProviderConfig(
+            model="text-embedding-3-small", min_score=0.25, api_key_env="OPENAI_API_KEY"
+        ),
+        "gemini": EmbeddingProviderConfig(
+            model="gemini-embedding-001", min_score=0.55, api_key_env="GEMINI_API_KEY"
+        ),
     }
 
 
@@ -99,6 +123,9 @@ class ArieConfig(BaseModel):
     plugins: dict[str, object] = Field(default_factory=dict)
     features: list[str] = Field(default_factory=list)
     llm_providers: dict[str, LLMProviderConfig] = Field(default_factory=default_llm_providers)
+    embedding_providers: dict[str, EmbeddingProviderConfig] = Field(
+        default_factory=default_embedding_providers
+    )
     sync: SyncConfig = Field(default_factory=lambda: SyncConfig())
 
     @classmethod
@@ -196,6 +223,7 @@ class RegistryManager:
             try:
                 plugin_module = entry_point.load()
             except Exception:
+                logger.warning("Skipped plugin entry point %r: import failed", name, exc_info=True)
                 continue
             self._index_module(plugin_module, name)
 
@@ -227,6 +255,9 @@ class RegistryManager:
         try:
             spec.loader.exec_module(module)
         except Exception:
+            # A plugin that fails to import is unavailable; say why instead of hiding it.
+            sys.modules.pop(module_name, None)
+            logger.warning("Skipped plugin file %s: import failed", file_path, exc_info=True)
             return
         self._index_module(module, file_path.stem)
 

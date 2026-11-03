@@ -13,6 +13,7 @@ from .dtos import (
     TokenUsage,
     ToolCall,
     VectorRow,
+    VectorStats,
 )
 
 __all__ = [
@@ -30,4 +31,5 @@ __all__ = [
     "TokenUsage",
     "ToolCall",
     "VectorRow",
+    "VectorStats",
 ]

@@ -37,6 +37,7 @@ class AnswerResult(msgspec.Struct, frozen=True):
     answer_relevant: bool = False
     covered_aspects: int = 0
     required_aspects: int = 0
+    input_tokens: int = 0
 
 
 def load_playbook(project_root: Path) -> dict[str, str]:
@@ -132,6 +133,39 @@ def preserves_anchors(text: str, quote: str) -> bool:
     return not (re.search(absolutes, text, re.I) and not re.search(absolutes, quote, re.I))
 
 
+def fit_evidence(claims: Sequence[Excerpt], allowance: int) -> list[str]:
+    """Fit review evidence into ``allowance`` bytes, keeping each claim's most relevant sentences.
+
+    Kept sentences are verbatim from the cited passage, so support the reviewer finds in
+    them is support in the full citation shown to the user; trimming can only add
+    rejections. Evidence that still cannot fit is empty, so its claim is rejected.
+    """
+    quotes = [claim.quote for claim in claims]
+    if sum(len(quote.encode("utf-8")) for quote in quotes) <= allowance:
+        return quotes
+    share = max(0, allowance) // max(1, len(claims))
+    fitted: list[str] = []
+    for claim in claims:
+        # Every sentence or line is a candidate, including tables, never a filtered subset.
+        sentences = [part for part in re.split(r"(?<=[.!?])\s+|\n+", claim.quote) if part.strip()]
+        terms = query_terms(claim.text)
+        ranked = sorted(
+            range(len(sentences)),
+            key=lambda i: len(terms & query_terms(sentences[i])),
+            reverse=True,
+        )
+        kept: list[int] = []
+        used = 0
+        for index in ranked:
+            # JSON-escaped bytes plus a joining space; the request already holds the quotes.
+            size = len(msgspec.json.encode(sentences[index])) - 1
+            if used + size <= share:
+                kept.append(index)
+                used += size
+        fitted.append(" ".join(sentences[index] for index in sorted(kept)))
+    return fitted
+
+
 async def compose_answer(
     ctx: Ctx,
     paper_id: str,
@@ -177,17 +211,19 @@ async def compose_answer(
             session.output_tokens,
             reason or session.unavailable_reason,
             required_aspects=len(plan.aspects),
+            input_tokens=session.input_tokens,
         )
 
     if session.llm is None or not scoped:
         return await fallback()
-    windows = _source_windows(scoped, plan, max_bytes=2500 if session.calls else 3500)
+    windows = _source_windows(scoped, plan, max_bytes=8000 if session.calls else 8500)
     if not windows:
         return await fallback()
 
     try:
         writer, reviewer = await asyncio.to_thread(answer_prompts, project_root or PROJECT_ROOT)
-        writer_limit = 472 if session.calls else 600
+        # Planner 160 + writer 440 + reviewer 100 = the 700-token output cap (I3).
+        writer_limit = 440 if session.calls else 600
         draft = await session.call(
             writer,
             {
@@ -271,22 +307,22 @@ async def compose_answer(
             rejected -= 1
         if not candidates:
             return await fallback("no_supported_draft")
-        verdict = await session.call(
-            reviewer,
-            {
-                "question": question,
-                "user_question": plan.user_question or question,
-                "task": plan.task,
-                "required_aspects": list(plan.aspects),
-                "depth": plan.depth,
-                "claims": [
-                    {"id": i, "summary": item.text, "evidence": item.quote}
-                    for i, item in enumerate(candidates)
-                ],
-            },
-            100,
-            7.0,
-        )
+        review_request: dict[str, object] = {
+            "question": question,
+            "user_question": plan.user_question or question,
+            "task": plan.task,
+            "required_aspects": list(plan.aspects),
+            "depth": plan.depth,
+            "claims": [
+                {"id": i, "summary": item.text, "evidence": ""} for i, item in enumerate(candidates)
+            ],
+        }
+        evidence = fit_evidence(candidates, session.remaining_input(reviewer, review_request))
+        review_request["claims"] = [
+            {"id": i, "summary": item.text, "evidence": quote}
+            for i, (item, quote) in enumerate(zip(candidates, evidence, strict=True))
+        ]
+        verdict = await session.call(reviewer, review_request, 100, 7.0)
         reviewed = len(candidates)
         if not isinstance(verdict, dict):
             return await fallback("invalid_review")
@@ -294,7 +330,8 @@ async def compose_answer(
         if review.get("answers_question") is not True:
             rejected += len(candidates)
             return await fallback("question_not_answered")
-        if plan.depth == "detailed" and review.get("adequate_detail") is not True:
+        # Shallow answers fail only when the user asked for depth, not when ARIE chose it.
+        if plan.detail_requested and review.get("adequate_detail") is not True:
             rejected += len(candidates)
             return await fallback("insufficient_detail")
         supported = review.get("supported")
@@ -330,6 +367,7 @@ async def compose_answer(
             answer_relevant=True,
             covered_aspects=len(covered_ids),
             required_aspects=len(plan.aspects),
+            input_tokens=session.input_tokens,
         )
     except Exception as exc:
         return await fallback(failure_reason(exc))

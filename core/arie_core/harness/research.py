@@ -6,9 +6,11 @@ from collections.abc import Sequence
 import msgspec
 
 from arie_core.harness.intent import AnswerPlan
+from arie_core.harness.prefetch import reciprocal_rank_fusion
 from arie_core.harness.reader import (
     EvidenceChunk,
     annotate_sections,
+    eligible,
     is_untrusted_instruction,
     prose_sentences,
     query_terms,
@@ -22,11 +24,21 @@ class ReadingResult(msgspec.Struct, frozen=True):
     actions: tuple[str, ...]
 
 
+# Vector hits merged per answer; keyword hits keep their own per-query cap of five.
+SEMANTIC_DEPTH = 6
+
+
 def read_for_answer(
-    ctx: Ctx, paper_id: str, plan: AnswerPlan, rows: Sequence[EvidenceChunk]
+    ctx: Ctx,
+    paper_id: str,
+    plan: AnswerPlan,
+    rows: Sequence[EvidenceChunk],
+    semantic: Sequence[str] = (),
 ) -> ReadingResult:
     """Search, expand source sections and inspect gaps under three paper-bound tool calls.
 
+    ``semantic`` ranks chunk IDs from the paper's vector index, best first. It is fused
+    with keyword hits by RRF (k=60); IDs not in this paper's eligible rows are ignored.
     History IDs are untrusted locators. All reads are post-filtered to the bound paper;
     no previous answer prose or other paper can enter the evidence set.
     """
@@ -45,6 +57,14 @@ def read_for_answer(
         for row in retrieve(paper_id, query, scoped):
             if row.paper_id == paper_id and row not in selected:
                 selected.append(row)
+    by_id = {row.chunk_id: row for row in eligible(plan.question, scoped)}
+    vector_ids = [chunk_id for chunk_id in dict.fromkeys(semantic) if chunk_id in by_id]
+    vector_ids = vector_ids[:SEMANTIC_DEPTH]
+    if vector_ids:
+        fused = reciprocal_rank_fusion([row.chunk_id for row in selected], vector_ids)
+        found = {row.chunk_id: row for row in selected} | {i: by_id[i] for i in vector_ids}
+        selected = [found[i] for i in sorted(fused, key=fused.__getitem__, reverse=True)]
+    vector_rank = {chunk_id: rank for rank, chunk_id in enumerate(vector_ids)}
     complex_task = plan.task in {"comparison", "synthesis", "critique", "methodology"}
     if plan.depth != "detailed" and not complex_task and not plan.sections:
         return ReadingResult(
@@ -92,6 +112,8 @@ def read_for_answer(
 
     def rank(row: EvidenceChunk) -> int:
         score = 5 * len(terms & query_terms(row.text))
+        if row.chunk_id in vector_rank:
+            score += 12 - 2 * vector_rank[row.chunk_id]
         if plan.follow_up and row.chunk_id not in prior_ids:
             score += 30
         if plan.follow_up and row.chunk_id in prior_ids:
@@ -121,13 +143,18 @@ def read_for_answer(
             r"equal contribution|listing order is random|work performed while", row.text, re.I
         ):
             continue
+        # Bare headings and layout fragments would spend a section's quota without evidence.
+        if not prose_sentences(row.text) and "|" not in row.text:
+            continue
         group = (
             row.section.split(" / ")[0]
             if plan.overview and row.section
             else row.section or f"page-{row.page_start}"
         )
         size = len(row.text.encode("utf-8"))
-        if per_section.get(group, 0) >= (4 if plan.overview else 3) or used_bytes + size > 8500:
+        # A section the planner chose to read gets more room than one matched in passing.
+        quota = 5 if row.section in plan.sections else 4 if plan.overview else 3
+        if per_section.get(group, 0) >= quota or used_bytes + size > 8500:
             continue
         result.append(row)
         used_bytes += size

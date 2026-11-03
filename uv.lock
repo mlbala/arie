@@ -8,6 +8,8 @@ members = [
     "arie-core",
     "arie-db-postgres",
     "arie-db-sqlite",
+    "arie-embed-gemini",
+    "arie-embed-openai",
     "arie-files-s3",
     "arie-llm-deepseek",
     "arie-llm-gemini",
@@ -119,6 +121,36 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "arie-core", editable = "core" }]
+
+[[package]]
+name = "arie-embed-gemini"
+version = "0.1.0"
+source = { editable = "plugins/embed-gemini" }
+dependencies = [
+    { name = "arie-core" },
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "arie-core", editable = "core" },
+    { name = "httpx", specifier = ">=0.28.0" },
+]
+
+[[package]]
+name = "arie-embed-openai"
+version = "0.1.0"
+source = { editable = "plugins/embed-openai" }
+dependencies = [
+    { name = "arie-core" },
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "arie-core", editable = "core" },
+    { name = "httpx", specifier = ">=0.28.0" },
+]
 
 [[package]]
 name = "arie-files-s3"

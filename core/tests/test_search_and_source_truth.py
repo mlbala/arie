@@ -22,6 +22,7 @@ def runtime_at(tmp_path: Path) -> ResearchRuntime:
     plugins.update(
         database={"use": "sqlite", "path": str(tmp_path / "arie.db")},
         file_storage={"use": "local", "root": str(tmp_path / "papers")},
+        embedder={"use": "none"},
     )
     return ResearchRuntime(ROOT, config.model_copy(update={"plugins": plugins}))
 
@@ -142,7 +143,7 @@ async def test_summary_is_rephrased_reviewed_and_cited_to_exact_saved_offsets() 
     for item in result.excerpts:
         assert SOURCE[item.char_start - 120 : item.char_end - 120] == item.quote
     assert "Secret foreign" not in " ".join(request.prompt for request in model.requests)
-    assert result.input_bytes <= 12000 and result.output_tokens <= 700
+    assert result.input_tokens <= 12000 and result.output_tokens <= 700
     assert sum(request.max_output_tokens for request in model.requests) == 700
 
 

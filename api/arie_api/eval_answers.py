@@ -11,7 +11,7 @@ from arie_core.harness.orchestrator import answer_question
 from arie_core.plugin_api import LLM
 from arie_core.registry.manager import ArieConfig, RegistryManager
 
-from arie_api.providers import LLMProviders
+from arie_api.providers import DEFAULT_LLM, LLMProviders, config_path
 from arie_api.runtime import context
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -19,11 +19,11 @@ ROOT = Path(__file__).resolve().parents[2]
 
 async def evaluate() -> bool:
     """Evaluate the configured model against fixed, synthetic source facts."""
-    config = ArieConfig.from_yaml(ROOT / "arie.yaml")
+    config = ArieConfig.from_yaml(config_path(ROOT))
     manager = RegistryManager(project_root=ROOT, config=config)
     settings = cast(dict[str, object], config.plugins.get("llm", {}))
     providers = LLMProviders(ROOT, config, manager, asyncio.Lock())
-    name = str(settings.get("use") or "deepseek")
+    name = str(settings.get("use") or DEFAULT_LLM)
     llm = cast(LLM, manager.build_plugin("llm", name, **providers.settings(name)))
     if not getattr(llm, "api_key", None):
         print(json.dumps({"status": "not_run", "reason": "Configured LLM has no API key"}))

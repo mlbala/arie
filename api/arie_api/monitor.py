@@ -81,7 +81,6 @@ class StorageMonitor:
         runtime = self.runtime
         database = cast(dict[str, object], runtime.config.plugins.get("database", {}))
         files = cast(dict[str, object], runtime.config.plugins.get("file_storage", {}))
-        vector = cast(dict[str, object], runtime.config.plugins.get("vector_store", {}))
         db: Document = {
             "provider": database.get("use"),
             "status": "unavailable",
@@ -133,15 +132,24 @@ class StorageMonitor:
             )
         except OSError:
             pdf["status"] = "unavailable"
+        try:
+            async with asyncio.timeout(3.0):
+                vector = await runtime.vector_status()
+        except Exception as exc:
+            provider = cast(dict[str, object], runtime.config.plugins.get("vector_store", {}))
+            vector = {
+                "provider": provider.get("use"),
+                "embedder": runtime.embedder_id,
+                "status": "unavailable",
+                "size_bytes": None,
+                "vectors": None,
+                "papers_indexed": None,
+                "papers_total": None,
+                "detail": f"Vector store check failed: {exc or type(exc).__name__}",
+            }
         return {
             "checked_at": datetime.now(UTC).isoformat(),
             "database": db,
             "file_storage": pdf,
-            "vector_store": {
-                "provider": vector.get("use"),
-                "status": "inactive",
-                "size_bytes": None,
-                "detail": "Sync saves searchable evidence in the database. "
-                "The configured vector provider is not populated by this sync pipeline.",
-            },
+            "vector_store": vector,
         }

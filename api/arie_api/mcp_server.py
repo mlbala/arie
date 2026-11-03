@@ -162,8 +162,10 @@ class MCPStatelessServer:
             base_schema["required"] = ["query"]
         elif name == "read_section":
             base_schema["properties"] = {
-                "section":
-                    {"type": "string", "description": "Section name such as overview or methods."}
+                "section": {
+                    "type": "string",
+                    "description": "Section name such as overview or methods.",
+                }
             }
             base_schema["required"] = ["section"]
         elif name == "get_table":

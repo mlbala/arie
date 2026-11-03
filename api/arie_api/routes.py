@@ -5,7 +5,7 @@ import inspect
 import json
 import logging
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from arie_api.mcp_server import MCPStatelessServer, verify_scope_handle
 from arie_api.monitor import StorageMonitor
+from arie_api.providers import embedder_options
 from arie_api.runtime import Document, ResearchRuntime, context
 
 logger = logging.getLogger(__name__)
@@ -99,11 +100,13 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
         async with asyncio.TaskGroup() as group:
             worker = group.create_task(supervised(service.run)())
             imports = group.create_task(supervised(service.run_imports)())
+            vectors = group.create_task(supervised(service.run_vector_index)())
             try:
                 yield
             finally:
                 worker.cancel()
                 imports.cancel()
+                vectors.cancel()
                 service.close()
 
     app = FastAPI(title="ARIE API", version="0.1.0", lifespan=lifespan)
@@ -149,6 +152,12 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.get("/v1/papers/{paper_id:path}/chat")
+    async def get_chat(paper_id: str) -> Document:
+        """Saved turns for this paper, oldest first, each with the events it streamed."""
+        await document(paper_id)
+        return {"paper_id": paper_id, "turns": await active().chat_history(paper_id)}
+
     @app.get("/v1/papers/{paper_id:path}/pdf")
     async def paper_pdf(paper_id: str) -> FileResponse:
         paper = await document(paper_id)
@@ -179,6 +188,13 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
             )
 
         async def stream() -> AsyncIterator[str]:
+            # The answer as streamed, saved once complete so a reload shows the same turn.
+            saved: list[Document] = []
+
+            def emit(kind: str, **payload: Any) -> str:
+                saved.append({"event": kind, "data": payload})
+                return _event(kind, **payload)
+
             try:
                 async with asyncio.timeout(25.0):
                     ctx = context(uuid.uuid4().hex, 25.0)
@@ -201,6 +217,12 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
                     llm: LLM | None = cast(LLM, active().instance("llm"))
                     if not getattr(llm, "api_key", None):
                         llm = None
+                    runtime = active()
+
+                    async def semantic(queries: Sequence[str]) -> list[str]:
+                        # paper_id is bound here, never taken from model output (I1).
+                        return await runtime.semantic_search(paper_id, queries)
+
                     run = await answer_question(
                         ctx,
                         paper_id,
@@ -209,6 +231,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
                         llm,
                         project_root=PROJECT_ROOT,
                         history=history,
+                        semantic=semantic,
                     )
                     plan, reading, result = run.plan, run.reading, run.answer
                     excerpts = result.excerpts
@@ -221,17 +244,17 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
                         if result.reviewed_claims
                         else "Checking exact quotes and page locations",
                     )
-                    yield _event(
+                    yield emit(
                         "answer",
                         paper_id=paper_id,
                         mode=mode,
                         context_question=plan.topic_question,
-                        heading="Detailed explanation"
+                        heading="Paper summary"
+                        if plan.overview and not plan.follow_up
+                        else "Detailed explanation"
                         if plan.depth == "detailed"
                         else "Brief answer"
                         if plan.depth == "brief"
-                        else "Paper summary"
-                        if plan.overview
                         else "Answer",
                         evaluation={
                             "source_of_truth": "saved_pdf_text",
@@ -252,7 +275,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
                         },
                     )
                     for excerpt in excerpts:
-                        yield _event(
+                        yield emit(
                             "claim",
                             paper_id=paper_id,
                             verified=True,
@@ -272,7 +295,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
                             },
                         )
                     if not excerpts:
-                        yield _event(
+                        yield emit(
                             "abstention",
                             paper_id=paper_id,
                             message=(
@@ -281,7 +304,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
                                 "to answer that question."
                             ),
                         )
-                    yield _event(
+                    yield emit(
                         "done",
                         paper_id=paper_id,
                         status="complete",
@@ -290,8 +313,14 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
                         tool_calls=len(reading.actions),
                         model_calls=result.model_calls,
                         input_bytes=result.input_bytes,
+                        input_tokens=result.input_tokens,
                         output_tokens=result.output_tokens,
                     )
+                    try:
+                        await active().save_chat_turn(paper_id, request.question, saved)
+                    except Exception:
+                        # History is a convenience; the answer was already delivered.
+                        logger.warning("Could not save chat turn for %s", paper_id, exc_info=True)
             except TimeoutError:
                 yield _event(
                     "error",
@@ -454,6 +483,19 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
                     ),
                     "available": active().manager.get_available_plugins(slot),
                     **({"providers": active().providers.options()} if slot == "llm" else {}),
+                    **(
+                        {
+                            "providers": embedder_options(
+                                active().config, active().manager.get_available_plugins(slot)
+                            ),
+                            "effective": {
+                                "embedder": active().embedder_id,
+                                "reason": active().embedder_reason,
+                            },
+                        }
+                        if slot == "embedder"
+                        else {}
+                    ),
                 }
                 for slot in slots
             ]
@@ -461,12 +503,17 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
 
     @app.put("/v1/plugins/{slot}")
     async def set_plugin(slot: str, request: PluginRequest) -> Document:
-        if slot != "llm":
+        if slot not in {"llm", "embedder"}:
             raise HTTPException(
                 status_code=409, detail="Change this slot in arie.yaml and restart ARIE"
             )
         try:
-            return await active().providers.switch(request.plugin, request.config)
+            if slot == "embedder":
+                return await active().switch_embedder(request.plugin)
+            result = await active().providers.switch(request.plugin, request.config)
+            # Automatic embedding follows the newly selected model provider.
+            active().apply_embedder()
+            return {**result, "embedder": active().embedder_id}
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except OSError as exc:
@@ -479,6 +526,9 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
         try:
             if slot == "llm":
                 await active().providers.check(request.plugin, request.config)
+                return {"ok": True, "slot": slot, "plugin": request.plugin}
+            if slot == "embedder":
+                await active().check_embedder(request.plugin)
                 return {"ok": True, "slot": slot, "plugin": request.plugin}
             instance = active().manager.build_plugin(slot, request.plugin, **request.config)
             ping = getattr(instance, "ping", None)

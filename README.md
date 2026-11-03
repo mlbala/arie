@@ -10,6 +10,77 @@
 - **Hybrid Multi-Process Runtime & 4-Tier QoS Scheduling:** Isolates non-thread-safe PDF parsing (`PyMuPDF4LLM` / `Docling`) and ONNX inference in recycled worker processes while keeping `arie-api` (`uvloop`) under $\le 10\text{ ms}$ p99 lag via 4 GCD-inspired QoS priority lanes.
 - **Chat-focused React 19.2 Workspace:** A wide paper conversation with a compact library and live pipeline sidebar, recent conversations retained with `<Activity mode="hidden">`, and page citations that open highlighted extraction text alongside the original PDF.
 
+## Run with Docker
+
+Requires Docker Engine with Compose v2 (Docker Desktop 4.x or later). Allocate at
+least 3 GB of memory to Docker; PDF extraction runs in a pool of worker processes.
+
+1. Create your environment file and add a key for the LLM provider selected in
+   `arie.yaml` (`plugins.llm.use`, DeepSeek by default):
+
+   ```sh
+   cp .env.example .env
+   ```
+
+2. Build and start the API and web workspace:
+
+   ```sh
+   docker compose up --build -d
+   ```
+
+3. Open <http://localhost:8080>. The API is also reachable at
+   <http://127.0.0.1:8000> for MCP clients and scripts.
+
+Useful commands:
+
+```sh
+docker compose ps                 # health of both services
+docker compose logs -f api        # follow API and extraction logs
+docker compose restart api        # reload .env after changing keys
+docker compose down               # stop; library data is kept
+docker compose down -v            # stop and delete all papers, the database and saved settings
+```
+
+**What runs.** The `api` service is the FastAPI backend with its PDF extraction
+pool. The `web` service is the built React workspace served by nginx, which proxies
+`/v1` (including the live event stream) and `/mcp` to the API. Both images come from
+the multi-stage `Dockerfile` (`--target api` and `--target web`).
+
+**Data and settings.** The `arie-data` volume holds the SQLite database, PDFs,
+the embedding model cache and the active `arie.yaml`. On first start the
+container copies the repository's `arie.yaml` into the volume. Settings saved from
+the UI (sync defaults, provider choice) update that copy and survive restarts and
+rebuilds. To replace it with an edited `arie.yaml` from your checkout:
+
+```sh
+docker compose cp arie.yaml api:/app/data/arie.yaml
+docker compose restart api
+```
+
+The `ARIE_CONFIG` environment variable selects the configuration file; without it,
+ARIE reads `arie.yaml` from the repository root.
+
+**Configuration keys** (`.env`):
+
+| Key | Purpose |
+| --- | --- |
+| `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY` | Provider keys; set the ones you use. Chat falls back to labelled source excerpts without one. |
+| `ARIE_MCP_SECRET` | Signs scoped MCP URLs. Set a random value (`openssl rand -hex 32`) for shared deployments. |
+| `ARIE_WEB_PORT` | Host port for the web workspace (default `8080`). |
+| `ARIE_API_PORT` | Host port for direct API access, bound to `127.0.0.1` (default `8000`). |
+
+**Development overlay.** To edit code with live reload, mount the source over the
+images and run the Vite dev server:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+```
+
+Python changes under `api/`, `core/`, `worker/` and `plugins/` restart the API
+automatically, `prompts/` edits apply to the next question, and changes in `web/src`
+hot-reload in the browser. Dependency changes
+(`uv.lock`, `web/package-lock.json`) need `--build`.
+
 ## Run locally
 
 From the repository root, install dependencies and start the API:
@@ -96,9 +167,42 @@ in the library or the right activity pane. The browser remembers your choice.
 the selected document's tags and evidence counts, database size, PDF storage and
 free disk space. Storage probes are cached for 15 seconds and large directory
 scans report partial totals. Remote storage sizes are unavailable unless measured.
-The current sync pipeline saves evidence in the main database; its configured
-vector provider is shown as inactive rather than reporting an unpopulated index
-as healthy.
+The vector index reports measured coverage: how many chat-ready papers are
+embedded with the configured model, the vector count and its size on disk.
+
+## Vector search and bringing your own vector store
+
+Sync saves evidence chunks in the main database, so a paper is chat-ready before
+it is embedded. A background indexer in `arie-api` then embeds each paper in a
+recycled `arie-worker` process and writes the vectors to the configured store. It
+also backfills existing papers and re-embeds the library when `plugins.embedder.model`
+changes, since vectors from different models are not comparable. Answers fuse keyword
+and vector rankings (RRF, k=60) inside the selected paper only. Vector-only matches
+below `plugins.embedder.min_score` (default 0.6, tuned for `bge-small-en-v1.5`) are
+dropped. If the embedder or store fails, answers fall back to keyword retrieval and
+the status pane shows `degraded` with the reason. Set either plugin's `use` to `none`
+for keyword-only retrieval.
+
+To use your own store, add a class under `plugins/` (or ship a package with an
+`arie.plugins` entry point) that implements `arie_core.plugin_api.VectorStore`
+(`upsert`, `search`, `delete`, `stats`):
+
+```python
+@plugin(slot="vector_store", name="chroma")
+class ChromaVectorStore:
+    def __init__(self, host: str = "localhost", collection: str = "arie") -> None: ...
+```
+
+```yaml
+plugins:
+  vector_store: {use: chroma, host: chroma.internal, collection: arie}
+```
+
+Keys other than `use` go to the constructor. `make test-contracts` runs the
+`VectorStore` contract against every discovered store. A plugin that fails to import
+is logged at startup with the reason. In Docker, a new plugin package needs `uv lock`
+and an image rebuild. The bundled `qdrant` and `pgvector` stores are local SQLite
+stand-ins and do not connect to those servers.
 
 For local storage, the selected document offers **Delete PDF** (retain extracted
 text for chat) and **Delete paper** (remove its PDF, metadata, and evidence).

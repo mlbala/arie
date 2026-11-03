@@ -47,10 +47,14 @@ class GroundedQAHarness:
         self.chunks = list(chunks)
         self.custom_metadata = custom_metadata or {}
         self.outline = list(outline or [])
-        self.budget = budget if budget is not None else BudgetHandle(
-            max_tool_calls=3,
-            max_tokens=12_000,
-            max_wall_sec=25.0,
+        self.budget = (
+            budget
+            if budget is not None
+            else BudgetHandle(
+                max_tool_calls=3,
+                max_tokens=12_000,
+                max_wall_sec=25.0,
+            )
         )
         self.router = router or ZeroLLMRouter()
         self.builder = builder or PromptCacheBuilder()
@@ -108,8 +112,7 @@ class GroundedQAHarness:
                 status="insufficient",
                 route="abstain",
                 answer=(
-                    "Cross-paper or over-limit questions cannot be answered "
-                    "with zero LLM tokens."
+                    "Cross-paper or over-limit questions cannot be answered with zero LLM tokens."
                 ),
                 llm_tokens=0,
             )

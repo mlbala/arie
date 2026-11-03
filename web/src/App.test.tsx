@@ -241,3 +241,46 @@ it("automatically adjusts panels when the window resizes and preserves choices w
     localStorage.removeItem("arie.ui.layout");
   }
 });
+
+it("pins five paper chats and shifts older ones into a clearable sidebar history", async () => {
+  const papers = Array.from({ length: 7 }, (_, index) => ({
+    id: `paper-${index}`,
+    title: `Pinned candidate ${index}`,
+    source: "arxiv",
+    status: "INDEXED",
+    published_at: "2026-10-01",
+    abstract: "A paper.",
+    relevance_gate: true,
+    overridden_by_user: 0,
+  }));
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    const body = url.startsWith("/v1/papers?") ? { items: papers, next_cursor: null, has_more: false }
+      : url === "/v1/plugins" ? { plugins: [] }
+      : url === "/v1/sync" ? { job: null, initial_months: 6 }
+      : { checked_at: "2026-11-02", active_jobs: [], database: { status: "healthy" }, file_storage: { status: "healthy" }, vector_store: {} };
+    return new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+  }));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><App /></QueryClientProvider>);
+  await screen.findByRole("heading", { name: "Pinned candidate 0" });
+  const library = screen.getByRole("region", { name: "Library papers" });
+  const tabs = () => within(screen.getByRole("navigation", { name: "Active paper conversations" }));
+  expect(tabs().getAllByRole("button", { name: /^Close / })).toHaveLength(1);
+
+  for (const paper of papers.slice(0, 6))
+    fireEvent.click(within(library).getByRole("button", { name: new RegExp(paper.title) }));
+
+  expect(tabs().getAllByRole("button", { name: /^Close / })).toHaveLength(5);
+  expect(tabs().queryByRole("button", { name: "Pinned candidate 0" })).not.toBeInTheDocument();
+  const history = screen.getByRole("region", { name: "Recently viewed papers" });
+  expect(within(history).getByRole("button", { name: "Pinned candidate 0" })).toBeInTheDocument();
+
+  fireEvent.click(tabs().getByRole("button", { name: "Close Pinned candidate 3" }));
+  expect(tabs().getAllByRole("button", { name: /^Close / })).toHaveLength(4);
+  expect(within(history).getAllByRole("listitem")).toHaveLength(2);
+
+  fireEvent.click(within(history).getByRole("button", { name: "Clear history" }));
+  expect(screen.queryByRole("region", { name: "Recently viewed papers" })).not.toBeInTheDocument();
+  client.clear();
+});
