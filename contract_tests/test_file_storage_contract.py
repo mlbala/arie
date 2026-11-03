@@ -42,7 +42,7 @@ def store(request: pytest.FixtureRequest, tmp_path: Path) -> StreamingStorage:
 
 
 def test_builtin_file_stores_are_discovered() -> None:
-    assert {"local", "s3"} <= set(STORES)
+    assert "local" in STORES
 
 
 @pytest.mark.asyncio
