@@ -11,7 +11,7 @@ from arie_core.budget import BudgetHandle
 from arie_core.plugin_api import Embedder
 from arie_core.registry.manager import RegistryManager
 
-from arie_worker.pool import SupervisedPool, WorkerContext
+from arie_worker.pool import BACKGROUND_NICE, SupervisedPool, WorkerContext
 
 # One embedder per worker process, so a model loads once per process rather than per batch.
 _EMBEDDERS: dict[tuple[str, str], Embedder] = {}
@@ -39,12 +39,14 @@ class EmbeddingPool(SupervisedPool):
     """Run the configured embedder in one recycled worker process, never in arie-api.
 
     Batches are serialized, so callers keep them small (16 texts) to let chat queries
-    interleave with background indexing. Failure modes: model load or inference errors
-    and timeouts propagate; the pool is rebuilt on the next call.
+    interleave with background indexing. The worker runs at background priority, so a
+    local model indexing papers yields the CPU to the API and the claim checker. Failure
+    modes: model load or inference errors and timeouts propagate; the pool is rebuilt on
+    the next call.
     """
 
     def __init__(self, project_root: Path, name: str, settings: dict[str, object]) -> None:
-        super().__init__(1, "Embedding")
+        super().__init__(1, "Embedding", nice=BACKGROUND_NICE)
         self.root = project_root
         self.name = name
         self.settings = json.dumps(settings, sort_keys=True)

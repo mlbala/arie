@@ -10,8 +10,15 @@ from typing import cast
 from arie_core.budget import BudgetHandle
 from arie_core.plugin_api import ParsedDoc, Parser
 from arie_core.registry.manager import RegistryManager
+from pydantic import BaseModel, ConfigDict, Field
 
-from arie_worker.pool import MAX_RSS, SupervisedPool, WorkerContext
+from arie_worker.pool import (
+    BACKGROUND_NICE,
+    DEFAULT_MAX_RSS_MB,
+    MAX_RSS,
+    SupervisedPool,
+    WorkerContext,
+)
 
 # One parser per worker process, so heavy parsers (Docling) load their models once
 # per process rather than once per paper; workers still recycle after 20 tasks.
@@ -34,13 +41,36 @@ def _extract(
     return asyncio.run(parser.parse(ctx, file_path))
 
 
-class ExtractionPool(SupervisedPool):
-    """Recycle after 20 tasks; kill hung or memory-heavy workers before replacing the pool.
+class ExtractionLimits(BaseModel):
+    """Worker limits read from ``plugins.parser``; every other key goes to the parser.
 
-    ``settings`` are the parser's constructor options from ``arie.yaml``; a parse that
-    runs past ``timeout_sec`` (default 60 s) kills the pool and fails that paper only.
-    ``tasks_per_worker`` below 20 recycles workers sooner, for parsers such as Docling
-    whose memory after one paper sits near the 1.5 GB RSS cap.
+    Defaults suit PyMuPDF4LLM. Heavy parsers raise ``timeout_sec`` and ``max_rss_mb`` and
+    lower ``tasks_per_worker``; values outside the bounds raise ``ValidationError`` at
+    startup rather than silently killing every parse.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    timeout_sec: float = Field(default=60.0, gt=0, le=1800)
+    tasks_per_worker: int = Field(default=20, ge=1, le=20)
+    max_rss_mb: int = Field(default=DEFAULT_MAX_RSS_MB, ge=DEFAULT_MAX_RSS_MB, le=8192)
+
+    @classmethod
+    def pop_from(cls, parser_config: dict[str, object]) -> ExtractionLimits:
+        """Remove the limit keys from ``parser_config`` and validate them."""
+        keys = [key for key in cls.model_fields if key in parser_config]
+        return cls.model_validate({key: parser_config.pop(key) for key in keys})
+
+
+class ExtractionPool(SupervisedPool):
+    """Parse PDFs in recycled workers; kill hung or memory-heavy workers, then rebuild.
+
+    ``settings`` are the parser's constructor options from ``arie.yaml``. A parse that
+    runs past ``limits.timeout_sec`` or lets a worker exceed ``limits.max_rss_mb`` kills
+    the pool and fails that paper only. Workers recycle after ``limits.tasks_per_worker``
+    papers, so a heavy parser (Docling) can use a fresh process for every paper.
+    Workers run at background priority, and ``processes`` is capped to the CPUs this
+    process may use, since each parser already spreads one paper over several threads.
     """
 
     def __init__(
@@ -49,14 +79,17 @@ class ExtractionPool(SupervisedPool):
         parser_name: str,
         processes: int = 4,
         settings: dict[str, object] | None = None,
-        timeout_sec: float = 60.0,
-        tasks_per_worker: int = 20,
+        limits: ExtractionLimits | None = None,
     ) -> None:
-        super().__init__(processes, "PDF", tasks_per_worker)
+        limits = limits or ExtractionLimits()
+        processes = max(1, min(processes, os.process_cpu_count() or 1))
+        super().__init__(
+            processes, "PDF", limits.tasks_per_worker, limits.max_rss_mb, BACKGROUND_NICE
+        )
         self.root = project_root
         self.parser_name = parser_name
         self.settings = json.dumps(settings or {}, sort_keys=True)
-        self.timeout_sec = timeout_sec
+        self.timeout_sec = limits.timeout_sec
 
     async def parse(self, file_path: str) -> ParsedDoc:
         return await self.submit(
@@ -70,4 +103,4 @@ class ExtractionPool(SupervisedPool):
         )
 
 
-__all__ = ["MAX_RSS", "ExtractionPool", "WorkerContext"]
+__all__ = ["MAX_RSS", "ExtractionLimits", "ExtractionPool", "WorkerContext"]

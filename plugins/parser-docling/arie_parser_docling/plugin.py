@@ -24,14 +24,14 @@ class _Converter(Protocol):
     def convert(self, source: str) -> _Result: ...
 
 
-
 @plugin(slot="parser", name="docling")
 class DoclingParserPlugin:
     """Extract page Markdown with Docling layout analysis, tables and OCR, in arie-worker.
 
     Unlike PyMuPDF4LLM, Docling runs OCR, so scanned and image-only PDFs yield text.
     It is markedly slower and heavier: the first run downloads its layout and OCR
-    models, and a large paper can exceed the worker's 60 s or 1.5 GB limits. Failure
+    models, and one paper can exceed the default 60 s and 1.5 GB worker limits, so
+    select it with ``timeout_sec: 300``, ``tasks_per_worker: 1`` and ``max_rss_mb: 2560``. Failure
     modes: a missing ``docling`` install raises ``ModuleNotFoundError``; a document with
     no recoverable text raises ``ValueError``; calls outside a worker raise ``RuntimeError``.
     """
@@ -40,7 +40,7 @@ class DoclingParserPlugin:
         self.do_ocr = do_ocr
         self.do_table_structure = do_table_structure
         # Built once per instance: rebuilding reloads every layout and OCR model, which
-        # slows each paper and grows worker memory past the 1.5 GB RSS cap.
+        # slows each paper and grows worker memory past its RSS cap.
         self._converter: _Converter | None = None
 
     async def parse(self, ctx: Ctx, file_path: str) -> ParsedDoc:
