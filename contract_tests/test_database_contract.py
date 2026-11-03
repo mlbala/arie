@@ -62,7 +62,7 @@ async def test_database_contract_atomic_rollback_on_partial_failure(tmp_path: Pa
         )
         conn.execute(
             (
-                "INSERT INTO chunks (chunk_id, paper_id, section, text, \"order\", "
+                'INSERT INTO chunks (chunk_id, paper_id, section, text, "order", '
                 "token_count) VALUES (?, ?, ?, ?, ?, ?)"
             ),
             ("chunk-rollback", "paper-rollback", "body", "oops", 0, 4),
