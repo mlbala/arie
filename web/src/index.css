@@ -99,19 +99,11 @@ select:focus-visible {
 .slot-row,
 .slot-badge,
 .toolbar,
-.pane-title-row,
-.search-box,
-.paper-meta,
-.brief-heading,
-.citation-row,
-.chat-head,
 .chat-input-row,
 .modal-heading,
 .drawer-heading,
 .status-strip,
-.source-pill,
-.timestamp,
-.skeleton-line {
+.timestamp {
   display: flex;
   align-items: center;
 }
@@ -189,9 +181,6 @@ select:focus-visible {
 .button,
 .icon-button,
 .text-button,
-.chip-button,
-.feed-row,
-.citation-button,
 .audit-action,
 .plugin-tab {
   cursor: pointer;
@@ -284,16 +273,6 @@ select:focus-visible {
   contain: layout paint;
 }
 
-.pane-header {
-  flex: 0 0 auto;
-  padding: 18px 17px 13px;
-}
-
-.pane-title-row {
-  justify-content: space-between;
-  gap: 8px;
-}
-
 .eyebrow {
   margin: 0 0 4px;
   color: var(--muted);
@@ -303,244 +282,12 @@ select:focus-visible {
   text-transform: uppercase;
 }
 
-.pane-title {
-  margin: 0;
-  color: var(--ink);
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
-
-.count-pill,
-.tiny-pill,
-.status-pill,
-.verified-pill,
-.meta-badge {
+.tiny-pill {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   border-radius: 5px;
   white-space: nowrap;
-}
-
-.count-pill {
-  background: var(--canvas);
-  padding: 4px 7px;
-  color: var(--muted);
-  font-size: 10px;
-}
-
-.search-box {
-  height: 34px;
-  gap: 8px;
-  margin-top: 13px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--canvas);
-  padding: 0 9px;
-  color: var(--muted);
-}
-
-.search-box input {
-  width: 100%;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  color: var(--ink);
-  font-size: 11px;
-}
-
-.search-box input::placeholder {
-  color: var(--muted);
-}
-
-.keycap {
-  flex: 0 0 auto;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: white;
-  padding: 1px 5px;
-  color: var(--muted);
-  font-size: 9px;
-}
-
-.filter-row {
-  display: flex;
-  gap: 5px;
-  padding: 0 17px 12px;
-}
-
-.chip-button {
-  height: 24px;
-  border: 1px solid transparent;
-  border-radius: 5px;
-  background: transparent;
-  padding: 0 8px;
-  color: var(--muted);
-  font-size: 10px;
-}
-
-.chip-button.active {
-  border-color: var(--line);
-  background: var(--canvas);
-  color: var(--ink);
-  font-weight: 650;
-}
-
-.feed-scroll {
-  position: relative;
-  min-height: 0;
-  flex: 1 1 auto;
-  overflow: auto;
-  overscroll-behavior: contain;
-  border-top: 1px solid var(--line);
-  scrollbar-color: #dce3de transparent;
-  scrollbar-width: thin;
-}
-
-.feed-row {
-  position: absolute;
-  left: 0;
-  display: flex;
-  width: 100%;
-  min-height: 98px;
-  flex-direction: column;
-  align-items: stretch;
-  border: 0;
-  border-bottom: 1px solid var(--line);
-  background: white;
-  padding: 11px 15px 10px;
-  text-align: left;
-  transition: background 100ms ease;
-}
-
-.feed-row:hover {
-  background: var(--canvas);
-}
-
-.feed-row.selected {
-  background: var(--canvas);
-  box-shadow: inset 2px 0 #40805a;
-}
-
-.feed-title {
-  display: -webkit-box;
-  overflow: hidden;
-  margin: 4px 0 8px;
-  color: var(--ink);
-  font-size: 11px;
-  font-weight: 650;
-  line-height: 1.4;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.paper-meta {
-  min-height: 14px;
-  gap: 5px;
-  color: var(--muted);
-  font-size: 9px;
-}
-
-.source-pill {
-  gap: 4px;
-  color: var(--muted);
-  font-size: 9px;
-  font-weight: 650;
-  text-transform: capitalize;
-}
-
-.status-pill {
-  padding: 2px 5px;
-  background: var(--canvas);
-  color: var(--muted);
-  font-size: 8px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-}
-
-.status-pill.skipped {
-  background: var(--amber-soft);
-  color: var(--amber);
-}
-
-.meta-badge {
-  max-width: 88px;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  padding: 2px 5px;
-  color: var(--muted);
-  font-size: 8px;
-  text-overflow: ellipsis;
-}
-
-.feed-hint {
-  display: flex;
-  flex: 0 0 auto;
-  justify-content: space-between;
-  border-top: 1px solid var(--line);
-  padding: 9px 14px;
-  color: var(--muted);
-  font-size: 9px;
-}
-
-.feed-hint kbd {
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  background: var(--canvas);
-  padding: 1px 4px;
-  color: var(--muted);
-}
-
-.brief-pane {
-  position: relative;
-}
-
-.brief-top {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: space-between;
-  border-bottom: 1px solid var(--line);
-  padding: 16px 19px 13px;
-}
-
-.brief-top-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.verified-pill {
-  background: var(--green-soft);
-  padding: 5px 8px;
-  color: var(--muted);
-  font-size: 9px;
-  font-weight: 700;
-}
-
-.brief-scroll {
-  min-height: 0;
-  flex: 1 1 auto;
-  overflow: auto;
-  padding: 22px 24px 28px;
-  content-visibility: auto;
-  contain-intrinsic-size: auto 720px;
-  scrollbar-color: #dce3de transparent;
-  scrollbar-width: thin;
-}
-
-.selected-paper-heading {
-  padding-bottom: 17px;
-}
-
-.selected-paper-heading h2 {
-  margin: 0 0 8px;
-  color: var(--ink);
-  font-size: 21px;
-  font-weight: 680;
-  letter-spacing: -0.045em;
-  line-height: 1.25;
 }
 
 .abstract {
@@ -551,154 +298,6 @@ select:focus-visible {
   line-height: 1.65;
 }
 
-.brief-divider {
-  height: 1px;
-  margin: 4px 0 18px;
-  background: var(--green-soft);
-}
-
-.brief-part {
-  padding: 0 0 15px;
-  content-visibility: auto;
-  contain-intrinsic-size: auto 110px;
-}
-
-.brief-heading {
-  gap: 9px;
-  margin-bottom: 7px;
-}
-
-.part-number {
-  display: grid;
-  width: 19px;
-  height: 19px;
-  place-items: center;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--canvas);
-  color: var(--muted);
-  font-size: 9px;
-  font-weight: 700;
-}
-
-.brief-heading h3 {
-  margin: 0;
-  color: var(--ink);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.brief-content {
-  padding-left: 28px;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.7;
-}
-
-.brief-content p,
-.brief-content ul,
-.brief-content ol {
-  margin: 0;
-}
-
-.brief-content ul,
-.brief-content ol {
-  padding-left: 18px;
-}
-
-.brief-content code {
-  border-radius: 3px;
-  background: var(--canvas);
-  padding: 2px 4px;
-  color: var(--ink);
-  font-size: 10px;
-}
-
-.citation-row {
-  flex-wrap: wrap;
-  gap: 5px;
-  padding: 5px 0 0 28px;
-}
-
-.citation-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  background: var(--canvas);
-  padding: 3px 6px;
-  color: var(--muted);
-  font-size: 9px;
-  font-weight: 600;
-}
-
-.citation-button:hover {
-  border-color: var(--line);
-  background: var(--canvas);
-}
-
-.pdf-card {
-  margin-top: 5px;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--canvas);
-}
-
-.pdf-card-header {
-  display: flex;
-  min-height: 37px;
-  align-items: center;
-  justify-content: space-between;
-  border-bottom: 1px solid var(--line);
-  padding: 0 11px;
-  color: var(--muted);
-  font-size: 9px;
-  font-weight: 650;
-}
-
-.pdf-page {
-  min-height: 100px;
-  padding: 14px 17px;
-  color: var(--muted);
-  font-family: Georgia, serif;
-  font-size: 11px;
-  line-height: 1.7;
-  white-space: pre-wrap;
-}
-
-.pdf-page mark {
-  border-radius: 2px;
-  background: var(--green-soft);
-  padding: 1px 0;
-  color: var(--amber);
-}
-
-.pdf-placeholder {
-  display: flex;
-  min-height: 100px;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  padding: 14px;
-  color: var(--muted);
-  font-size: 10px;
-}
-
-.brief-footer {
-  display: flex;
-  min-height: 36px;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: space-between;
-  border-top: 1px solid var(--line);
-  padding: 0 17px;
-  color: var(--muted);
-  font-size: 9px;
-}
-
-.brief-footer span,
 .status-strip span {
   display: inline-flex;
   align-items: center;
@@ -1205,25 +804,6 @@ select:focus-visible {
   text-align: center;
 }
 
-.skeleton {
-  padding: 16px 14px;
-}
-
-.skeleton-line {
-  height: 8px;
-  margin-bottom: 8px;
-  border-radius: 5px;
-  background: linear-gradient(90deg, var(--canvas) 20%, var(--canvas) 45%, var(--canvas) 70%);
-  background-size: 220% 100%;
-  animation: shimmer 1.4s linear infinite;
-}
-
-@keyframes shimmer {
-  to {
-    background-position: -220% 0;
-  }
-}
-
 @keyframes fade-in {
   from {
     opacity: 0;
@@ -1308,14 +888,6 @@ select:focus-visible {
     height: auto;
     grid-template-columns: minmax(0, 1fr);
     padding: 9px;
-  }
-
-  .feed-pane {
-    min-height: 360px;
-  }
-
-  .brief-pane {
-    min-height: 610px;
   }
 
   .chat-pane-shell {
@@ -2797,7 +2369,6 @@ button:disabled {
   .sidebar-scroll { padding-left: 14px; padding-right: 14px; }
 }
 
-
 /* Shared surface and text tokens keep every workspace panel readable in both themes. */
 :root {
   color-scheme: light;
@@ -2898,7 +2469,6 @@ input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
 .system-pane .sync-card > form > .button { width: 100%; }
 .layout-options > div { box-shadow: var(--shadow); }
 .evidence-drawer { width: min(520px, 100%); }
-:root[data-theme="dark"] .skeleton { background: linear-gradient(90deg, var(--panel), var(--green-soft), var(--panel)); }
 :root[data-theme="dark"] .live-dot { box-shadow: 0 0 0 3px var(--green-soft); }
 :root[data-theme="dark"] .source-quote mark, :root[data-theme="dark"] mark { color: var(--ink); background: var(--amber-soft); }
 :root[data-theme="dark"] .button-primary, :root[data-theme="dark"] .sync-card .button-primary { color: var(--on-accent); }
@@ -2922,7 +2492,6 @@ input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
 
 .library-section .library-list { flex: 1 0 auto; height: clamp(240px, 34dvh, 440px); min-height: 240px; }
 .selected-document > strong { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-
 
 /* Fill the actual browser window; only content lists and panels scroll. */
 html, body, #root { width: 100%; height: 100%; }
@@ -2963,7 +2532,6 @@ html, body { overflow: hidden; }
   .library-filter-body { max-height: calc(100dvh - 220px); }
 }
 
-
 /* Proportional panel widths track the viewport; dock only when chat has room. */
 .research-shell .system-pane.is-docked {
   position: static;
@@ -2987,7 +2555,6 @@ html, body { overflow: hidden; }
   .conversation-topbar { padding-inline: 8px; gap: 6px; }
   .conversation-topbar > div { gap: 4px; }
 }
-
 
 /* Read the answer as one paragraph, then inspect its evidence as a group. */
 .grounded-answer { margin-left: 35px; }
