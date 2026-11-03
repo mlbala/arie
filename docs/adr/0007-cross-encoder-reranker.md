@@ -1,6 +1,6 @@
 # 0007: A local cross-encoder reranker picks each answer's passages
 
-**Status:** Accepted
+**Status:** Accepted; the reranker's pool and memory figures are superseded by [ADR 0009](0009-one-model-pool-shared-answer-worker.md)
 
 ## Context
 

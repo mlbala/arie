@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from pathlib import Path
@@ -29,6 +30,34 @@ async def test_pool_reuses_workers_by_default() -> None:
     finally:
         pool.close()
     assert len(pids) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("keep", [True, False])
+async def test_a_caller_giving_up_keeps_the_worker_only_when_asked(keep: bool) -> None:
+    """A model pool keeps its loaded worker when the caller's own deadline expires."""
+    pool = SupervisedPool(1, "Test", keep_on_cancel=keep)
+    try:
+        first = await pool.submit(30.0, os.getpid)
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.2):
+                await pool.submit(30.0, time.sleep, 0.6)
+        # The next call queues behind the abandoned one; its kill_after covers the wait.
+        assert (await pool.submit(30.0, os.getpid) == first) is keep
+    finally:
+        pool.close()
+
+
+@pytest.mark.asyncio
+async def test_a_call_past_kill_after_still_kills_a_keep_on_cancel_pool() -> None:
+    pool = SupervisedPool(1, "Test", keep_on_cancel=True)
+    try:
+        first = await pool.submit(30.0, os.getpid)
+        with pytest.raises(TimeoutError):
+            await pool.submit(0.2, time.sleep, 5)
+        assert await pool.submit(30.0, os.getpid) != first
+    finally:
+        pool.close()
 
 
 @pytest.mark.asyncio

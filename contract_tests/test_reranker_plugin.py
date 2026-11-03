@@ -45,6 +45,7 @@ def fake_runtime(monkeypatch: pytest.MonkeyPatch, logits: list[float]) -> list[A
     class SessionOptions:
         intra_op_num_threads = 0
         inter_op_num_threads = 0
+        enable_cpu_mem_arena = True
 
     class InferenceSession:
         def __init__(self, path: str, sess_options: SessionOptions, providers: list[str]) -> None:
@@ -104,6 +105,20 @@ async def test_scores_are_probabilities_with_capped_threads(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("arena", [None, True])
+async def test_the_onnx_memory_arena_is_off_unless_asked_for(
+    arena: bool | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    created = fake_runtime(monkeypatch, [3.0])
+    file = tmp_path / "model"
+    file.write_text("{}")
+    plugin = reranker(**({} if arena is None else {"memory_arena": arena}))
+    monkeypatch.setattr(plugin, "_download", lambda: {"tokenizer": file, "onnx": file})
+    await plugin.score(None, "question", ["a"])
+    assert created[1].options.enable_cpu_mem_arena is bool(arena)
+
+
+@pytest.mark.asyncio
 async def test_a_classifier_with_several_labels_fails_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -135,9 +150,14 @@ async def test_real_model_in_a_worker_ranks_the_answering_passage_first() -> Non
     cache = cached_model()
     if cache is None:
         pytest.skip(f"{MODEL} is not cached; set ARIE_RERANK_CACHE to run")
-    from arie_worker.reranking import RerankPool
+    from arie_worker.models import LocalModel, ModelPool
 
-    pool = RerankPool(ROOT, "onnx-cross-encoder", {"model": MODEL, "cache_dir": cache})
+    pool = LocalModel(
+        ModelPool(ROOT, "Reranker"),
+        "reranker",
+        "onnx-cross-encoder",
+        {"model": MODEL, "cache_dir": cache},
+    )
     passages = [
         "Retrieval models are widely used in question answering systems today.",
         "We propose Cedar, a retrieval model that uses a gated memory bank.",
@@ -145,8 +165,12 @@ async def test_real_model_in_a_worker_ranks_the_answering_passage_first() -> Non
         "Smith et al. 2020. Proceedings of the Retrieval Conference.",
     ]
     try:
-        workers = await pool.score("How many CPU workers are used?", passages, 120.0)
-        contribution = await pool.score("What does this paper propose?", passages, 120.0)
+        workers = await pool.scores(
+            "score", "How many CPU workers are used?", passages, count=4, kill_after=120.0
+        )
+        contribution = await pool.scores(
+            "score", "What does this paper propose?", passages, count=4, kill_after=120.0
+        )
     finally:
         pool.close()
     assert max(range(4), key=workers.__getitem__) == 2

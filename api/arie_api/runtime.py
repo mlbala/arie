@@ -35,11 +35,11 @@ from arie_core.registry.sync import SyncConfig
 from arie_core.registry.sync import months_ago as months_ago
 from arie_core.sched import supervised
 from arie_core.search import score_paper
-from arie_worker.embedding import EmbeddingPool
-from arie_worker.entailment import EntailmentPool
 from arie_worker.extraction import ExtractionLimits, ExtractionPool
-from arie_worker.reranking import RerankPool
+from arie_worker.models import LocalModel, ModelPool
+from arie_worker.pool import BACKGROUND_NICE
 
+from arie_api.models import AnswerModels
 from arie_api.providers import (
     AUTO_EMBEDDER,
     DEFAULT_LLM,
@@ -111,31 +111,19 @@ class ResearchRuntime:
         self.embedder_id = "none"
         self.embedder_reason = ""
         self.vector_store: VectorStore | None = None
-        self.embedding: EmbeddingPool | None = None
+        self.embedding: LocalModel | None = None
         self.vector_wakeup = asyncio.Event()
         self.vector_errors: dict[str, str] = {}
         if vector_name != "none" and resolve_embedder(self.config) is not None:
             self.vector_store = cast(VectorStore, self.instance("vector_store"))
             self.apply_embedder()
-        entail_config = dict(cast(dict[str, object], self.config.plugins.get("entailment", {})))
-        self.entail_name = str(entail_config.pop("use", "") or "none")
-        self.entail_floor = float(cast(float, entail_config.pop("min_score", MIN_ENTAILMENT)))
-        self.entailment = (
-            EntailmentPool(root, self.entail_name, entail_config)
-            if self.entail_name != "none"
-            else None
-        )
-        self.entailment_ready = False
-        self.entailment_error = ""
-        rerank_config = dict(cast(dict[str, object], self.config.plugins.get("reranker", {})))
-        self.rerank_name = str(rerank_config.pop("use", "") or "none")
-        self.reranker = (
-            RerankPool(root, self.rerank_name, rerank_config)
-            if self.rerank_name != "none"
-            else None
-        )
-        self.reranker_ready = False
-        self.reranker_error = ""
+        self.models = AnswerModels(root, self.config)
+        self.entail_floor = self.models.option("entailment", "min_score", MIN_ENTAILMENT)
+
+    def _embedder(self, name: str, settings: dict[str, object]) -> LocalModel:
+        """An embedder in its own background-priority worker, so indexing yields the CPU."""
+        pool = ModelPool(self.root, "Embedding", nice=BACKGROUND_NICE)
+        return LocalModel(pool, "embedder", name, settings)
 
     def apply_embedder(self) -> None:
         """Adopt the embedder resolved from config; a new model re-embeds in the background.
@@ -152,7 +140,7 @@ class ResearchRuntime:
         if embedder_id == self.embedder_id and self.embedding is not None:
             return
         previous = self.embedding
-        self.embedding = EmbeddingPool(self.root, choice.name, choice.settings)
+        self.embedding = self._embedder(choice.name, choice.settings)
         self.embedder_id, self.min_score = embedder_id, choice.min_score
         self.vector_errors.clear()
         if previous is not None:
@@ -177,7 +165,7 @@ class ResearchRuntime:
             raise ValueError(
                 f"{profile.api_key_env} is not configured. Add it to .env and restart ARIE."
             )
-        pool = EmbeddingPool(self.root, choice.name, choice.settings)
+        pool = self._embedder(choice.name, choice.settings)
         try:
             # First use may download a local model, so allow more than a chat-sized wait.
             vectors = await pool.embed(["ARIE embedder connection check"], kill_after=120.0)
@@ -1154,93 +1142,19 @@ class ResearchRuntime:
             except TimeoutError:
                 pass
 
-    async def warm_entailment(self) -> None:
-        """Load the Tier 3 model at startup so the first answer need not download it.
-
-        Until it is ready, model-written claims cannot pass Tier 3 and answers use exact
-        source excerpts. A failed load is retried every 5 minutes and shown as degraded.
-        """
-        if self.entailment is None:
-            return
-        while not self.entailment_ready:
-            try:
-                await self.entailment.score([("ARIE warm-up premise.", "Warm-up.")], 600.0)
-                self.entailment_ready, self.entailment_error = True, ""
-            except Exception as exc:
-                logger.warning(
-                    "Entailment model %s failed to load", self.entail_name, exc_info=True
-                )
-                self.entailment_error = str(exc) or type(exc).__name__
-                await asyncio.sleep(300.0)
-
     async def entailment_scores(self, pairs: Sequence[tuple[str, str]]) -> Sequence[float]:
         """Tier 3 scores for (quote, claim) pairs; raises while the model is unavailable."""
-        if self.entailment is None or not self.entailment_ready:
-            raise RuntimeError("Entailment model is not ready")
-        return await self.entailment.score(list(pairs))
-
-    async def warm_reranker(self) -> None:
-        """Load the reranker at startup so the first answer need not download it.
-
-        Until it is ready, answers use keyword and vector order. A failed load is retried
-        every 5 minutes and shown as degraded.
-        """
-        if self.reranker is None:
-            return
-        while not self.reranker_ready:
-            try:
-                await self.reranker.score("ARIE warm-up question", ["Warm-up passage."], 600.0)
-                self.reranker_ready, self.reranker_error = True, ""
-            except Exception as exc:
-                logger.warning("Reranker %s failed to load", self.rerank_name, exc_info=True)
-                self.reranker_error = str(exc) or type(exc).__name__
-                await asyncio.sleep(300.0)
+        model = self.models.get("entailment")
+        if model is None:
+            raise RuntimeError("Entailment is off")
+        return await model.scores(list(pairs), count=len(pairs))
 
     async def rerank_scores(self, query: str, passages: Sequence[str]) -> Sequence[float]:
         """Relevance of each passage to ``query``; raises while the model is unavailable."""
-        if self.reranker is None or not self.reranker_ready:
-            raise RuntimeError("Reranker is not ready")
-        return await self.reranker.score(query, list(passages))
-
-    def reranker_status(self) -> Document:
-        """Report whether answers currently choose passages with the reranker."""
-        if self.reranker is None:
-            return {
-                "plugin": "none",
-                "status": "disabled",
-                "detail": "Reranking is off; passages are chosen by keyword and vector search.",
-            }
-        status = "healthy" if self.reranker_ready else "loading"
-        if not self.reranker_ready and self.reranker_error:
-            status = "degraded"
-        detail = {
-            "healthy": "Passages are reranked by relevance to each question.",
-            "loading": "Loading the reranker; passages use keyword and vector order until then.",
-            "degraded": f"Reranker unavailable ({self.reranker_error}); passages use keyword "
-            "and vector order.",
-        }[status]
-        return {"plugin": self.rerank_name, "status": status, "detail": detail}
-
-    def entailment_status(self) -> Document:
-        """Report whether model-written claims can currently pass Tier 3."""
-        if self.entailment is None:
-            return {
-                "plugin": "none",
-                "status": "disabled",
-                "detail": "Tier 3 entailment is off; summaries rest on quote matching "
-                "and the model reviewer.",
-            }
-        status = "healthy" if self.entailment_ready else "loading"
-        if not self.entailment_ready and self.entailment_error:
-            status = "degraded"
-        detail = {
-            "healthy": "Every summary claim is checked for entailment by its own quote.",
-            "loading": "Loading the entailment model; answers use exact source excerpts "
-            "until then.",
-            "degraded": f"Entailment model unavailable ({self.entailment_error}); "
-            "answers use exact source excerpts.",
-        }[status]
-        return {"plugin": self.entail_name, "status": status, "detail": detail}
+        model = self.models.get("reranker")
+        if model is None:
+            raise RuntimeError("Reranking is off")
+        return await model.scores(query, list(passages), count=len(passages))
 
     async def semantic_search(self, paper_id: str, queries: Sequence[str]) -> list[str]:
         """Rank one paper's chunk IDs by best cosine similarity to any query, best first.
@@ -1321,7 +1235,4 @@ class ResearchRuntime:
         self.pool.close()
         if self.embedding is not None:
             self.embedding.close()
-        if self.entailment is not None:
-            self.entailment.close()
-        if self.reranker is not None:
-            self.reranker.close()
+        self.models.close()

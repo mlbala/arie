@@ -41,6 +41,12 @@ class SupervisedPool:
     kills the whole pool, which is rebuilt on the next call; the caller sees
     ``TimeoutError``, ``CancelledError`` or ``MemoryError``. ``nice`` lowers the OS
     priority of every worker so background pools yield the CPU to interactive work.
+
+    With ``keep_on_cancel``, a caller that gives up (its own deadline, not
+    ``kill_after``) leaves the worker running: the call finishes in the background and
+    the next call queues behind it, its ``kill_after`` covering that wait. Model pools
+    use this, so a reranker running past its budget does not unload the models it
+    shares a process with.
     """
 
     def __init__(
@@ -50,6 +56,7 @@ class SupervisedPool:
         tasks_per_child: int = 20,
         max_rss_mb: int = DEFAULT_MAX_RSS_MB,
         nice: int = 0,
+        keep_on_cancel: bool = False,
     ) -> None:
         if max_rss_mb <= 0:
             raise ValueError("max_rss_mb must be positive")
@@ -57,6 +64,7 @@ class SupervisedPool:
             raise ValueError("nice must be 0-19")
         self.processes = processes
         self.nice = nice
+        self.keep_on_cancel = keep_on_cancel
         self.label = label
         self.tasks_per_child = max(1, tasks_per_child)
         self.max_rss_mb = max_rss_mb
@@ -77,6 +85,8 @@ class SupervisedPool:
                 )
             pool = self._pool
             future = asyncio.get_running_loop().run_in_executor(pool, func, *args)
+            # A call abandoned by its caller may still fail; consume that result quietly.
+            future.add_done_callback(lambda done: done.cancelled() or done.exception())
             try:
                 async with asyncio.timeout(kill_after):
                     while not future.done():
@@ -98,6 +108,13 @@ class SupervisedPool:
                                 pass
                         await asyncio.sleep(0.05)
                     return await future
+            except asyncio.CancelledError:
+                # Raised only by the caller's cancellation: kill_after surfaces as
+                # TimeoutError from the inner timeout.
+                if not self.keep_on_cancel:
+                    pool.kill_workers()
+                    self._pool = None
+                raise
             except BaseException:
                 pool.kill_workers()
                 self._pool = None

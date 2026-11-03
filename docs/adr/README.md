@@ -12,5 +12,6 @@ superseded instead of rewriting it.
 | [0004](0004-process-isolated-workers.md) | CPU-heavy work runs in recycled worker processes | Accepted, amended by 0005 |
 | [0005](0005-per-parser-memory-limit.md) | The PDF parser may raise its worker memory limit | Accepted |
 | [0006](0006-background-cpu-priority.md) | Background workers run at lower CPU priority | Accepted |
-| [0007](0007-cross-encoder-reranker.md) | A local cross-encoder reranker picks each answer's passages | Accepted |
+| [0007](0007-cross-encoder-reranker.md) | A local cross-encoder reranker picks each answer's passages | Accepted, amended by 0009 |
 | [0008](0008-model-led-planning-and-conditional-review.md) | The planner decides the question type, and review runs when it adds a check | Accepted |
+| [0009](0009-one-model-pool-shared-answer-worker.md) | One generic model pool, with the answer models in one worker | Accepted |
