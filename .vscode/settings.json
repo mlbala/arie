@@ -1,12 +1,6 @@
 {
   "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
   "github.copilot.chat.codeGeneration.useInstructionFiles": true,
-  "github.copilot.chat.codeGeneration.instructions": [
-    { "file": "AGENTS.md" }
-  ],
-  "github.copilot.chat.testGeneration.instructions": [
-    { "file": "AGENTS.md" }
-  ],
   "files.exclude": {
     "**/.venv": true,
     "**/.fdevenv": true,
