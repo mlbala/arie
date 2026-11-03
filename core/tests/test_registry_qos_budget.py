@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from dataclasses import dataclass
 
 import pytest
 from arie_core.budget import BudgetHandle
 from arie_core.registry.manager import PluginDefinition, RegistryManager
-from arie_core.sched import QoS_Background, QoS_UserInitiated, QoSPriorityGate
+from arie_core.sched import (
+    EventLoopLagMonitor,
+    QoS_Background,
+    QoS_UserInitiated,
+    QoSPriorityGate,
+    supervised,
+)
 
 
 @dataclass
@@ -110,3 +118,33 @@ async def test_qos_priority_gate_orders_user_initiated_before_background() -> No
     gate.release(QoS_Background)
     await user_task
     await background_task
+
+
+@pytest.mark.asyncio
+async def test_lag_monitor_runs_under_a_task_group_and_reports_blocking(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monitor = EventLoopLagMonitor(threshold_ms=5.0, interval_ms=10.0)
+
+    class Stop(Exception):
+        pass
+
+    def block_loop() -> None:
+        time.sleep(0.05)  # Deliberately block the event loop past the threshold.
+
+    async def block_then_stop() -> None:
+        await asyncio.sleep(0.02)
+        block_loop()
+        await asyncio.sleep(0.03)
+        raise Stop
+
+    tasks: list[asyncio.Task[None]] = []
+    with caplog.at_level(logging.WARNING, logger="arie_core.sched"):
+        try:
+            async with asyncio.TaskGroup() as group:
+                tasks.append(group.create_task(supervised(monitor.run)()))
+                group.create_task(supervised(block_then_stop)())
+        except* Stop:
+            pass
+    assert tasks[0].cancelled()
+    assert any("Event loop lag" in record.message for record in caplog.records)

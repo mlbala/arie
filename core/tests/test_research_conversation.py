@@ -175,6 +175,7 @@ async def test_api_follow_up_uses_history_as_locators_and_preserves_source_offse
         database={"use": "sqlite", "path": str(tmp_path / "arie.db")},
         file_storage={"use": "local", "root": str(tmp_path / "papers")},
         embedder={"use": "none"},
+        entailment={"use": "none"},
     )
     runtime = ResearchRuntime(ROOT, config.model_copy(update={"plugins": plugins}))
     await runtime.initialize()
@@ -363,6 +364,7 @@ async def test_saved_chats_keep_last_ten_turns_of_ten_recent_papers(tmp_path: Pa
         database={"use": "sqlite", "path": str(tmp_path / "arie.db")},
         file_storage={"use": "local", "root": str(tmp_path / "papers")},
         embedder={"use": "none"},
+        entailment={"use": "none"},
     )
     runtime = ResearchRuntime(ROOT, config.model_copy(update={"plugins": plugins}))
     await runtime.initialize()

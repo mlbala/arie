@@ -35,6 +35,10 @@ plugins:
   # Set either `use` to none for keyword-only retrieval.
   embedder:     {use: auto}
   vector_store: {use: exact, path: ./data/arie-vectors.db}
+  # Tier 3 of the quote verifier: a local NLI model checks that each summary claim is
+  # entailed by its own quote. Runs in arie-worker; the model (~280 MB) downloads on first
+  # start. Claims scoring below min_score are dropped. `none` leaves Tiers 1-2 + reviewer.
+  entailment:   {use: nli-onnx, model: cross-encoder/nli-deberta-v3-xsmall, min_score: 0.5}
   database:     {use: sqlite, path: ./data/arie.db}
   file_storage: {use: local, root: ./data/papers}
   parser:       {use: pymupdf4llm}

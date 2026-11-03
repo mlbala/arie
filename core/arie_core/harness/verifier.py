@@ -2,9 +2,21 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 
 from arie_core.contracts import Claim, Evidence
+
+# Entailment model: (premise quote, hypothesis claim) pairs in, P(entailment) per pair out.
+EntailmentCheck = Callable[[Sequence[tuple[str, str]]], Awaitable[Sequence[float]]]
+# Calibrated on cross-encoder/nli-deberta-v3-xsmall: paraphrases score >= 0.9, flips <= 0.01.
+MIN_ENTAILMENT = 0.5
+_CONTENT_STOP = frozenset(
+    {
+        "that", "this", "these", "those", "with", "from", "into", "than", "then", "their",
+        "there", "which", "while", "where", "were", "have", "been", "being", "also", "such",
+        "both", "each", "only", "very", "more", "most", "over", "under", "about", "paper", "work",
+    }
+)
 
 
 def strip_unverified_quotes(quotes: Sequence[str]) -> list[str]:
@@ -36,8 +48,40 @@ def normalize_verification_text(value: str) -> str:
     return re.sub(r"[*_`|]", "", text)
 
 
+def preserves_anchors(text: str, quote: str) -> bool:
+    """Reject changed numbers, lost qualifications and new absolutes before model review."""
+
+    def numbers(value: str) -> set[str]:
+        return set(re.findall(r"\d+(?:\.\d+)?", value.replace(",", "")))
+
+    if not numbers(text) <= numbers(quote):
+        return False
+    groups = (
+        r"\b(?:not|no|never|without|cannot|neither|fails?|unable|lacks?|removes?|dispensing)\b|n't",
+        r"\b(?:may|might|could|suggests?|appears?|potentially|preliminary)\b",
+        r"\b(?:only|limited|small|restricted)\b",
+    )
+    if any(re.search(group, quote, re.I) and not re.search(group, text, re.I) for group in groups):
+        return False
+    absolutes = r"\b(?:always|never|every|guarantees?|proves?|perfect|all datasets)\b"
+    return not (re.search(absolutes, text, re.I) and not re.search(absolutes, quote, re.I))
+
+
+def _content_tokens(value: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"\w+", value.lower())
+        if len(token) > 3 and token not in _CONTENT_STOP
+    }
+
+
 class EvidenceVerifier:
-    """Verification ladder: exact byte match, normalized text match, and entailment check."""
+    """Verification ladder for I2.
+
+    Tier 1 exact substring, Tier 2 normalized match, then Tier 3 model entailment
+    (``tier_3``) for model-written claims. ``verify`` runs Tiers 1-2 plus the lexical
+    pre-filter; it suffices only for claims restated from their own quote.
+    """
 
     @staticmethod
     def tier_1(chunk_content: str, quote: str) -> bool:
@@ -78,22 +122,40 @@ class EvidenceVerifier:
         return overlap >= max(2, len(quote_tokens) // 2)
 
     @staticmethod
-    def semantic_entailment(claim_text: str, evidence_quotes: Sequence[str]) -> bool:
-        if not evidence_quotes:
+    def lexical_support(claim_text: str, evidence_quotes: Sequence[str]) -> bool:
+        """Cheap pre-filter before Tier 3: the evidence must carry the claim's content.
+
+        Passes when at least half of the claim's content words (or their 5-letter stems)
+        occur in the quotes and no number, negation, hedge or absolute changed. It cannot
+        detect polarity flips such as "performs well" -> "performs badly"; only the
+        Tier 3 entailment model can, so passing this check is never sufficient alone.
+        """
+        claim_tokens = _content_tokens(claim_text)
+        if not evidence_quotes or not claim_tokens:
             return False
-        claim_tokens = {
-            token for token in re.findall(r"\w+", claim_text.lower()) if token and len(token) > 3
-        }
-        if not claim_tokens:
-            return False
-        for quote in evidence_quotes:
-            quote_tokens = {
-                token for token in re.findall(r"\w+", quote.lower()) if token and len(token) > 3
-            }
-            overlap = claim_tokens & quote_tokens
-            if overlap:
-                return True
-        return False
+        joined = " ".join(evidence_quotes)
+        stems = {token[:5] for token in _content_tokens(joined)}
+        covered = sum(1 for token in claim_tokens if token[:5] in stems)
+        return covered * 2 >= len(claim_tokens) and preserves_anchors(claim_text, joined)
+
+    @staticmethod
+    async def tier_3(
+        entail: EntailmentCheck,
+        pairs: Sequence[tuple[str, str]],
+        *,
+        floor: float = MIN_ENTAILMENT,
+    ) -> list[bool]:
+        """Tier 3: keep a (quote, claim) pair only if the model finds the quote entails it.
+
+        Failure modes: model errors and timeouts propagate so callers abstain (I2);
+        a wrong number of scores or a score outside [0, 1] raises ``ValueError``.
+        """
+        if not pairs:
+            return []
+        scores = [float(score) for score in await entail(pairs)]
+        if len(scores) != len(pairs) or any(not 0.0 <= score <= 1.0 for score in scores):
+            raise ValueError("Entailment model returned malformed scores")
+        return [score >= floor for score in scores]
 
     def verify(
         self, claim: Claim, *, chunk_text: str | None = None, chunk_row: object | None = None
@@ -105,10 +167,10 @@ class EvidenceVerifier:
         if chunk_text is not None:
             for quote in sanitized:
                 if self.tier_1(chunk_text, quote):
-                    return self.semantic_entailment(claim.text, sanitized)
+                    return self.lexical_support(claim.text, sanitized)
         for quote in sanitized:
             if self.tier_2(chunk_text or "", quote, chunk_row=chunk_row):
-                return self.semantic_entailment(claim.text, sanitized)
+                return self.lexical_support(claim.text, sanitized)
         return False
 
     @staticmethod
@@ -120,4 +182,11 @@ class EvidenceVerifier:
         )
 
 
-__all__ = ["EvidenceVerifier", "normalize_verification_text", "strip_unverified_quotes"]
+__all__ = [
+    "MIN_ENTAILMENT",
+    "EntailmentCheck",
+    "EvidenceVerifier",
+    "normalize_verification_text",
+    "preserves_anchors",
+    "strip_unverified_quotes",
+]

@@ -18,7 +18,7 @@ from arie_core.harness.orchestrator import answer_question
 from arie_core.harness.reader import EvidenceChunk
 from arie_core.plugin_api import LLM
 from arie_core.registry.sync import SyncConfig
-from arie_core.sched import supervised
+from arie_core.sched import EventLoopLagMonitor, supervised
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -101,12 +101,16 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
             worker = group.create_task(supervised(service.run)())
             imports = group.create_task(supervised(service.run_imports)())
             vectors = group.create_task(supervised(service.run_vector_index)())
+            entailment = group.create_task(supervised(service.warm_entailment)())
+            lag = EventLoopLagMonitor(
+                threshold_ms=service.config.runtime_qos.slow_callback_threshold_ms
+            )
+            lag_monitor = group.create_task(supervised(lag.run)())
             try:
                 yield
             finally:
-                worker.cancel()
-                imports.cancel()
-                vectors.cancel()
+                for task in (worker, imports, vectors, entailment, lag_monitor):
+                    task.cancel()
                 service.close()
 
     app = FastAPI(title="ARIE API", version="0.1.0", lifespan=lifespan)
@@ -232,6 +236,8 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
                         project_root=PROJECT_ROOT,
                         history=history,
                         semantic=semantic,
+                        entail=runtime.entailment_scores if runtime.entailment else None,
+                        entail_floor=runtime.entail_floor,
                     )
                     plan, reading, result = run.plan, run.reading, run.answer
                     excerpts = result.excerpts
@@ -467,7 +473,16 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
     @app.get("/v1/plugins")
     async def list_plugins() -> Document:
         config = active().config.plugins
-        slots = ["source", "llm", "embedder", "vector_store", "database", "file_storage", "parser"]
+        slots = [
+            "source",
+            "llm",
+            "embedder",
+            "vector_store",
+            "database",
+            "file_storage",
+            "parser",
+            "entailment",
+        ]
         return {
             "plugins": [
                 {

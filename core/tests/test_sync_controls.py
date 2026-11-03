@@ -79,6 +79,7 @@ def runtime_at(tmp_path: Path) -> ResearchRuntime:
         database={"use": "sqlite", "path": str(tmp_path / "arie.db")},
         file_storage={"use": "local", "root": str(tmp_path / "papers")},
         embedder={"use": "none"},
+        entailment={"use": "none"},
         sources=["arxiv"],
     )
     return ResearchRuntime(ROOT, config.model_copy(update={"plugins": plugins}))

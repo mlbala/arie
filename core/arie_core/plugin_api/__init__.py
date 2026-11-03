@@ -229,6 +229,18 @@ class Verifier(Protocol):
     async def verify(self, ctx: Ctx, claim: Claim) -> bool: ...
 
 
+class Entailment(Protocol):
+    """Tier 3 of the quote verifier; runs only inside arie-worker processes.
+
+    Contract: for each ``(premise, hypothesis)`` pair return the probability in [0, 1]
+    that the premise (an exact source quote) entails the hypothesis (a drafted claim),
+    one score per pair in input order. Errors propagate; the caller then abstains to
+    source excerpts rather than showing unverified claims (I2).
+    """
+
+    async def score(self, ctx: Ctx, pairs: Sequence[tuple[str, str]]) -> list[float]: ...
+
+
 class Feature(Protocol):
     def add_tool(self, name: str, tool: Callable[[object], object]) -> None: ...
     def add_skill(self, name: str, skill: str) -> None: ...
@@ -388,6 +400,7 @@ __all__ = [
     "configured_api_key",
     "Database",
     "Embedder",
+    "Entailment",
     "Evidence",
     "Feature",
     "FileStorage",
