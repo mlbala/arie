@@ -86,12 +86,14 @@ class ResearchRuntime:
         parser_config = dict(cast(dict[str, object], self.config.plugins.get("parser", {})))
         parser_name = str(parser_config.pop("use", "") or "pymupdf4llm")
         parse_timeout = float(cast(float, parser_config.pop("timeout_sec", 60.0)))
+        tasks_per_worker = int(cast(int, parser_config.pop("tasks_per_worker", 20)))
         self.pool = ExtractionPool(
             root,
             parser_name,
             self.config.runtime_qos.utility_worker_processes,
             parser_config,
             parse_timeout,
+            tasks_per_worker,
         )
         self.file_storage = self.instance("file_storage")
         self.jobs: dict[str, Document] = {}
