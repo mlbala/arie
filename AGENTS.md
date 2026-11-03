@@ -9,7 +9,7 @@ ARIE (Agentic Research Intelligence Engine) is an enterprise-grade, local-first 
 ## 2. Five Non-Negotiable Hard Invariants
 Every line of code MUST preserve these invariants:
 - **I1 (Paper Isolation, P(Contamination) = 0):** Q&A tools (`search_paper`, `read_section`, `get_table`, `get_page`) MUST NOT expose `paper_id` in their LLM-visible JSON schema. Bind `paper_id` via Python lexical closure at session creation AND post-filter every vector/SQL/MCP row (`[r for r in rows if r.paper_id == paper_id]`).
-- **I2 (Zero Unverified Claims):** Every factual claim must cite an `Evidence` quote that passes the 3-tier verifier (Tier 1: exact substring; Tier 2: NFKC + ligature/hyphen/table normalization + SQLite offset overwrite; Tier 3: MiniCheck entailment) or abstain.
+- **I2 (Zero Unverified Claims):** Every factual claim must cite an `Evidence` quote that passes the 3-tier verifier (Tier 1: exact substring; Tier 2: NFKC + ligature/hyphen/table normalization + SQLite offset overwrite; Tier 3: local NLI entailment via the `entailment` slot, default `nli-onnx` with `min_score` 0.5, run in `arie-worker` before the LLM reviewer) or abstain. If Tier 3 is loading, fails or times out, model-written claims cannot pass; fall back to exact source excerpts with a stated reason.
 - **I3 (Bounded Execution):** Q&A harness enforces hard caps in code: max `K <= 3` tool calls (`K + 2` max LLM calls), `<= 12,000` input tokens, `<= 700` output tokens, and `asyncio.timeout(25.0)` wall-clock deadline. Strip tools on the final step.
 - **I4 (Clean Store & SSRF Protection):** Validate all scraper outputs via `ScrapedPaperInput` (Pydantic v2, `extra="forbid"`, reject `..` or `\` in `paper_id`). Enforce plugin `allowed_hosts` (no redirects to undeclared hosts). Stream PDFs in 64 KB chunks; abort if `Content-Length` or stream > 25 MB or first 1024 bytes lack `%PDF-`. Commit via atomic `.pdf.part` -> `os.replace()` or atomic SQL transactions.
 - **I5 (Zero Vendor SDKs in Core):** `arie_core` imports NO vendor SDKs and NO plugin packages. Plugins import ONLY `arie_core.plugin_api` and never import each other.
@@ -18,7 +18,7 @@ Every line of code MUST preserve these invariants:
 - **Python 3.14+ Strict Typing:** Zero `Any` in public slot `Protocol` signatures. Every external call takes `ctx: Ctx` (`deadline: float`, `trace_id: str`, `budget: BudgetHandle`) as its first parameter.
 - **DTO Split:** Use `msgspec.Struct(frozen=True)` for internal high-frequency runtime DTOs (`TokenUsage`, `ToolCall`, `LLMResponse`, `Evidence`, `Claim`, `AnswerDraft`). Use `pydantic.BaseModel(frozen=True, extra="forbid")` ONLY for config validation and `ScrapedPaperInput` boundary normalization.
 - **Structured Concurrency:** NEVER use bare `asyncio.create_task`. Always use `asyncio.TaskGroup` with a `supervised()` wrapper so one failing paper never cancels a batch sync.
-- **Process Isolation:** Never run PDF parsing (`pymupdf4llm`, `docling`), FastEmbed ONNX, or MiniCheck inside `arie-api` or threads (`asyncio.to_thread` is forbidden for MuPDF). Dispatch CPU tasks to `arie-worker` recycled worker processes (`max_tasks_per_child=20`, 60s `SIGKILL` timeout, 1.5 GB RSS cap).
+- **Process Isolation:** Never run PDF parsing (`pymupdf4llm`, `docling`), FastEmbed ONNX, or the Tier 3 entailment model inside `arie-api` or threads (`asyncio.to_thread` is forbidden for MuPDF). Dispatch CPU tasks to `arie-worker` recycled worker processes (`max_tasks_per_child=20`, 60s `SIGKILL` timeout by default, raised per parser with `plugins.parser.timeout_sec`, 1.5 GB RSS cap).
 - **4-Tier QoS Lanes:** Route work through `QoS_UserInteractive` (Lane 1: chat/feed), `QoS_UserInitiated` (Lane 2: manual audit overrides, `Semaphore(2)`), `QoS_Utility` (Lane 3: worker pool), and `QoS_Background` (Lane 4: scheduled syncs, `Semaphore(4)`).
 
 ## 4. Monorepo Package Map
@@ -32,13 +32,15 @@ Every line of code MUST preserve these invariants:
 - `api/arie_api/`: FastAPI (`uvloop`), `/v1/*` REST + SSE endpoints, stateless MCP 2026-07-28 server (`/mcp/p/<handle>`).
 - `worker/arie_worker/`: Background scheduler, reconciler, and recycled multiprocessing pool.
 - `prompts/`: Versioned playbooks (`qa.v1.yaml`, `brief.v1.yaml`).
-- `contract_tests/`: Slot compliance test suites run via `make test-contracts`.
+- `contract_tests/`: Slot compliance and per-plugin test suites run via `make test-contracts`. Put plugin tests here, never under `plugins/`: workspace discovery imports every `.py` file there.
+- `docs/adr/`: Architecture decision records; add one when a decision in this file changes.
+- `.github/workflows/ci.yml`: CI runs `make check`, the web checks and both Docker image builds.
 - `web/`: React 19.2 + React Compiler 1.0, 3-pane workspace, `<Activity mode="hidden">`, Web Worker KaTeX & `pdf.js`.
 
 ## 5. Agent Workflow & Verification Loop
 1. Read only the files referenced in the user prompt. Do not scan unrelated plugins.
 2. Implement code concisely with docstrings stating contract and failure modes.
-3. After every code change, run `make check` (`ruff`, `lint-imports`, `pyright`, `pytest`) in the terminal. Fix any errors before finishing the turn.
+3. After every code change, run `make check` (`ruff`, `lint-imports`, `pyright`, and the core, API and contract `pytest` suites) in the terminal. For `web/` changes, also run `make web-check`. After API route changes, run `npm run generate:api` in `web/`. Fix any errors before finishing the turn.
 
 ## 6. Git Commit & Authorship Policy (Strictly Sole User Authorship)
 - **Sole Author Only:** All git commits and pushes MUST be authored exclusively by the local repository owner (`Balakrishnan` via configured `git config user.name` and `git config user.email`).
