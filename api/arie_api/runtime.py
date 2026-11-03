@@ -18,11 +18,15 @@ from typing import Any, cast
 import yaml
 from arie_core.budget import BudgetHandle
 from arie_core.contracts import VectorRow
+from arie_core.harness.intent import DialogueTurn
+from arie_core.harness.orchestrator import ResearchAnswer, answer_question
+from arie_core.harness.reader import EvidenceChunk
 from arie_core.harness.verifier import MIN_ENTAILMENT
 from arie_core.pipeline import IngestionPipeline
 from arie_core.pipeline.chunker import chunk_spans
 from arie_core.pipeline.topics import TOPICS, topic_tags
 from arie_core.plugin_api import (
+    LLM,
     Database,
     PagedSourcePlugin,
     PaperURLSource,
@@ -40,6 +44,7 @@ from arie_worker.models import LocalModel, ModelPool
 from arie_worker.pool import BACKGROUND_NICE
 
 from arie_api.models import AnswerModels
+from arie_api.paper_eval import PaperEvaluations
 from arie_api.providers import (
     AUTO_EMBEDDER,
     DEFAULT_LLM,
@@ -118,6 +123,7 @@ class ResearchRuntime:
             self.vector_store = cast(VectorStore, self.instance("vector_store"))
             self.apply_embedder()
         self.models = AnswerModels(root, self.config)
+        self.evaluations = PaperEvaluations(self)
         self.entail_floor = self.models.option("entailment", "min_score", MIN_ENTAILMENT)
 
     def _embedder(self, name: str, settings: dict[str, object]) -> LocalModel:
@@ -251,6 +257,7 @@ class ResearchRuntime:
             """CREATE TABLE IF NOT EXISTS arie_sync_runs (
             job_id TEXT PRIMARY KEY, updated_at TEXT NOT NULL, payload_json TEXT NOT NULL)""",
         )
+        await self.evaluations.initialize()
         rows = await self.db.fetch(
             ctx, "SELECT payload_json FROM arie_sync_runs ORDER BY updated_at"
         )
@@ -262,7 +269,11 @@ class ResearchRuntime:
                 await self.update_job(job)
 
     async def save_chat_turn(
-        self, paper_id: str, question: str, events: Sequence[Document]
+        self,
+        paper_id: str,
+        question: str,
+        events: Sequence[Document],
+        turn_id: str | None = None,
     ) -> None:
         """Store one answered turn as the exact events streamed, then enforce both limits.
 
@@ -276,7 +287,7 @@ class ResearchRuntime:
             """INSERT INTO arie_chat_turns (turn_id, paper_id, question, events_json, created_at)
             VALUES (?, ?, ?, ?, ?)""",
             (
-                uuid.uuid4().hex,
+                turn_id or uuid.uuid4().hex,
                 paper_id,
                 question[:2000],
                 json.dumps(list(events)),
@@ -299,15 +310,21 @@ class ResearchRuntime:
         )
 
     async def chat_history(self, paper_id: str) -> list[Document]:
-        """Return a paper's saved turns, oldest first, as ``{question, events}``."""
+        """Return a paper's saved turns, oldest first, with any feedback rating."""
         rows = await self.db.fetch(
             context(f"chat:{paper_id}", 5.0),
-            """SELECT question, events_json FROM arie_chat_turns WHERE paper_id = ?
-            ORDER BY created_at DESC, rowid DESC LIMIT ?""",
+            """SELECT t.turn_id, t.question, t.events_json, f.rating FROM arie_chat_turns t
+            LEFT JOIN arie_feedback f ON f.turn_id = t.turn_id AND f.paper_id = t.paper_id
+            WHERE t.paper_id = ? ORDER BY t.created_at DESC, t.rowid DESC LIMIT ?""",
             (paper_id, CHAT_TURNS),
         )
         return [
-            {"question": str(row["question"]), "events": json.loads(str(row["events_json"]))}
+            {
+                "turn_id": str(row["turn_id"]),
+                "question": str(row["question"]),
+                "events": json.loads(str(row["events_json"])),
+                "rating": row["rating"],
+            }
             for row in reversed(rows)
         ]
 
@@ -543,6 +560,7 @@ class ResearchRuntime:
                     "DELETE FROM arie_chat_turns WHERE paper_id = ?",
                     (paper_id,),
                 )
+                await self.evaluations.forget(paper_id)
 
     async def update_job(self, job: Document, **changes: Any) -> None:
         job.update(changes, updated_at=datetime.now(UTC).isoformat())
@@ -1141,6 +1159,47 @@ class ResearchRuntime:
                 await asyncio.wait_for(self.vector_wakeup.wait(), timeout)
             except TimeoutError:
                 pass
+
+    async def answer_paper_question(
+        self,
+        ctx: CallContext,
+        paper: Document,
+        question: str,
+        history: Sequence[DialogueTurn] = (),
+        *,
+        rerank: bool = True,
+    ) -> ResearchAnswer:
+        """Answer one question about one indexed paper with every configured model.
+
+        The chat route and the per-paper evaluation both call this, so an evaluation
+        measures exactly what users get. ``rerank=False`` skips the reranker, for
+        comparisons. ``paper["id"]`` is bound into every read and search (I1).
+        """
+        paper_id = str(paper["id"])
+        rows = [
+            EvidenceChunk(**row)
+            for row in paper.get("chunks", [])
+            if row.get("paper_id") == paper_id
+        ]
+        llm: LLM | None = cast(LLM, self.instance("llm"))
+        if not getattr(llm, "api_key", None):
+            llm = None
+
+        async def semantic(queries: Sequence[str]) -> list[str]:
+            return await self.semantic_search(paper_id, queries)
+
+        return await answer_question(
+            ctx,
+            paper_id,
+            question,
+            rows,
+            llm,
+            history=history,
+            semantic=semantic,
+            entail=self.entailment_scores if self.models.get("entailment") else None,
+            entail_floor=self.entail_floor,
+            rerank=self.rerank_scores if rerank and self.models.get("reranker") else None,
+        )
 
     async def entailment_scores(self, pairs: Sequence[tuple[str, str]]) -> Sequence[float]:
         """Tier 3 scores for (quote, claim) pairs; raises while the model is unavailable."""

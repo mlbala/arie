@@ -594,6 +594,38 @@ ready.
   size, free disk and vector index coverage.
 - **Delete PDF** keeps the extracted text for chat; **Delete paper** removes the PDF,
   metadata and evidence. Pause sync before deleting.
+- Rate any answer with the thumbs under it. A thumbs-down can carry a short note, and
+  that question joins the paper's evaluation for review.
+
+### Evaluate answers on one paper
+
+Open a paper and choose **Evaluate answers on this paper**. The paper you picked is
+the ground truth:
+
+1. The configured LLM receives up to 18 exact sentences from the paper, spread across
+   its sections (references and credits excluded), and writes up to 8 questions, each
+   answered by one sentence, with 1-3 key facts copied from it. The model only points
+   at sentences by ID, and a question is dropped unless every key fact appears verbatim
+   in its sentence. So the reference answers are the paper's own words.
+2. Three fixed questions are added that ARIE must refuse: a cross-paper request, a
+   prompt injection, and an energy-use question (only when the paper never mentions
+   energy).
+3. Every question is answered exactly as in chat, with the same models and budgets,
+   and scored without a model judge:
+   - **Grounded**: every cited quote exists in the paper at its stated offsets.
+   - **Cited the source**: the answer quotes the sentence the question came from.
+   - **Key facts**: the share of key facts that appear in the answer.
+   - **Passed**: grounded, not a refusal, and it cited the source or contains at least
+     half the key facts. For the refusal questions, passed means it gave no claims.
+4. Questions you rated down are re-asked and listed for review, not scored, because
+   they have no reference answer.
+
+Questions are saved per paper and reused, so runs stay comparable when you change a
+model or setting; **Write new questions** replaces them. **Also answer without the
+reranker** runs every question twice and shows both summaries side by side. Writing
+questions needs an LLM key; answering does not (answers then fall back to excerpts).
+The last 10 runs per paper are kept. From a terminal:
+`make eval-paper PAPER=<paper_id> ARGS="--compare-reranker"`.
 
 ### API
 
@@ -602,6 +634,8 @@ ready.
 | `GET /v1/papers`, `GET /v1/papers/{id}` | Library and one paper |
 | `POST /v1/papers/{id}/questions` | Ask a question; answers stream as server-sent events (`progress`, `answer`, `claim`, `abstention`, `done`, `error`) |
 | `GET /v1/papers/{id}/pdf`, `.../pages/{n}`, `.../chat` | Original PDF, extracted page, chat history |
+| `PUT /v1/papers/{id}/chat/{turn_id}/feedback` | Rate a saved answer `up`, `down` or `null`, with an optional note |
+| `GET /v1/papers/{id}/eval`, `POST .../eval/runs`, `GET .../eval/runs/{run}` | A paper's evaluation questions, runs and feedback; start a run |
 | `POST /v1/sync`, `GET /v1/sync/{job}`, `POST /v1/sync/{job}/pause` | Run and control syncs |
 | `POST /v1/imports` | Import one paper by URL |
 | `GET /v1/plugins`, `PUT /v1/plugins/{slot}`, `POST /v1/plugins/{slot}/test` | List, switch and test plugins |
@@ -616,6 +650,7 @@ ready.
 | `make test-contracts` | Slot contracts and per-plugin tests, without network access |
 | `make web-check` | `oxlint`, TypeScript and Vitest for `web/` |
 | `make eval-llm` | Source-grounding evaluation against the configured LLM |
+| `make eval-paper PAPER=<id>` | Evaluate answers on one ingested paper (see [Evaluate answers on one paper](#evaluate-answers-on-one-paper)) |
 
 `make check` covers typo search, exact source offsets, cross-paper isolation,
 fabricated quotes, changed numbers, missing negation, unsupported paraphrases and
