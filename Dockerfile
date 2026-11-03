@@ -20,6 +20,8 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_PYTHON_DOWNLOADS=never \
     UV_PROJECT_ENVIRONMENT=/app/.venv
 WORKDIR /app
+# Optional extras, comma-separated (for example `docling` for the OCR parser).
+ARG ARIE_EXTRAS=
 
 # Workspace manifests only: third-party dependencies change far less often than source.
 COPY pyproject.toml uv.lock ./
@@ -32,7 +34,8 @@ RUN find /tmp/plugins -name pyproject.toml | while read -r f; do \
         d="plugins/${f#/tmp/plugins/}"; mkdir -p "$(dirname "$d")"; cp "$f" "$d"; \
     done && rm -rf /tmp/plugins
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-workspace
+    uv sync --frozen --no-dev --no-install-workspace \
+        $(for extra in $(echo "$ARIE_EXTRAS" | tr ',' ' '); do printf -- '--extra %s ' "$extra"; done)
 
 # Workspace members install editable: the API resolves its project root from source paths.
 COPY core/ core/
@@ -43,7 +46,8 @@ COPY plugins/ plugins/
 COPY prompts/ prompts/
 COPY arie.yaml ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev
+    uv sync --frozen --no-dev \
+        $(for extra in $(echo "$ARIE_EXTRAS" | tr ',' ' '); do printf -- '--extra %s ' "$extra"; done)
 
 FROM python:${PYTHON_VERSION}-slim AS api
 ENV PYTHONUNBUFFERED=1 \

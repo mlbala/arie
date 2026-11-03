@@ -6,7 +6,7 @@ import importlib
 import sys
 import types
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from arie_core.plugin_api import ParsedDoc
@@ -72,6 +72,7 @@ def fake_docling(monkeypatch: pytest.MonkeyPatch, pages: list[str]) -> dict[str,
     class DocumentConverter:
         def __init__(self, format_options: dict[str, Any]) -> None:
             seen["options"] = format_options["pdf"].pipeline_options
+            seen["built"] = cast(int, seen.get("built", 0)) + 1
 
         def convert(self, source: str) -> Any:
             seen["source"] = source
@@ -109,6 +110,16 @@ async def test_docling_extracts_pages_with_ocr_enabled(monkeypatch: pytest.Monke
     assert parsed.metadata["parser"] == "docling" and parsed.metadata["ocr"] == "true"
     options: Any = seen["options"]
     assert options.do_ocr is True and options.do_table_structure is True
+
+
+@pytest.mark.asyncio
+async def test_docling_loads_its_models_once_per_parser(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = fake_docling(monkeypatch, ["## Title\n\nText"])
+    monkeypatch.setenv("ARIE_PDF_WORKER", "1")
+    plugin = parser("docling")
+    for name in ("a.pdf", "b.pdf", "c.pdf"):
+        await plugin.parse(None, f"/papers/{name}")
+    assert seen["built"] == 1 and seen["source"] == "/papers/c.pdf"
 
 
 @pytest.mark.asyncio
