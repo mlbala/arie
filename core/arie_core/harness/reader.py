@@ -82,10 +82,16 @@ STOP = frozenset(
         "described",
     ]
 )
+# Whole-paper requests. With a model the planner decides; this is the no-model fallback.
 OVERVIEW = re.compile(
-    r"\b(?:summari[sz]e|summary|overview|main (?:idea|contribution)|high.level|"
-    r"(?:what|whats|what's) (?:is |does )?(?:this |the |that )?(?:paper|it) "
-    r"(?:about|do|propose)|explain (?:this|the|that) paper|tell me about (?:this|the|that) paper)\b"
+    r"\b(?:summari[sz]e|summary|overview|gist|tl;?dr|high.level|"
+    r"(?:main|key|core) (?:ideas?|contributions?|takeaways?)|"
+    r"(?:what|whats|what's) (?:is |does )?(?:this |the |that )?(?:paper|work|study|article|it) "
+    r"(?:is )?(?:about|do|propose)|"
+    r"what (?:this|the) (?:paper|work|study|article) (?:is about|does|proposes)|"
+    r"(?:explain|describe|tell me about) (?:this|the|that) (?:paper|work|study|article)|"
+    r"what (?:problem|question) does (?:this|the) (?:paper|work|study) "
+    r"(?:solve|address|tackle))\b"
 )
 
 
@@ -338,7 +344,7 @@ def _fallback(
             outcome = bool(
                 re.search(
                     r"\b(?:experiments?|achieves?|results?|improved?|increased|gains?|"
-                    r"training time|parallelizable)\b",
+                    r"outperform\w*|reduc\w*)\b",
                     quote,
                     re.IGNORECASE,
                 )
@@ -350,7 +356,7 @@ def _fallback(
                     40
                     if detailed
                     and re.search(
-                        r"method|model|architecture|attention", row.section.split(" / ")[0], re.I
+                        r"method|model|architecture|approach", row.section.split(" / ")[0], re.I
                     )
                     else 0
                 )
@@ -364,7 +370,7 @@ def _fallback(
         or (
             detailed
             and re.search(
-                r"method|model|architecture|attention|result|experiment|discuss", row.section, re.I
+                r"method|model|architecture|approach|result|experiment|discuss", row.section, re.I
             )
         )
         or re.search(

@@ -193,6 +193,7 @@ with pymupdf.open() as doc:
         file_storage={"use": "local", "root": str(tmp_path / "papers")},
         embedder={"use": "none"},
         entailment={"use": "none"},
+        reranker={"use": "none"},
     )
     runtime = ResearchRuntime(ROOT, config.model_copy(update={"plugins": plugins}))
     metadata_requests: list[dict[str, str | int]] = []

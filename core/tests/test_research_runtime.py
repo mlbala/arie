@@ -120,6 +120,7 @@ with pymupdf.open() as doc:
         file_storage={"use": "local", "root": str(tmp_path / "papers")},
         embedder={"use": "none"},
         entailment={"use": "none"},
+        reranker={"use": "none"},
         sources=["arxiv"],
     )
     config = config.model_copy(update={"plugins": plugins})
@@ -256,6 +257,7 @@ async def test_interrupted_sync_resumes_saved_window_and_cursor(tmp_path: Path) 
         file_storage={"use": "local", "root": str(tmp_path / "papers")},
         embedder={"use": "none"},
         entailment={"use": "none"},
+        reranker={"use": "none"},
     )
     config = config.model_copy(update={"plugins": plugins})
     first = ResearchRuntime(ROOT, config)

@@ -22,10 +22,48 @@ from arie_core.plugin_api import Ctx
 class ReadingResult(msgspec.Struct, frozen=True):
     rows: tuple[EvidenceChunk, ...]
     actions: tuple[str, ...]
+    # A wider candidate set from the same reads, in keyword/vector order, for the reranker.
+    pool: tuple[EvidenceChunk, ...] = ()
+    reranked: bool = False
 
 
 # Vector hits merged per answer; keyword hits keep their own per-query cap of five.
 SEMANTIC_DEPTH = 6
+# Candidates offered to the reranker, and the vector hits that may join them.
+POOL_SIZE = 24
+POOL_SEMANTIC_DEPTH = 12
+_EXCLUDED_SECTIONS = re.compile(r"references|acknowledg|author contributions", re.I)
+_CREDITS = re.compile(r"equal contribution|listing order is random|work performed while", re.I)
+
+
+def _usable(row: EvidenceChunk) -> bool:
+    """Evidence a reader would quote: prose or a table, never credits or bibliography."""
+    return (
+        not _EXCLUDED_SECTIONS.search(row.section)
+        and not _CREDITS.search(row.text)
+        and bool(prose_sentences(row.text) or "|" in row.text)
+    )
+
+
+def _pool(
+    plan: AnswerPlan,
+    scoped: Sequence[EvidenceChunk],
+    ordered: Sequence[EvidenceChunk],
+    vector_ids: Sequence[str],
+) -> tuple[EvidenceChunk, ...]:
+    """Collect up to ``POOL_SIZE`` candidates: keyword/vector order, more vector hits, and
+    for whole-paper questions the opening passage of every top-level section, so a
+    reranker can choose across the paper rather than only among keyword matches."""
+    by_id = {row.chunk_id: row for row in scoped}
+    found = [*ordered, *(by_id[i] for i in vector_ids if i in by_id)]
+    if plan.overview:
+        openings: dict[str, EvidenceChunk] = {}
+        for row in scoped:
+            top = row.section.split(" / ")[0]
+            if top and top not in openings and "appendix" not in top.lower() and _usable(row):
+                openings[top] = row
+        found.extend(openings.values())
+    return tuple(dict.fromkeys(row for row in found if _usable(row)))[:POOL_SIZE]
 
 
 def read_for_answer(
@@ -59,6 +97,7 @@ def read_for_answer(
                 selected.append(row)
     by_id = {row.chunk_id: row for row in eligible(plan.question, scoped)}
     vector_ids = [chunk_id for chunk_id in dict.fromkeys(semantic) if chunk_id in by_id]
+    pool_vector_ids = vector_ids[:POOL_SEMANTIC_DEPTH]
     vector_ids = vector_ids[:SEMANTIC_DEPTH]
     if vector_ids:
         fused = reciprocal_rank_fusion([row.chunk_id for row in selected], vector_ids)
@@ -68,7 +107,9 @@ def read_for_answer(
     complex_task = plan.task in {"comparison", "synthesis", "critique", "methodology"}
     if plan.depth != "detailed" and not complex_task and not plan.sections:
         return ReadingResult(
-            tuple(row for row in selected[:10] if row.paper_id == paper_id), tuple(actions)
+            tuple(row for row in selected[:10] if row.paper_id == paper_id),
+            tuple(actions),
+            _pool(plan, scoped, selected, pool_vector_ids),
         )
 
     record("read_section")
@@ -85,7 +126,7 @@ def read_for_answer(
         elif plan.overview:
             relevant = bool(
                 re.search(
-                    r"method|model|architecture|attention|result|experiment|conclu|discuss|limitation",
+                    r"method|model|architecture|approach|result|experiment|conclu|discuss|limitation",
                     row.section,
                     re.I,
                 )
@@ -121,7 +162,7 @@ def read_for_answer(
         if row.section in plan.sections:
             score += 20
         if plan.overview and re.search(
-            r"method|architecture|model|attention", row.section.split(" / ")[0], re.I
+            r"method|architecture|model|approach", row.section.split(" / ")[0], re.I
         ):
             score += 18
         if plan.overview and re.search(
@@ -130,21 +171,28 @@ def read_for_answer(
             score += 16
         return score
 
+    ordered = [
+        row for row in sorted(candidates, key=rank, reverse=True) if row.paper_id == paper_id
+    ]
+    return ReadingResult(
+        tuple(select_rows(plan, ordered)),
+        tuple(actions),
+        _pool(plan, scoped, ordered, pool_vector_ids),
+    )
+
+
+def select_rows(plan: AnswerPlan, ordered: Sequence[EvidenceChunk]) -> list[EvidenceChunk]:
+    """Take the best-first rows within 10 rows, 8,500 bytes and a per-section quota.
+
+    The quota spreads evidence across the paper: an overview groups by top-level section
+    (4 each), other answers by section (3 each), and a section the planner chose gets 5.
+    Credits, bibliography, bare headings and layout fragments are skipped.
+    """
     result: list[EvidenceChunk] = []
     used_bytes = 0
     per_section: dict[str, int] = {}
-    for row in sorted(candidates, key=rank, reverse=True):
-        if row.paper_id != paper_id or row in result or len(result) >= 10:
-            continue
-        # Exclude contributor notes and bibliography from ordinary research explanations.
-        if re.search(r"references|acknowledg|author contributions", row.section, re.I):
-            continue
-        if re.search(
-            r"equal contribution|listing order is random|work performed while", row.text, re.I
-        ):
-            continue
-        # Bare headings and layout fragments would spend a section's quota without evidence.
-        if not prose_sentences(row.text) and "|" not in row.text:
+    for row in ordered:
+        if row in result or len(result) >= 10 or not _usable(row):
             continue
         group = (
             row.section.split(" / ")[0]
@@ -152,11 +200,10 @@ def read_for_answer(
             else row.section or f"page-{row.page_start}"
         )
         size = len(row.text.encode("utf-8"))
-        # A section the planner chose to read gets more room than one matched in passing.
         quota = 5 if row.section in plan.sections else 4 if plan.overview else 3
         if per_section.get(group, 0) >= quota or used_bytes + size > 8500:
             continue
         result.append(row)
         used_bytes += size
         per_section[group] = per_section.get(group, 0) + 1
-    return ReadingResult(tuple(result), tuple(actions))
+    return result

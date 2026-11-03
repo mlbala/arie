@@ -45,6 +45,16 @@ EXPLANATORY = frozenset(
 )
 
 
+# Model labels too broad to overrule a recognized overview wording.
+BROAD = frozenset({"answer", "overview", "synthesis"})
+
+
+def _focus(values: Sequence[str]) -> tuple[str, ...]:
+    """Keep up to three distinct, non-empty plan entries of at most 180 characters."""
+    kept = (value.strip() for value in values)
+    return tuple(dict.fromkeys(value for value in kept if value and len(value) <= 180))[:3]
+
+
 def _task(question: str, overview: bool) -> str:
     if overview:
         return "overview"
@@ -103,30 +113,33 @@ async def plan_research(
             4.0,
         )
         draft = msgspec.json.decode(msgspec.json.encode(raw), type=PlannerDraft)
-        if not 1 <= len(draft.queries) <= 3 or not 1 <= len(draft.aspects) <= 3:
-            raise ValueError("Invalid plan size")
-        if any(not value.strip() or len(value) > 180 for value in (*draft.queries, *draft.aspects)):
+        # Over-long or partly unusable plans are trimmed, not discarded: one extra section
+        # name must not drop the whole plan back to keyword rules. Unknown section names
+        # are removed, so a plan can only narrow reading within the bound paper.
+        queries = _focus(draft.queries)
+        aspects = _focus(draft.aspects)
+        if not queries or not aspects:
             raise ValueError("Invalid plan focus")
-        if len(draft.sections) > 3 or any(value not in outline for value in draft.sections):
-            raise ValueError("Unknown section")
+        planned_sections = tuple(dict.fromkeys(s for s in draft.sections if s in outline))[:3]
         resolved = draft.resolved_question.strip() or basic.question
         if len(resolved) > 700 or not inspect_question(resolved).allowed:
             raise ValueError("Invalid resolved question")
         explicit_depth = bool(
             re.search(r"brief|concise|short|detail|expand|elaborate", question, re.I)
         )
-        # Recognized wording wins: an overview stays one, and a clearly specific question
-        # (method, results, ...) is not relabeled as an overview by the model.
-        overview = basic.overview or (draft.task == "overview" and basic.task == "answer")
+        # The model decides what kind of question this is. Keyword rules only fill in when
+        # the model's label is broad: a recognized overview wording stays an overview unless
+        # the model names a specific task, and the model's "overview" always wins.
+        overview = draft.task == "overview" or (basic.overview and draft.task in BROAD)
         depth = basic.depth if explicit_depth else draft.depth
         generic = draft.task in {"answer", "overview"}
         task = "overview" if overview else basic.task if generic else draft.task
         if not explicit_depth and (overview or task in EXPLANATORY):
             depth = "detailed"  # Explanations cover substance; lookups and definitions stay short.
-        elif depth == "brief" and len(draft.aspects) > 2 and not explicit_depth:
+        elif depth == "brief" and len(aspects) > 2 and not explicit_depth:
             depth = "standard"  # Two brief claims cannot cover three required aspects.
         # An explicitly brief answer keeps its length and drops the least essential aspect.
-        aspects = draft.aspects[:2] if depth == "brief" else draft.aspects
+        aspects = aspects[:2] if depth == "brief" else aspects
         follow_up = bool(history) and (basic.follow_up or draft.follow_up)
         sources = tuple(
             dict.fromkeys(source for turn in history[-4:] for source in turn.source_ids)
@@ -137,9 +150,9 @@ async def plan_research(
             depth=depth,
             overview=overview,
             task=task,
-            queries=draft.queries,
+            queries=queries,
             aspects=aspects,
-            sections=draft.sections,
+            sections=planned_sections,
             follow_up=follow_up,
             previous_source_ids=sources[:24] if follow_up else (),
             topic_question=resolved[:700],

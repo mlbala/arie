@@ -153,4 +153,5 @@ class StorageMonitor:
             "file_storage": pdf,
             "vector_store": vector,
             "entailment": runtime.entailment_status(),
+            "reranker": runtime.reranker_status(),
         }

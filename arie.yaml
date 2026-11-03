@@ -10,7 +10,7 @@ runtime_qos:
   use_uvloop: true
   slow_callback_threshold_ms: 15.0
   user_initiated_override_concurrency: 2
-  utility_worker_processes: 4
+  utility_worker_processes: 4  # PDF workers; capped to the CPUs Docker or the OS allows
   background_pdf_stream_concurrency: 4
   arxiv_rate_limit_delay_sec: 3.0
 # Select a provider in Settings or change plugins.llm.use below.
@@ -33,14 +33,22 @@ plugins:
   # (or an installed package with an arie.plugins entry point), select it here, and run
   # `make test-contracts`. Other keys are passed to the plugin's constructor.
   # Set either `use` to none for keyword-only retrieval.
-  embedder:     {use: auto}
+  embedder:     {use: gemini}  # online: frees the ~350 MB local model; 768-dim vectors
   vector_store: {use: exact, path: ./data/arie-vectors.db}
   # Tier 3 of the quote verifier: a local NLI model checks that each summary claim is
   # entailed by its own quote. Runs in arie-worker; the model (~280 MB) downloads on first
   # start. Claims scoring below min_score are dropped. `none` leaves Tiers 1-2 + reviewer.
   entailment:   {use: nli-onnx, model: cross-encoder/nli-deberta-v3-xsmall, min_score: 0.5}
+  # Reranker: a local cross-encoder (~90 MB, downloads on first start) picks each answer's
+  # passages from the keyword and vector candidates. Runs in arie-worker. `none` keeps the
+  # keyword/vector order.
+  reranker:     {use: onnx-cross-encoder, model: cross-encoder/ms-marco-MiniLM-L6-v2}
   database:     {use: sqlite, path: ./data/arie.db}
   file_storage: {use: local, root: ./data/papers}
+  # Worker limits: timeout_sec (60), max_rss_mb (1536) and tasks_per_worker (20); other
+  # keys go to the parser. Docling (`uv sync --extra docling`) needs raised limits and
+  # runtime_qos.utility_worker_processes: 1:
+  # parser: {use: docling, timeout_sec: 300, tasks_per_worker: 1, max_rss_mb: 2560}
   parser:       {use: pymupdf4llm}
   sources:      [arxiv, deepmind]
 features: [code-links]

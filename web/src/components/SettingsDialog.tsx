@@ -7,6 +7,7 @@ interface SettingsDialogProps { onClose: () => void }
 const SLOT_LABELS: Record<string, string> = {
   llm: "Models", vector_store: "Vector", database: "DB", embedder: "Embedder",
   source: "Source", file_storage: "Files", parser: "Parser", entailment: "Checker",
+  reranker: "Reranker",
 };
 
 export function SettingsDialog({ onClose }: SettingsDialogProps) {
