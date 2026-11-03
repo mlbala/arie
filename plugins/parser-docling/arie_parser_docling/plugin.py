@@ -15,6 +15,16 @@ class _Document(Protocol):
     def export_to_markdown(self, *, page_no: int | None = None) -> str: ...
 
 
+class _Result(Protocol):
+    @property
+    def document(self) -> _Document: ...
+
+
+class _Converter(Protocol):
+    def convert(self, source: str) -> _Result: ...
+
+
+
 @plugin(slot="parser", name="docling")
 class DoclingParserPlugin:
     """Extract page Markdown with Docling layout analysis, tables and OCR, in arie-worker.
@@ -29,6 +39,9 @@ class DoclingParserPlugin:
     def __init__(self, do_ocr: bool = True, do_table_structure: bool = True) -> None:
         self.do_ocr = do_ocr
         self.do_table_structure = do_table_structure
+        # Built once per instance: rebuilding reloads every layout and OCR model, which
+        # slows each paper and grows worker memory past the 1.5 GB RSS cap.
+        self._converter: _Converter | None = None
 
     async def parse(self, ctx: Ctx, file_path: str) -> ParsedDoc:
         del ctx
@@ -59,15 +72,23 @@ class DoclingParserPlugin:
         )
 
     def _convert(self, file_path: str) -> _Document:
-        base = importlib.import_module("docling.datamodel.base_models")
-        options_module = importlib.import_module("docling.datamodel.pipeline_options")
-        converter_module = importlib.import_module("docling.document_converter")
-        options = options_module.PdfPipelineOptions()
-        options.do_ocr = self.do_ocr
-        options.do_table_structure = self.do_table_structure
-        converter = converter_module.DocumentConverter(
-            format_options={
-                base.InputFormat.PDF: converter_module.PdfFormatOption(pipeline_options=options)
-            }
-        )
-        return cast(_Document, converter.convert(file_path).document)
+        converter = self._converter
+        if converter is None:
+            base = importlib.import_module("docling.datamodel.base_models")
+            options_module = importlib.import_module("docling.datamodel.pipeline_options")
+            converter_module = importlib.import_module("docling.document_converter")
+            options = options_module.PdfPipelineOptions()
+            options.do_ocr = self.do_ocr
+            options.do_table_structure = self.do_table_structure
+            converter = cast(
+                _Converter,
+                converter_module.DocumentConverter(
+                    format_options={
+                        base.InputFormat.PDF: converter_module.PdfFormatOption(
+                            pipeline_options=options
+                        )
+                    }
+                ),
+            )
+            self._converter = converter
+        return converter.convert(file_path).document

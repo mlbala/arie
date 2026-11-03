@@ -11,7 +11,8 @@ process or in threads would stall the event loop behind chat and could crash the
 ## Decision
 
 - `arie_worker.pool.SupervisedPool` runs this work in spawn-started processes that
-  recycle after 20 tasks (`max_tasks_per_child=20`). A call that times out, is
+  recycle after 20 tasks by default (`max_tasks_per_child`; parsers can lower it with
+  `plugins.parser.tasks_per_worker`). A call that times out, is
   cancelled, or lets a worker exceed 1.5 GB RSS kills the pool, which is rebuilt on the
   next call.
 - Extraction, embedding and entailment each have their own pool, so a slow PDF never
@@ -26,6 +27,7 @@ process or in threads would stall the event loop behind chat and could crash the
 
 - Process start and model load are paid once per worker, not per call. A killed pool
   pays them again.
-- Docling's layout and OCR models are slower and heavier than PyMuPDF4LLM. When it is
-  selected, raise `plugins.parser.timeout_sec`. The 1.5 GB cap can still stop very
-  large scanned documents.
+- Docling's layout and OCR models are slower and heavier than PyMuPDF4LLM. One
+  conversion of a 15-page paper took 73-165 s and peaked at 1.38-1.53 GB, at the cap.
+  Select it with a raised `timeout_sec` and `tasks_per_worker: 1`. Some papers still
+  fail with a memory error unless the cap changes.

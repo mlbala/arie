@@ -257,14 +257,26 @@ uv sync --extra docling
 
 ```yaml
 plugins:
-  parser: {use: docling, timeout_sec: 300, do_ocr: true}
+  parser: {use: docling, timeout_sec: 300, tasks_per_worker: 1, do_ocr: true}
+runtime_qos:
+  utility_worker_processes: 1
 ```
 
-Keys other than `use` and `timeout_sec` go to the parser's constructor. Each paper is
-parsed in a worker process that is killed after `timeout_sec` (default 60) or 1.5 GB of
-memory; that paper fails and the rest of the sync continues. The Docker image ships
-only `pymupdf4llm`. To use Docling there, add `--extra docling` to both `uv sync`
-lines in the `Dockerfile` and give Docker more memory than the 3 GB minimum.
+Keys other than `use`, `timeout_sec` and `tasks_per_worker` go to the parser's
+constructor. Each paper is parsed in a worker process that is killed after
+`timeout_sec` (default 60) or 1.5 GB of memory; that paper fails and the rest of the
+sync continues. Workers are replaced after `tasks_per_worker` papers (default 20).
+
+Docling is far heavier than PyMuPDF4LLM. Measured on a 15-page paper with CPU-only
+PyTorch, one conversion takes 73-165 s and peaks at 1.38-1.53 GB of memory. That sits at
+the 1.5 GB worker limit, so some papers fail with a memory error. Use one paper per
+worker (`tasks_per_worker: 1`), so memory never carries over between papers, and one
+worker process for each 2 GB of memory you can spare.
+
+In Docker, set `ARIE_EXTRAS=docling` in `.env` and rebuild (`docker compose up
+--build -d`); the image grows to about 2.7 GB. Then select the parser in the volume's
+`arie.yaml` as described in Data and settings. PyTorch comes from its CPU-only index,
+so no CUDA libraries are installed.
 
 ## Answer prompts and source-grounding evaluations
 

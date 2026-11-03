@@ -22,13 +22,15 @@ class WorkerContext:
 class SupervisedPool:
     """Run CPU work in recycled spawn processes; kill hung or memory-heavy workers.
 
-    Workers recycle after 20 tasks. A call that times out, is cancelled, or exceeds the
-    1.5 GB RSS cap kills the whole pool, which is rebuilt on the next call.
+    Workers recycle after ``tasks_per_child`` tasks (default 20). A call that times out,
+    is cancelled, or exceeds the 1.5 GB RSS cap kills the whole pool, which is rebuilt
+    on the next call.
     """
 
-    def __init__(self, processes: int, label: str) -> None:
+    def __init__(self, processes: int, label: str, tasks_per_child: int = 20) -> None:
         self.processes = processes
         self.label = label
+        self.tasks_per_child = max(1, tasks_per_child)
         self._pool: ProcessPoolExecutor | None = None
         self._lock = asyncio.Lock()
 
@@ -39,7 +41,7 @@ class SupervisedPool:
                 self._pool = ProcessPoolExecutor(
                     max_workers=self.processes,
                     mp_context=multiprocessing.get_context("spawn"),
-                    max_tasks_per_child=20,
+                    max_tasks_per_child=self.tasks_per_child,
                 )
             pool = self._pool
             future = asyncio.get_running_loop().run_in_executor(pool, func, *args)
@@ -47,7 +49,9 @@ class SupervisedPool:
                 async with asyncio.timeout(kill_after):
                     while not future.done():
                         processes = pool._processes  # pyright: ignore[reportPrivateUsage]
-                        for process in (processes or {}).values():
+                        # The executor replaces recycled workers from its own thread;
+                        # copy (atomic) before iterating or the dict changes underfoot.
+                        for process in dict(processes or {}).values():
                             try:
                                 if (
                                     process.pid

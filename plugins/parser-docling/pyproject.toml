@@ -6,6 +6,9 @@ requires-python = ">=3.14"
 dependencies = [
     "arie-core",
     "docling>=2.0",
+    # Declared directly so the workspace resolves them from the CPU-only PyTorch index.
+    "torch>=2.4",
+    "torchvision>=0.19",
 ]
 
 [build-system]

@@ -6,6 +6,9 @@ services:
     build:
       context: .
       target: api
+      args:
+        # `docling` adds the OCR parser (PyTorch, CPU-only); empty keeps the image small.
+        ARIE_EXTRAS: ${ARIE_EXTRAS:-}
     image: arie-api:0.1.0
     env_file:
       - path: .env
@@ -13,7 +16,7 @@ services:
     environment:
       ARIE_CONFIG: /app/data/arie.yaml
     volumes:
-      # SQLite database, PDFs, embedding model cache and the persisted arie.yaml.
+      # SQLite database, PDFs, model caches and the persisted arie.yaml.
       - arie-data:/app/data
     ports:
       # Direct API / MCP access; bound to localhost only.
