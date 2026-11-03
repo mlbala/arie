@@ -182,8 +182,9 @@ DISCOVERED → GATED → DOWNLOADING → PARSED → INDEXED
    first 1024 bytes lack `%PDF-`, and saved atomically (`.pdf.part`, then rename).
 4. **Parse.** The parser plugin extracts text, tables and pages in a worker process.
 5. **Index.** Each section is split into paragraph chunks of at most 2,200 characters
-   (tables and equations stay whole), with exact source offsets, and saved with keyword
-   search. The paper is now chat-ready.
+   (tables and equations stay whole, and a "Table N" caption stays with its table),
+   with exact source offsets, and saved with keyword search. The paper is now
+   chat-ready.
 6. **Embed** (background). The indexer embeds chunks in the embedding worker and writes
    them to the vector store. It backfills old papers and re-embeds the library when the
    embedder model changes.
@@ -209,6 +210,9 @@ flowchart TD
 - The reading steps run in code, not as model tool calls. The paper ID is bound before
   any step runs, so the model cannot ask for another paper, and every row a step returns
   is filtered by paper again.
+- Tables are quoted as text. A table longer than 650 bytes offers its caption, header
+  and first rows (up to 1,200 bytes) as one quote; contents listings are never
+  evidence. Figures and charts are not read: only their caption text is searchable.
 - Vector search gets at most 6 seconds and always leaves 10 seconds for writing and
   review. If it fails, retrieval falls back to keyword search.
 - If the LLM, the claim checker or credentials fail, the answer is a set of labelled

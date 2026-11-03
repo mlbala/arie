@@ -68,6 +68,48 @@ def answer_prompts(project_root: Path) -> tuple[str, str]:
     return data["answer_system"], data["review_system"]
 
 
+TABLE_EXCERPT_BYTES = 1200
+_TABLE_CAPTION = re.compile(r"\s*[*_]*Table\s+[A-Z]?\d", re.IGNORECASE)
+
+
+def table_excerpt(text: str, limit: int = TABLE_EXCERPT_BYTES) -> str:
+    """The quotable start of a Markdown table: its caption, header and leading rows.
+
+    Returns an exact substring of ``text`` that ends on a whole row, so it passes the
+    quote checks like any sentence, or ``""`` when ``text`` has no table or not even
+    the header and one row fit in ``limit`` bytes. A "Table N" caption paragraph just
+    above the table is included.
+    """
+    lines = text.splitlines(keepends=True)
+    first = next((i for i, line in enumerate(lines) if line.lstrip().startswith("|")), None)
+    if first is None:
+        return ""
+    start = first
+    above = first - 1
+    while above >= 0 and not lines[above].strip():
+        above -= 1
+    if above >= 0:
+        paragraph = above
+        while paragraph > 0 and lines[paragraph - 1].strip():
+            paragraph -= 1
+        if _TABLE_CAPTION.match(lines[paragraph]):
+            start = paragraph
+    kept: list[str] = []
+    used = rows = 0
+    for index in range(start, len(lines)):
+        line = lines[index]
+        if index >= first and not line.lstrip().startswith("|"):
+            break
+        size = len(line.encode("utf-8"))
+        if used + size > limit:
+            break
+        kept.append(line)
+        used += size
+        rows += index >= first
+    # Header and separator alone say nothing; require at least one data row.
+    return "".join(kept).strip() if rows >= 3 else ""
+
+
 def _source_windows(
     rows: Sequence[EvidenceChunk], plan: AnswerPlan, *, max_bytes: int = 3500
 ) -> list[EvidenceChunk]:
@@ -83,6 +125,8 @@ def _source_windows(
             and ("|" in row.text or "=" in row.text)
         ):
             sentences = [row.text.strip()]
+        elif table := table_excerpt(row.text):
+            sentences.append(table)
 
         def score(text: str) -> int:
             purpose = bool(

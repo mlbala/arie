@@ -538,7 +538,9 @@ function GroundedAnswer({ entry, onCitation }: { entry: ChatEntry; onCitation: (
       <details className="supporting-passages"><summary>Supporting passages</summary>
         <ol>{entry.claims.map((claim, index) => <li key={index}>
           <button className="source-citation" onClick={() => cite(claim)}><span>{index + 1}</span><FileText size={12} /> Page {claim.citation?.page_start}<ArrowUpRight size={11} /></button>
-          <blockquote>{displaySourceText(claim.quote)}</blockquote>
+          {isTableQuote(claim.quote)
+            ? <blockquote className="table-quote">{claim.quote.trim()}</blockquote>
+            : <blockquote>{displaySourceText(claim.quote)}</blockquote>}
         </li>)}</ol>
       </details>
       {entry.mode === "entailed_answer" && <details className="answer-evaluation"><summary>Model evaluation</summary>
@@ -646,6 +648,11 @@ function normalizeCitation(value: unknown): CitationRange | undefined {
     return undefined;
   const chunkId = "chunk_id" in value && typeof value.chunk_id === "string" && value.chunk_id.length <= 256 ? value.chunk_id : undefined;
   return { page_start, char_start, char_end, ...(chunkId ? { chunk_id: chunkId } : {}) };
+}
+
+/** A quoted Markdown table keeps its rows on separate lines. */
+function isTableQuote(text: string): boolean {
+  return /^\s*\|.*\|\s*$/m.test(text) && text.includes("\n");
 }
 
 function displaySourceText(text: string): string {

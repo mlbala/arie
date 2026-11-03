@@ -180,8 +180,14 @@ def _overview_score(row: EvidenceChunk) -> int:
     return base + (8 if finding else 0)
 
 
+def is_table_of_contents(text: str) -> bool:
+    """A contents listing: rows of dot leaders ("2.1 Methods . . . . . 3"), not evidence."""
+    return len(re.findall(r"(?:\.\s?){8,}", text)) >= 3
+
+
 def eligible(question: str, rows: Sequence[EvidenceChunk]) -> list[EvidenceChunk]:
-    """Drop contributor notes and bibliography unless the question asks about authors."""
+    """Drop contents listings, and contributor notes and bibliography unless asked about."""
+    rows = [row for row in rows if not is_table_of_contents(row.text)]
     if re.search(r"\b(?:who|authors?|contributors?)\b", question, re.I):
         return list(rows)
     return [

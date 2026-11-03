@@ -2605,3 +2605,4 @@ html, body { overflow: hidden; }
 .evaluation-result p { margin: 4px 0 0; color: var(--muted); }
 .evaluation-result details summary { margin-top: 4px; color: var(--muted); cursor: pointer; font-size: 10px; }
 .evaluation-variant { margin-left: auto; color: var(--muted); font-size: 9px; white-space: nowrap; }
+.supporting-passages blockquote.table-quote { overflow-x: auto; white-space: pre; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; line-height: 1.5; }
