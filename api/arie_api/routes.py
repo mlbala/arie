@@ -5,7 +5,7 @@ import inspect
 import json
 import logging
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -14,9 +14,6 @@ from typing import Annotated, Any, ClassVar, Literal, cast
 from urllib.parse import quote
 
 from arie_core.harness.intent import DialogueTurn
-from arie_core.harness.orchestrator import answer_question
-from arie_core.harness.reader import EvidenceChunk
-from arie_core.plugin_api import LLM
 from arie_core.registry.sync import SyncConfig
 from arie_core.sched import EventLoopLagMonitor, supervised
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -49,6 +46,21 @@ class QuestionRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     context: str | None = Field(default=None, max_length=2000)
     history: tuple[QuestionTurn, ...] = Field(default=(), max_length=4)
+
+
+class FeedbackRequest(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    # null clears the rating.
+    rating: Literal["up", "down"] | None
+    note: str = Field(default="", max_length=500)
+
+
+class EvalRunRequest(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    # Write new questions instead of reusing this paper's saved ones.
+    regenerate: bool = False
+    # Also answer every question without the reranker, to measure what it changes.
+    compare_reranker: bool = False
 
 
 class SyncRequest(BaseModel):
@@ -102,6 +114,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
             imports = group.create_task(supervised(service.run_imports)())
             vectors = group.create_task(supervised(service.run_vector_index)())
             models = group.create_task(supervised(service.models.warm)())
+            evaluations = group.create_task(supervised(service.evaluations.serve)())
             lag = EventLoopLagMonitor(
                 threshold_ms=service.config.runtime_qos.slow_callback_threshold_ms
             )
@@ -109,7 +122,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
             try:
                 yield
             finally:
-                for task in (worker, imports, vectors, models, lag_monitor):
+                for task in (worker, imports, vectors, models, evaluations, lag_monitor):
                     task.cancel()
                 service.close()
 
@@ -162,6 +175,42 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
         await document(paper_id)
         return {"paper_id": paper_id, "turns": await active().chat_history(paper_id)}
 
+    @app.put("/v1/papers/{paper_id:path}/chat/{turn_id}/feedback")
+    async def rate_answer(paper_id: str, turn_id: str, request: FeedbackRequest) -> Document:
+        """Rate a saved answer; answers rated down join the paper's evaluation for review."""
+        await document(paper_id)
+        try:
+            return await active().evaluations.save_feedback(
+                paper_id, turn_id, request.rating, request.note
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/v1/papers/{paper_id:path}/eval")
+    async def paper_evaluation(paper_id: str) -> Document:
+        """This paper's evaluation questions, recent runs and answer feedback."""
+        await document(paper_id)
+        return await active().evaluations.overview(paper_id)
+
+    @app.post("/v1/papers/{paper_id:path}/eval/runs")
+    async def start_paper_evaluation(paper_id: str, request: EvalRunRequest) -> JSONResponse:
+        """Evaluate answers on this paper, with the paper's own text as the ground truth."""
+        await document(paper_id)
+        try:
+            run = await active().evaluations.start(
+                paper_id, regenerate=request.regenerate, compare_reranker=request.compare_reranker
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return JSONResponse(run, status_code=202)
+
+    @app.get("/v1/papers/{paper_id:path}/eval/runs/{run_id}")
+    async def paper_evaluation_run(paper_id: str, run_id: str) -> Document:
+        run = await active().evaluations.get_run(paper_id, run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Evaluation run not found")
+        return run
+
     @app.get("/v1/papers/{paper_id:path}/pdf")
     async def paper_pdf(paper_id: str) -> FileResponse:
         paper = await document(paper_id)
@@ -194,6 +243,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
         async def stream() -> AsyncIterator[str]:
             # The answer as streamed, saved once complete so a reload shows the same turn.
             saved: list[Document] = []
+            turn_id = uuid.uuid4().hex
 
             def emit(kind: str, **payload: Any) -> str:
                 saved.append({"event": kind, "data": payload})
@@ -208,39 +258,13 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
                         status="planning",
                         message="Planning what to read in this paper",
                     )
-                    rows = [
-                        EvidenceChunk(**row)
-                        for row in paper.get("chunks", [])
-                        if row.get("paper_id") == paper_id
-                    ]
                     history = [
                         DialogueTurn(turn.question, turn.source_ids) for turn in request.history
                     ]
                     if not history and request.context:
                         history = [DialogueTurn(request.context)]
-                    llm: LLM | None = cast(LLM, active().instance("llm"))
-                    if not getattr(llm, "api_key", None):
-                        llm = None
-                    runtime = active()
-
-                    async def semantic(queries: Sequence[str]) -> list[str]:
-                        # paper_id is bound here, never taken from model output (I1).
-                        return await runtime.semantic_search(paper_id, queries)
-
-                    run = await answer_question(
-                        ctx,
-                        paper_id,
-                        request.question,
-                        rows,
-                        llm,
-                        project_root=PROJECT_ROOT,
-                        history=history,
-                        semantic=semantic,
-                        entail=runtime.entailment_scores
-                        if runtime.models.get("entailment")
-                        else None,
-                        entail_floor=runtime.entail_floor,
-                        rerank=runtime.rerank_scores if runtime.models.get("reranker") else None,
+                    run = await active().answer_paper_question(
+                        ctx, paper, request.question, history
                     )
                     plan, reading, result = run.plan, run.reading, run.answer
                     excerpts = result.excerpts
@@ -317,6 +341,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
                     yield emit(
                         "done",
                         paper_id=paper_id,
+                        turn_id=turn_id,
                         status="complete",
                         mode=mode,
                         claims_count=len(excerpts),
@@ -327,7 +352,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
                         output_tokens=result.output_tokens,
                     )
                     try:
-                        await active().save_chat_turn(paper_id, request.question, saved)
+                        await active().save_chat_turn(paper_id, request.question, saved, turn_id)
                     except Exception:
                         # History is a convenience; the answer was already delivered.
                         logger.warning("Could not save chat turn for %s", paper_id, exc_info=True)

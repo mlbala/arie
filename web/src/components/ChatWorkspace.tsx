@@ -10,9 +10,12 @@ import {
   ShieldCheck,
   Sparkles,
   Square,
+  ThumbsDown,
+  ThumbsUp,
   X,
 } from "lucide-react";
-import { apiUrl, getChat, type CitationRange, type PaperSummary } from "../api/client";
+import { apiUrl, getChat, rateAnswer, type AnswerRating, type CitationRange, type PaperSummary } from "../api/client";
+import { EvaluationPanel } from "./EvaluationPanel";
 
 export interface ChatProgress {
   stage: string;
@@ -49,6 +52,9 @@ interface ChatEntry {
   fallbackReason?: string | undefined;
   coveredAspects?: number;
   requiredAspects?: number;
+  /** Set once the answer is saved; needed to rate it. */
+  turnId?: string | undefined;
+  rating?: AnswerRating | undefined;
 }
 interface RequestCallbacks {
   onStart: (controller: AbortController) => void;
@@ -196,12 +202,21 @@ function ChatPanel({
       const restored = turns.map((turn, index) => turn.events
         .filter(({ data }) => data.paper_id === paper.id)
         .reduce<ChatEntry>((entry, { event, data }) => applyAnswerEvent(entry, event, data),
-          { id: `saved-${index}`, question: turn.question, claims: [] }));
+          { id: `saved-${index}`, question: turn.question, claims: [], turnId: turn.turn_id, rating: turn.rating ?? null }));
       if (restored.length) setEntries((current) => [...restored, ...current]);
     }).catch(() => { /* Without saved history the chat simply starts empty. */ });
     return () => controller.abort();
   }, [paper.id]);
   const ready = paper.status === "INDEXED";
+  const [showEvaluation, setShowEvaluation] = useState(false);
+  const rate = (entry: ChatEntry, rating: AnswerRating, note = "") => {
+    if (!entry.turnId) return;
+    const previous = entry.rating ?? null;
+    const patch = (value: AnswerRating) => setEntries((current) =>
+      current.map((item) => item.id === entry.id ? { ...item, rating: value } : item));
+    patch(rating);
+    rateAnswer(paper.id, entry.turnId, rating, note).catch(() => patch(previous));
+  };
 
   const submitQuestion = async (suggestion?: string) => {
     const prompt = (suggestion ?? question).trim();
@@ -331,6 +346,14 @@ function ChatPanel({
             <summary>About this paper</summary>
             <p>{paper.abstract}</p>
           </details>
+          <button
+            className="text-button evaluation-toggle"
+            aria-expanded={showEvaluation}
+            onClick={() => setShowEvaluation((open) => !open)}
+          >
+            {showEvaluation ? "Hide answer evaluation" : "Evaluate answers on this paper"}
+          </button>
+          {showEvaluation && <EvaluationPanel paperId={paper.id} ready={ready} />}
         </header>
         <div
           className="conversation-log"
@@ -411,6 +434,7 @@ function ChatPanel({
                             : "Showing source excerpts. A reviewed model answer was unavailable."}
                       </p>
                     )}
+                  {entry.turnId && !entry.error && <AnswerFeedback entry={entry} onRate={rate} />}
                 </div>
               </article>
             ))
@@ -530,6 +554,26 @@ function GroundedAnswer({ entry, onCitation }: { entry: ChatEntry; onCitation: (
   </div>;
 }
 
+/** Thumbs up or down on a saved answer; a down rating can carry a short note. */
+function AnswerFeedback({ entry, onRate }: { entry: ChatEntry; onRate: (entry: ChatEntry, rating: AnswerRating, note?: string) => void }) {
+  const [note, setNote] = useState("");
+  const [noting, setNoting] = useState(false);
+  const toggle = (rating: "up" | "down") => {
+    const next = entry.rating === rating ? null : rating;
+    setNoting(next === "down");
+    onRate(entry, next);
+  };
+  return <div className="answer-feedback">
+    <span>Was this answer helpful?</span>
+    <button className="icon-button" aria-label="Helpful" aria-pressed={entry.rating === "up"} onClick={() => toggle("up")}><ThumbsUp size={13} /></button>
+    <button className="icon-button" aria-label="Not helpful" aria-pressed={entry.rating === "down"} onClick={() => toggle("down")}><ThumbsDown size={13} /></button>
+    {noting && entry.rating === "down" && <form onSubmit={(event) => { event.preventDefault(); onRate(entry, "down", note.trim()); setNoting(false); }}>
+      <input aria-label="What was wrong?" placeholder="What was wrong? (optional)" maxLength={500} value={note} onChange={(event) => setNote(event.target.value)} />
+      <button className="text-button" type="submit">Save</button>
+    </form>}
+  </div>;
+}
+
 /** Fold one streamed answer event into its chat entry; used for live and restored turns. */
 function applyAnswerEvent(entry: ChatEntry, kind: string | undefined, parsed: Record<string, unknown>): ChatEntry {
   const evaluation = typeof parsed.evaluation === "object" && parsed.evaluation !== null
@@ -551,7 +595,11 @@ function applyAnswerEvent(entry: ChatEntry, kind: string | undefined, parsed: Re
     requiredAspects: Array.isArray(evaluation.required_aspects) ? evaluation.required_aspects.length : 0,
   };
   if (kind === "abstention") return { ...entry, message: String(parsed.message) };
-  if (kind === "done") return { ...entry, mode: String(parsed.mode ?? "") };
+  if (kind === "done") return {
+    ...entry,
+    mode: String(parsed.mode ?? ""),
+    turnId: typeof parsed.turn_id === "string" ? parsed.turn_id : entry.turnId,
+  };
   return entry;
 }
 

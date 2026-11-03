@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
+import time
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -25,6 +27,7 @@ SOURCE = (
 class _APIClient(Protocol):
     def get(self, url: str) -> httpx.Response: ...
     def post(self, url: str, *, json: object) -> httpx.Response: ...
+    def put(self, url: str, *, json: object) -> httpx.Response: ...
 
 
 @pytest.fixture
@@ -225,3 +228,73 @@ def test_openapi_export(tmp_path: Path) -> None:
     assert "openapi" in schema
     assert "/v1/papers" in schema["paths"]
     assert target.exists()
+
+
+def _events(text: str, kind: str) -> list[dict[str, Any]]:
+    return [
+        json.loads(block.split("data: ")[1])
+        for block in text.split("\n\n")
+        if block.startswith(f"event: {kind}\n")
+    ]
+
+
+def test_answers_can_be_rated_and_the_rating_is_restored(client: _APIClient) -> None:
+    streamed = client.post("/v1/papers/paper-1/questions", json={"question": "What is Cedar?"})
+    [done] = _events(streamed.text, "done")
+    turn_id = done["turn_id"]
+    [turn] = client.get("/v1/papers/paper-1/chat").json()["turns"]
+    assert turn["turn_id"] == turn_id and turn["rating"] is None
+
+    url = f"/v1/papers/paper-1/chat/{turn_id}/feedback"
+    rated = client.put(url, json={"rating": "down", "note": "Missed the method"})
+    assert rated.status_code == 200 and rated.json()["rating"] == "down"
+    assert client.get("/v1/papers/paper-1/chat").json()["turns"][0]["rating"] == "down"
+    [feedback] = client.get("/v1/papers/paper-1/eval").json()["feedback"]
+    assert feedback["note"] == "Missed the method" and feedback["question"] == "What is Cedar?"
+
+    assert client.put(url, json={"rating": None}).json()["rating"] is None
+    assert client.get("/v1/papers/paper-1/eval").json()["feedback"] == []
+    assert client.put(url, json={"rating": "meh"}).status_code == 422
+    missing = client.put("/v1/papers/paper-1/chat/nope/feedback", json={"rating": "up"})
+    assert missing.status_code == 404
+
+
+def test_a_paper_evaluation_answers_saved_cases_and_scores_them(
+    client: _APIClient, tmp_path: Path
+) -> None:
+    start = SOURCE.index("The method")
+    case = {
+        "case_id": "case-1",
+        "question": "How does the method verify answers?",
+        "kind": "fact",
+        "origin": "generated",
+        "answer_quote": SOURCE[start:],
+        "chunk_id": "paper-1:0",
+        "page_start": 1,
+        "char_start": start,
+        "char_end": len(SOURCE),
+        "key_facts": ["source quotes"],
+        "note": "",
+    }
+    with sqlite3.connect(tmp_path / "arie.db") as conn:
+        conn.execute(
+            "INSERT INTO arie_eval_cases VALUES (?, ?, ?, ?)",
+            ("case-1", "paper-1", json.dumps(case), "2026-01-01T00:00:00+00:00"),
+        )
+    assert client.post("/v1/papers/paper-2/eval/runs", json={}).status_code == 409
+    started = client.post("/v1/papers/paper-1/eval/runs", json={"compare_reranker": True})
+    assert started.status_code == 202
+    run_id = started.json()["run_id"]
+    deadline = time.monotonic() + 30
+    run = started.json()
+    while run["status"] in {"queued", "running"} and time.monotonic() < deadline:
+        time.sleep(0.1)
+        run = client.get(f"/v1/papers/paper-1/eval/runs/{run_id}").json()
+    assert run["status"] == "complete", run["message"]
+    # The reranker is off in this fixture, so there is nothing to compare against.
+    assert set(run["summary"]) == {"configured"}
+    [result] = run["results"]
+    assert result["grounded"] is True and result["kind"] == "fact"
+    overview = client.get("/v1/papers/paper-1/eval").json()
+    assert overview["latest"]["run_id"] == run_id and overview["cases"][0]["case_id"] == "case-1"
+    assert client.get("/v1/papers/paper-1/eval/runs/unknown").status_code == 404

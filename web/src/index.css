@@ -2572,3 +2572,36 @@ html, body { overflow: hidden; }
 .supporting-passages blockquote { margin: 8px 0 0; padding-left: 12px; border-left: 2px solid var(--line); color: var(--muted); font-size: 12px; line-height: 1.8; }
 .answer-evaluation p { margin: 7px 0; font-size: 10px; line-height: 1.7; }
 @media (max-width: 720px) { .grounded-answer { margin-left: 0; } }
+
+/* Answer feedback and per-paper evaluation */
+.answer-feedback { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 10px; color: var(--muted); font-size: 10px; }
+.answer-feedback .icon-button { width: 28px; height: 28px; }
+.answer-feedback .icon-button[aria-pressed="true"] { border-color: var(--line); background: var(--green-soft); color: var(--green); }
+.answer-feedback form { display: flex; flex: 1 1 220px; gap: 6px; }
+.answer-feedback input { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); padding: 5px 8px; color: var(--ink); font-size: 11px; }
+.evaluation-toggle { margin-top: 10px; border: 0; background: none; padding: 0; color: var(--green); font-size: 10px; font-weight: 600; }
+.evaluation-panel { margin-top: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); padding: 14px; }
+.evaluation-intro { display: flex; gap: 8px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.evaluation-intro svg { flex-shrink: 0; margin-top: 2px; color: var(--green); }
+.evaluation-intro p { margin: 0; }
+.evaluation-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+.evaluation-compare { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; }
+.evaluation-run { margin-top: 14px; }
+.evaluation-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 11px; }
+.evaluation-status small { flex-basis: 100%; color: var(--muted); font-size: 10px; }
+.evaluation-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; margin: 0 0 10px; }
+.evaluation-summary div { border: 1px solid var(--line); border-radius: 6px; background: var(--canvas); padding: 7px 9px; }
+.evaluation-summary dt { color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; }
+.evaluation-summary dd { margin: 3px 0 0; font-size: 13px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.evaluation-results { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.evaluation-result { border: 1px solid var(--line); border-left-width: 3px; border-radius: 6px; padding: 8px 10px; font-size: 11px; }
+.evaluation-result.passed { border-left-color: var(--green); }
+.evaluation-result.failed { border-left-color: var(--red); }
+.evaluation-result.review { border-left-color: var(--amber); }
+.evaluation-result > div { display: flex; align-items: center; gap: 6px; }
+.evaluation-result.passed svg { color: var(--green); }
+.evaluation-result.failed svg { color: var(--red); }
+.evaluation-result.review svg { color: var(--amber); }
+.evaluation-result p { margin: 4px 0 0; color: var(--muted); }
+.evaluation-result details summary { margin-top: 4px; color: var(--muted); cursor: pointer; font-size: 10px; }
+.evaluation-variant { margin-left: auto; color: var(--muted); font-size: 9px; white-space: nowrap; }
