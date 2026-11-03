@@ -10,9 +10,12 @@ import {
   ShieldCheck,
   Sparkles,
   Square,
+  ThumbsDown,
+  ThumbsUp,
   X,
 } from "lucide-react";
-import { apiUrl, getChat, type CitationRange, type PaperSummary } from "../api/client";
+import { apiUrl, getChat, rateAnswer, type AnswerRating, type CitationRange, type PaperSummary } from "../api/client";
+import { EvaluationPanel } from "./EvaluationPanel";
 
 export interface ChatProgress {
   stage: string;
@@ -49,6 +52,9 @@ interface ChatEntry {
   fallbackReason?: string | undefined;
   coveredAspects?: number;
   requiredAspects?: number;
+  /** Set once the answer is saved; needed to rate it. */
+  turnId?: string | undefined;
+  rating?: AnswerRating | undefined;
 }
 interface RequestCallbacks {
   onStart: (controller: AbortController) => void;
@@ -196,12 +202,21 @@ function ChatPanel({
       const restored = turns.map((turn, index) => turn.events
         .filter(({ data }) => data.paper_id === paper.id)
         .reduce<ChatEntry>((entry, { event, data }) => applyAnswerEvent(entry, event, data),
-          { id: `saved-${index}`, question: turn.question, claims: [] }));
+          { id: `saved-${index}`, question: turn.question, claims: [], turnId: turn.turn_id, rating: turn.rating ?? null }));
       if (restored.length) setEntries((current) => [...restored, ...current]);
     }).catch(() => { /* Without saved history the chat simply starts empty. */ });
     return () => controller.abort();
   }, [paper.id]);
-  const ready = ["INDEXED", "BRIEFED"].includes(paper.status);
+  const ready = paper.status === "INDEXED";
+  const [showEvaluation, setShowEvaluation] = useState(false);
+  const rate = (entry: ChatEntry, rating: AnswerRating, note = "") => {
+    if (!entry.turnId) return;
+    const previous = entry.rating ?? null;
+    const patch = (value: AnswerRating) => setEntries((current) =>
+      current.map((item) => item.id === entry.id ? { ...item, rating: value } : item));
+    patch(rating);
+    rateAnswer(paper.id, entry.turnId, rating, note).catch(() => patch(previous));
+  };
 
   const submitQuestion = async (suggestion?: string) => {
     const prompt = (suggestion ?? question).trim();
@@ -331,6 +346,14 @@ function ChatPanel({
             <summary>About this paper</summary>
             <p>{paper.abstract}</p>
           </details>
+          <button
+            className="text-button evaluation-toggle"
+            aria-expanded={showEvaluation}
+            onClick={() => setShowEvaluation((open) => !open)}
+          >
+            {showEvaluation ? "Hide answer evaluation" : "Evaluate answers on this paper"}
+          </button>
+          {showEvaluation && <EvaluationPanel paperId={paper.id} ready={ready} />}
         </header>
         <div
           className="conversation-log"
@@ -411,6 +434,7 @@ function ChatPanel({
                             : "Showing source excerpts. A reviewed model answer was unavailable."}
                       </p>
                     )}
+                  {entry.turnId && !entry.error && <AnswerFeedback entry={entry} onRate={rate} />}
                 </div>
               </article>
             ))
@@ -514,15 +538,41 @@ function GroundedAnswer({ entry, onCitation }: { entry: ChatEntry; onCitation: (
       <details className="supporting-passages"><summary>Supporting passages</summary>
         <ol>{entry.claims.map((claim, index) => <li key={index}>
           <button className="source-citation" onClick={() => cite(claim)}><span>{index + 1}</span><FileText size={12} /> Page {claim.citation?.page_start}<ArrowUpRight size={11} /></button>
-          <blockquote>{displaySourceText(claim.quote)}</blockquote>
+          {isTableQuote(claim.quote)
+            ? <blockquote className="table-quote">{claim.quote.trim()}</blockquote>
+            : <blockquote>{displaySourceText(claim.quote)}</blockquote>}
         </li>)}</ol>
       </details>
+      {entry.mode === "entailed_answer" && <details className="answer-evaluation"><summary>Model evaluation</summary>
+        <p>{entry.claims.length} statement{entry.claims.length === 1 ? "" : "s"} checked · each strongly entailed by its quote</p>
+        <p>Direct answer: the separate model review was not needed</p>
+      </details>}
       {reviewed && <details className="answer-evaluation"><summary>Model evaluation</summary>
         <p>{entry.reviewedClaims} statements checked · {entry.claims.length} accepted · {entry.rejectedClaims ?? 0} rejected</p>
         <p>Question relevance: passed · Evidence support: passed</p>
         {Boolean(entry.requiredAspects) && <p>Requested points covered: {entry.coveredAspects ?? 0}/{entry.requiredAspects}</p>}
       </details>}
     </section>
+  </div>;
+}
+
+/** Thumbs up or down on a saved answer; a down rating can carry a short note. */
+function AnswerFeedback({ entry, onRate }: { entry: ChatEntry; onRate: (entry: ChatEntry, rating: AnswerRating, note?: string) => void }) {
+  const [note, setNote] = useState("");
+  const [noting, setNoting] = useState(false);
+  const toggle = (rating: "up" | "down") => {
+    const next = entry.rating === rating ? null : rating;
+    setNoting(next === "down");
+    onRate(entry, next);
+  };
+  return <div className="answer-feedback">
+    <span>Was this answer helpful?</span>
+    <button className="icon-button" aria-label="Helpful" aria-pressed={entry.rating === "up"} onClick={() => toggle("up")}><ThumbsUp size={13} /></button>
+    <button className="icon-button" aria-label="Not helpful" aria-pressed={entry.rating === "down"} onClick={() => toggle("down")}><ThumbsDown size={13} /></button>
+    {noting && entry.rating === "down" && <form onSubmit={(event) => { event.preventDefault(); onRate(entry, "down", note.trim()); setNoting(false); }}>
+      <input aria-label="What was wrong?" placeholder="What was wrong? (optional)" maxLength={500} value={note} onChange={(event) => setNote(event.target.value)} />
+      <button className="text-button" type="submit">Save</button>
+    </form>}
   </div>;
 }
 
@@ -547,7 +597,11 @@ function applyAnswerEvent(entry: ChatEntry, kind: string | undefined, parsed: Re
     requiredAspects: Array.isArray(evaluation.required_aspects) ? evaluation.required_aspects.length : 0,
   };
   if (kind === "abstention") return { ...entry, message: String(parsed.message) };
-  if (kind === "done") return { ...entry, mode: String(parsed.mode ?? "") };
+  if (kind === "done") return {
+    ...entry,
+    mode: String(parsed.mode ?? ""),
+    turnId: typeof parsed.turn_id === "string" ? parsed.turn_id : entry.turnId,
+  };
   return entry;
 }
 
@@ -594,6 +648,11 @@ function normalizeCitation(value: unknown): CitationRange | undefined {
     return undefined;
   const chunkId = "chunk_id" in value && typeof value.chunk_id === "string" && value.chunk_id.length <= 256 ? value.chunk_id : undefined;
   return { page_start, char_start, char_end, ...(chunkId ? { chunk_id: chunkId } : {}) };
+}
+
+/** A quoted Markdown table keeps its rows on separate lines. */
+function isTableQuote(text: string): boolean {
+  return /^\s*\|.*\|\s*$/m.test(text) && text.includes("\n");
 }
 
 function displaySourceText(text: string): string {

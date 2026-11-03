@@ -10,13 +10,65 @@ from arie_core.contracts import Claim, Evidence
 EntailmentCheck = Callable[[Sequence[tuple[str, str]]], Awaitable[Sequence[float]]]
 # Calibrated on cross-encoder/nli-deberta-v3-xsmall: paraphrases score >= 0.9, flips <= 0.01.
 MIN_ENTAILMENT = 0.5
+# A direct single-point answer whose every claim scores at least this skips the LLM
+# reviewer (ADR 0008); on the same model, faithful restatements score 0.92-0.99.
+REVIEW_OPTIONAL_ENTAILMENT = 0.9
 _CONTENT_STOP = frozenset(
     {
-        "that", "this", "these", "those", "with", "from", "into", "than", "then", "their",
-        "there", "which", "while", "where", "were", "have", "been", "being", "also", "such",
-        "both", "each", "only", "very", "more", "most", "over", "under", "about", "paper", "work",
+        "that",
+        "this",
+        "these",
+        "those",
+        "with",
+        "from",
+        "into",
+        "than",
+        "then",
+        "their",
+        "there",
+        "which",
+        "while",
+        "where",
+        "were",
+        "have",
+        "been",
+        "being",
+        "also",
+        "such",
+        "both",
+        "each",
+        "only",
+        "very",
+        "more",
+        "most",
+        "over",
+        "under",
+        "about",
+        "paper",
+        "work",
     }
 )
+
+
+_AUTHOR_VOICE = (
+    (re.compile(r"\bWe\b"), "The authors"),
+    (re.compile(r"\bwe\b"), "the authors"),
+    (re.compile(r"\bOur\b"), "The authors'"),
+    (re.compile(r"\bour\b"), "the authors'"),
+    (re.compile(r"\bUs\b"), "The authors"),
+    (re.compile(r"\bus\b"), "the authors"),
+)
+
+
+def attributed_premise(quote: str) -> str:
+    """Restate a paper's first-person voice ("we", "our") as "the authors" for Tier 3.
+
+    Only pronouns change; every number, entity, negation and qualifier stays as quoted.
+    The displayed quote is never rewritten: this text is used only as the NLI premise.
+    """
+    for pattern, replacement in _AUTHOR_VOICE:
+        quote = pattern.sub(replacement, quote)
+    return quote
 
 
 def strip_unverified_quotes(quotes: Sequence[str]) -> list[str]:
@@ -150,12 +202,26 @@ class EvidenceVerifier:
         Failure modes: model errors and timeouts propagate so callers abstain (I2);
         a wrong number of scores or a score outside [0, 1] raises ``ValueError``.
         """
+        return [score >= floor for score in await EvidenceVerifier.tier_3_scores(entail, pairs)]
+
+    @staticmethod
+    async def tier_3_scores(
+        entail: EntailmentCheck, pairs: Sequence[tuple[str, str]]
+    ) -> list[float]:
+        """Tier 3 probabilities for (quote, claim) pairs, one per pair in input order.
+
+        Each premise is first restated in the third person (``attributed_premise``): the
+        NLI model does not know that a paper's "we" is "the paper" or "the authors" and
+        rejected "The paper proposes X" against "We propose X" (0.02; 0.92 restated).
+        Failure modes as for ``tier_3``.
+        """
         if not pairs:
             return []
-        scores = [float(score) for score in await entail(pairs)]
+        restated = [(attributed_premise(quote), claim) for quote, claim in pairs]
+        scores = [float(score) for score in await entail(restated)]
         if len(scores) != len(pairs) or any(not 0.0 <= score <= 1.0 for score in scores):
             raise ValueError("Entailment model returned malformed scores")
-        return [score >= floor for score in scores]
+        return scores
 
     def verify(
         self, claim: Claim, *, chunk_text: str | None = None, chunk_row: object | None = None
@@ -184,7 +250,9 @@ class EvidenceVerifier:
 
 __all__ = [
     "MIN_ENTAILMENT",
+    "REVIEW_OPTIONAL_ENTAILMENT",
     "EntailmentCheck",
+    "attributed_premise",
     "EvidenceVerifier",
     "normalize_verification_text",
     "preserves_anchors",

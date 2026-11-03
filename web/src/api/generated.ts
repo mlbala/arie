@@ -161,6 +161,83 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/papers/{paper_id}/chat/{turn_id}/feedback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Rate Answer
+         * @description Rate a saved answer; answers rated down join the paper's evaluation for review.
+         */
+        put: operations["rate_answer_v1_papers__paper_id__chat__turn_id__feedback_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/papers/{paper_id}/eval": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Paper Evaluation
+         * @description This paper's evaluation questions, recent runs and answer feedback.
+         */
+        get: operations["paper_evaluation_v1_papers__paper_id__eval_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/papers/{paper_id}/eval/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start Paper Evaluation
+         * @description Evaluate answers on this paper, with the paper's own text as the ground truth.
+         */
+        post: operations["start_paper_evaluation_v1_papers__paper_id__eval_runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/papers/{paper_id}/eval/runs/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Paper Evaluation Run */
+        get: operations["paper_evaluation_run_v1_papers__paper_id__eval_runs__run_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/papers/{paper_id}/override": {
         parameters: {
             query?: never;
@@ -387,6 +464,29 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** EvalRunRequest */
+        EvalRunRequest: {
+            /**
+             * Compare Reranker
+             * @default false
+             */
+            compare_reranker: boolean;
+            /**
+             * Regenerate
+             * @default false
+             */
+            regenerate: boolean;
+        };
+        /** FeedbackRequest */
+        FeedbackRequest: {
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /** Rating */
+            rating: ("up" | "down") | null;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -795,6 +895,146 @@ export interface operations {
             header?: never;
             path: {
                 paper_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rate_answer_v1_papers__paper_id__chat__turn_id__feedback_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                paper_id: string;
+                turn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FeedbackRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    paper_evaluation_v1_papers__paper_id__eval_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                paper_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_paper_evaluation_v1_papers__paper_id__eval_runs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                paper_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EvalRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    paper_evaluation_run_v1_papers__paper_id__eval_runs__run_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                paper_id: string;
+                run_id: string;
             };
             cookie?: never;
         };

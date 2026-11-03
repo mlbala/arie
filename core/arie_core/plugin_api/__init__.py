@@ -217,16 +217,14 @@ class Parser(Protocol):
 
 
 class Reranker(Protocol):
-    async def rerank(
-        self,
-        ctx: Ctx,
-        query: str,
-        candidates: Sequence[ChunkRow],
-    ) -> list[ChunkRow]: ...
+    """Question-passage relevance scoring; runs only inside arie-worker processes.
 
+    Contract: return one relevance score per passage for ``query``, in input order;
+    higher means more relevant, and scores are compared only within one call. Errors
+    propagate; the caller then keeps its own keyword and vector ranking.
+    """
 
-class Verifier(Protocol):
-    async def verify(self, ctx: Ctx, claim: Claim) -> bool: ...
+    async def score(self, ctx: Ctx, query: str, passages: Sequence[str]) -> list[float]: ...
 
 
 class Entailment(Protocol):
@@ -239,16 +237,6 @@ class Entailment(Protocol):
     """
 
     async def score(self, ctx: Ctx, pairs: Sequence[tuple[str, str]]) -> list[float]: ...
-
-
-class Feature(Protocol):
-    def add_tool(self, name: str, tool: Callable[[object], object]) -> None: ...
-    def add_skill(self, name: str, skill: str) -> None: ...
-    def add_pipeline_step(self, name: str, step: Callable[[object], object]) -> None: ...
-    def on(self, event: str, callback: Callable[[dict[str, object]], None]) -> None: ...
-    def add_brief_field(self, name: str, field_type: type[object]) -> None: ...
-    def add_route(self, path: str, handler: Callable[[object], object]) -> None: ...
-    def add_ui_panel(self, name: str, panel: object) -> None: ...
 
 
 def _normalize_metadata_mapping(value: object) -> dict[str, str]:
@@ -402,7 +390,6 @@ __all__ = [
     "Embedder",
     "Entailment",
     "Evidence",
-    "Feature",
     "FileStorage",
     "LLM",
     "LLMDelta",
@@ -418,7 +405,6 @@ __all__ = [
     "ToolCall",
     "TokenUsage",
     "VectorStore",
-    "Verifier",
     "normalize_scraper_output",
     "plugin",
     "wait_for_source_host",

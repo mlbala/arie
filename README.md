@@ -1,334 +1,687 @@
-# arie — Agentic Research Intelligence Engine
+# ARIE — Agentic Research Intelligence Engine
 
-**ARIE** is an enterprise-grade, local-first academic research intelligence platform built around a **Microkernel + Pluggable Adapter Pattern**. It features:
+ARIE is a local-first research assistant for academic papers. It syncs papers from
+sources such as arXiv, extracts their text, and answers questions about one paper at a
+time. Every statement in an answer carries an exact quote and page citation from that
+paper, and is checked before you see it.
 
-- **Zero-SDK Microkernel & 9 Pluggable Adapter Slots:** Hot-swap any LLM, embedding model, vector store, SQL database (SQLite WAL, Postgres, or external stateless `mcp-sql`), file storage, PDF parser, or custom paper scraper via `arie.yaml` without touching core code.
-- **Automated Multi-Source Ingestion & Boundary Gates:** Pulls AI/CS papers from arXiv, Google DeepMind (via OpenAlex ROR lineage), and custom BYO scrapers (e.g., OpenReview) guarded by a strict Pydantic v2 `ScrapedPaperInput` boundary contract, zero-token relevance filtering, SSRF host allow-lists, and a 64 KB `%PDF-` streaming gatekeeper.
-- **Strict Single-Paper Isolation ($P(\text{Contamination}) = 0$):** Binds `paper_id` inside Python tool lexical closures and post-filters every vector and SQL/MCP query so cross-paper contamination is structurally impossible.
-- **Bounded Agentic Q&A & 3-Zone Prefix Caching:** Combines zero-LLM routing, hybrid prefetch (FTS5 BM25 + exact vector RRF), a 3-zone prompt cache layout, and a BATS budget-tracked loop hard-capped at $K \le 3$ tool calls, $12,000$ tokens, and $25\text{ s}$.
-- **3-Tier Quote & Entailment Verifier Ladder:** Every claim in pre-computed 5-part executive briefs and live Q&A must pass exact byte matching (Tier 1), Unicode NFKC/ligature normalization with authoritative SQLite offset mapping (Tier 2), and a local NLI entailment model run in a worker process (Tier 3) before reaching the user.
-- **Hybrid Multi-Process Runtime & 4-Tier QoS Scheduling:** Isolates non-thread-safe PDF parsing (`PyMuPDF4LLM`, or `Docling` with OCR) and ONNX inference in recycled worker processes while keeping `arie-api` (`uvloop`) under $\le 10\text{ ms}$ p99 lag via 4 GCD-inspired QoS priority lanes.
-- **Chat-focused React 19.2 Workspace:** A wide paper conversation with a compact library and live pipeline sidebar, recent conversations retained with `<Activity mode="hidden">`, and page citations that open highlighted extraction text alongside the original PDF.
+ARIE is built as a **microkernel**: a small core (about 5,000 lines, three
+dependencies) holds the pipeline, safety checks and the question-answering loop.
+Everything that talks to the outside world is a **plugin**: the LLM, embedder, vector
+store, database, file store, PDF parser, paper sources and claim checker. You choose
+plugins in `arie.yaml`, bring your own by dropping a class into `plugins/` or
+installing a package, and fork the core without touching vendor code.
 
-## Run with Docker
+- [Features](#features)
+- [Quick start](#quick-start)
+- [Architecture](#architecture)
+- [Plug and play: bring your own components](#plug-and-play-bring-your-own-components)
+- [Configuration reference](#configuration-reference)
+- [Memory and CPU](#memory-and-cpu)
+- [Using the workspace](#using-the-workspace)
+- [Development](#development)
+- [License](#license)
 
-Requires Docker Engine with Compose v2 (Docker Desktop 4.x or later). Allocate at
-least 3 GB of memory to Docker; PDF extraction runs in a pool of worker processes.
+## Features
 
-1. Create your environment file and add a key for the LLM provider selected in
-   `arie.yaml` (`plugins.llm.use`, DeepSeek by default):
+- **Grounded answers.** An answer contains only claims backed by a quote that exists in
+  the paper. Quotes are matched exactly (Tier 1), then after Unicode and ligature
+  normalization (Tier 2), and a local natural-language-inference model checks that each
+  quote actually supports its claim (Tier 3). If no claim survives, ARIE abstains or
+  shows exact source excerpts and says why.
+- **One paper at a time.** Questions are answered from the selected paper only.
+  Retrieval tools never receive a paper ID from the model, and every result row is
+  filtered by paper again, so text from another paper cannot leak in.
+- **Bounded cost.** Each question is capped at 3 tool calls, 12,000 input tokens, 700
+  output tokens and 25 seconds, enforced in code.
+- **Automated ingestion.** Syncs arXiv and Google DeepMind papers by month, year or
+  range, resumes interrupted runs, and imports a single paper from its arXiv link.
+  Downloads are size-limited, host-restricted and validated as PDFs before saving.
+- **Hybrid search.** Keyword search (SQLite FTS5) and vector search are fused with
+  reciprocal rank fusion inside the selected paper. Without an embedder, keyword search
+  still works.
+- **Swappable everything.** Change the LLM provider, embedder, vector store, database,
+  parser or sources in `arie.yaml` or in **Settings**, without code changes.
+- **Workspace UI.** A React workspace with a paper library, live sync activity, chat
+  with page citations, and the original PDF beside the extracted text.
 
-   ```sh
-   cp .env.example .env
-   ```
+## Quick start
 
-2. Build and start the API and web workspace:
+### Docker
 
-   ```sh
-   docker compose up --build -d
-   ```
+Requires Docker Engine with Compose v2. Give Docker at least 3 GB of memory.
 
-3. Open <http://localhost:8080>. The API is also reachable at
-   <http://127.0.0.1:8000> for MCP clients and scripts.
+```sh
+cp .env.example .env          # add the keys you use (see below)
+docker compose up --build -d
+```
 
-Useful commands:
+Open <http://localhost:8080>. The API listens on <http://127.0.0.1:8000>.
+
+With the shipped `arie.yaml`, chat uses DeepSeek (`DEEPSEEK_API_KEY`) and embeddings use
+Gemini (`GEMINI_API_KEY`). Without an LLM key, chat shows labelled source excerpts.
+Without the embedding key, search is keyword-only and **Storage & health** shows the
+vector index as degraded.
 
 ```sh
 docker compose ps                 # health of both services
-docker compose logs -f api        # follow API and extraction logs
+docker compose logs -f api        # API and extraction logs
 docker compose restart api        # reload .env after changing keys
 docker compose down               # stop; library data is kept
-docker compose down -v            # stop and delete all papers, the database and saved settings
+docker compose down -v            # stop and delete papers, database and settings
 ```
 
-**What runs.** The `api` service is the FastAPI backend with its PDF extraction
-pool. The `web` service is the built React workspace served by nginx, which proxies
-`/v1` (including the live event stream) and `/mcp` to the API. Both images come from
-the multi-stage `Dockerfile` (`--target api` and `--target web`).
-
-**Data and settings.** The `arie-data` volume holds the SQLite database, PDFs,
-the embedding and claim-checker model caches and the active `arie.yaml`. On first
-start the API downloads the claim-checker model (about 280 MB); chat answers with
-exact source excerpts until **Storage & health** shows the claim checker as healthy.
-The first start also copies the repository's `arie.yaml` into the volume. Settings
-saved from the UI (sync defaults, provider choice) update that copy and survive
-restarts and rebuilds. To replace it with an edited `arie.yaml` from your checkout:
+The `api` service runs FastAPI and its worker processes. The `web` service is the built
+React app on nginx, which proxies `/v1` and `/mcp` to the API. The `arie-data` volume
+holds the database, PDFs, model caches and the active `arie.yaml`. The first start
+copies the repository's `arie.yaml` into the volume; settings saved in the UI update that
+copy. To replace it with your edited file:
 
 ```sh
 docker compose cp arie.yaml api:/app/data/arie.yaml
 docker compose restart api
 ```
 
-The `ARIE_CONFIG` environment variable selects the configuration file; without it,
-ARIE reads `arie.yaml` from the repository root.
-
-**Configuration keys** (`.env`):
-
-| Key | Purpose |
-| --- | --- |
-| `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY` | Provider keys; set the ones you use. Chat falls back to labelled source excerpts without one. |
-| `ARIE_MCP_SECRET` | Signs scoped MCP URLs. Set a random value (`openssl rand -hex 32`) for shared deployments. |
-| `ARIE_WEB_PORT` | Host port for the web workspace (default `8080`). |
-| `ARIE_API_PORT` | Host port for direct API access, bound to `127.0.0.1` (default `8000`). |
-
-**Development overlay.** To edit code with live reload, mount the source over the
-images and run the Vite dev server:
+For live reload while editing code:
 
 ```sh
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 ```
 
-Python changes under `api/`, `core/`, `worker/` and `plugins/` restart the API
-automatically, `prompts/` edits apply to the next question, and changes in `web/src`
-hot-reload in the browser. Dependency changes
-(`uv.lock`, `web/package-lock.json`) need `--build`.
+Python changes restart the API, `prompts/` edits apply to the next question, and
+`web/src` changes hot-reload. Dependency changes (`uv.lock`, `web/package-lock.json`)
+need `--build`.
 
-## Run locally
+### Local
 
-From the repository root, install dependencies and start the API:
+Requires Python 3.14+, [uv](https://docs.astral.sh/uv/) and Node.js.
 
 ```sh
 uv sync
 uv run uvicorn arie_api.routes:app --host 127.0.0.1 --port 8000 --loop uvloop
 ```
 
-The first start downloads the claim-checker model into the Hugging Face cache
-(`HF_HOME`, by default `~/.cache/huggingface`).
-
 In a second terminal:
 
 ```sh
-cd web
-npm install
-npm run dev
+cd web && npm install && npm run dev
 ```
 
-Open Vite's local URL and choose **Sync options**. Select recent months, a whole
-year, one month in a year, a starting month, or an inclusive month range. Choose
-the source, metadata page size, and paper limit, then **Sync papers**. **Save
-defaults to arie.yaml** persists these choices for the next launch. Dates use UTC;
-ongoing years and months stop at the current time. The default is six calendar
-months and at most 100 examined papers per run, including skipped or duplicate
-records. Reaching the limit pauses the run. **Resume saved run** continues its
-original window, settings, and position within the source page. Successful recent
-month syncs use a one-day overlap and skip unchanged extracted papers.
-You can also pause after the current paper.
-Interrupted downloads never become library entries; PDFs appear only after text
-extraction and evidence indexing succeed. Sync progress and audit failures persist
-in the configured database.
+The first start downloads the claim-checker model (about 280 MB) into the Hugging Face
+cache (`HF_HOME`, by default `~/.cache/huggingface`). Until it is ready, chat answers
+with exact source excerpts.
 
-Chat produces a faithful summary with exact supporting quotations and page
-citations. One configured LLM fills two sequential roles: a writer and a separate
-evidence reviewer. Between them, a local claim checker (Tier 3, see below) drops any
-drafted statement its own quotation does not entail, so the reviewer sees only
-supported claims; the saved PDF text remains the source of truth. Deterministic
-checks reject fabricated quotations, changed numbers, lost qualifications and new
-absolute claims. If a model stage or the claim checker fails, or credentials are
-rejected, chat uses labeled source excerpts and says why.
-The two model calls share a 700-token output cap, a conservative 12,000-token input
-cap, and the existing 25-second request deadline.
-Image-only PDFs that produce no text are reported as extraction failures requiring
-OCR; they are not treated as successfully indexed. Select the Docling parser (below)
-to extract them with OCR.
+## Architecture
 
-To read an older paper directly, paste its arXiv PDF link into **Read a specific
-paper** in the sidebar and choose **Import paper**. This import bypasses only the
-batch publication-date window; PDF validation and source evidence checks still
-apply. The completed paper opens automatically, including papers outside the
-first library page. Ask **What is this paper about?** for a concise summary drawn
-from the paper's narrative sections, with page citations and supporting quotes.
+```mermaid
+flowchart LR
+  subgraph Clients
+    UI[React workspace]
+    Scripts[Scripts / REST]
+  end
+  subgraph API["arie-api (FastAPI, one process)"]
+    Routes["/v1 REST + SSE"]
+    Runtime[Runtime: sync jobs, indexer, QoS lanes]
+    Core["arie_core<br/>pipeline · harness · verifier<br/>registry · plugin API"]
+  end
+  subgraph Workers["arie-worker (recycled processes)"]
+    PDF[PDF parser pool]
+    EMB[Embedding pool]
+    NLI[Answer-model pool:<br/>claim checker + reranker]
+  end
+  subgraph Plugins
+    LLM[LLM]
+    VS[Vector store]
+    DB[Database]
+    FS[File storage]
+    SRC[Sources]
+  end
+  UI --> Routes
+  Scripts --> Routes
+  Routes --> Runtime --> Core
+  Core --> LLM & VS & DB & FS & SRC
+  Runtime --> PDF & EMB & NLI
+```
 
-## Sync configuration and workspace controls
+### Packages
 
-Set `sync.mode` in `arie.yaml`, keeping only the date fields for the chosen mode:
+| Path | Role |
+| --- | --- |
+| `core/arie_core/plugin_api/` | The plugin contract: the `@plugin` decorator, one `Protocol` per slot, `ScrapedPaperInput`. This is the only module plugins may import. |
+| `core/arie_core/contracts/` | Frozen `msgspec` data types passed between core and plugins (`VectorRow`, `Hit`, `LLMRequest`, `Evidence`, ...). |
+| `core/arie_core/registry/` | Discovers plugins, validates `arie.yaml`, builds plugin instances, circuit breakers. |
+| `core/arie_core/pipeline/` | Ingestion state machine, PDF gatekeeper, section-aware chunker. |
+| `core/arie_core/harness/` | Question answering: guard, planner, paper-bound reading, reranking, writer, verifier, reviewer. |
+| `core/arie_core/budget/`, `sched/` | Token and tool budgets, QoS lanes, per-host rate limits. |
+| `api/arie_api/` | FastAPI app: REST and server-sent events, answer models, per-paper evaluation. `runtime/` holds the runtime in layers: `base` (config, plugins, pools), `library`, `vectors`, `sync` (sync and import jobs), `chat`. |
+| `worker/arie_worker/` | Supervised, recycled worker processes for CPU-heavy work. |
+| `plugins/` | Bundled plugins, one package per folder. |
+| `sdk/` | The `arie` CLI for scaffolding and testing plugins. |
+| `prompts/` | Versioned prompts: `qa.v1.yaml` (planner, writer, reviewer) and `eval.v1.yaml` (evaluation questions). |
+| `contract_tests/` | Slot contract tests run against every discovered plugin. |
+| `web/` | React 19 workspace. |
+| `docs/adr/` | Architecture decision records. |
+
+The core imports no vendor SDK and no plugin. `make check` enforces this with
+`import-linter`, so a fork can replace any plugin without editing the core.
+
+### Ingestion pipeline
+
+Each paper moves through a resumable state machine:
+
+```
+DISCOVERED → GATED → DOWNLOADING → PARSED → INDEXED
+```
+
+1. **Discover.** A source plugin returns paper metadata for a date window, one page at
+   a time. Every record is validated as a `ScrapedPaperInput` (unknown fields rejected,
+   `..` or `\` in IDs rejected).
+2. **Gate.** Category and keyword filters decide relevance without an LLM.
+3. **Download.** The PDF is streamed in 64 KB chunks from the source's declared hosts
+   only (redirects to other hosts are refused). It is aborted above 25 MB or if the
+   first 1024 bytes lack `%PDF-`, and saved atomically (`.pdf.part`, then rename).
+4. **Parse.** The parser plugin extracts text, tables and pages in a worker process.
+5. **Index.** Each section is split into paragraph chunks of at most 2,200 characters
+   (tables and equations stay whole, and a "Table N" caption stays with its table),
+   with exact source offsets, and saved with keyword search. The paper is now
+   chat-ready.
+6. **Embed** (background). The indexer embeds chunks in the embedding worker and writes
+   them to the vector store. It backfills old papers and re-embeds the library when the
+   embedder model changes.
+
+A failed paper is recorded with its reason and never blocks the rest of a sync.
+
+### How a question is answered
+
+```mermaid
+flowchart TD
+  Q[Question] --> G{Guard: prompt injection,<br/>cross-paper requests}
+  G -- blocked --> A1[Abstain with reason]
+  G -- allowed --> P[Planner LLM call:<br/>validated reading plan]
+  P --> R[Retrieval in this paper only:<br/>keyword + vector, RRF k=60]
+  R --> T["Paper-bound reading, at most 3 steps:<br/>search_paper · read_section · get_page"]
+  T --> W[Writer LLM call: claims with quotes]
+  W --> V1[Tier 1-2: quote exists in the paper]
+  V1 --> V3[Tier 3: local NLI model,<br/>quote entails claim]
+  V3 --> RV[Reviewer LLM call:<br/>support, relevance, coverage]
+  RV --> S[Stream verified claims<br/>with page citations]
+```
+
+- The reading steps run in code, not as model tool calls. The paper ID is bound before
+  any step runs, so the model cannot ask for another paper, and every row a step returns
+  is filtered by paper again.
+- Tables are quoted as text. A table longer than 650 bytes offers its caption, header
+  and first rows (up to 1,200 bytes) as one quote; contents listings are never
+  evidence. Figures and charts are not read: only their caption text is searchable.
+- Vector search gets at most 6 seconds and always leaves 10 seconds for writing and
+  review. If it fails, retrieval falls back to keyword search.
+- If the LLM, the claim checker or credentials fail, the answer is a set of labelled
+  exact source excerpts with the reason. Generated text from earlier turns is never
+  reused as evidence.
+- Prompts live in `prompts/qa.v1.yaml`; new questions load the current file.
+
+### Process model
+
+`arie-api` is one asyncio process. CPU-heavy work runs in separate worker processes,
+never in API threads:
+
+| Pool | Runs | Limits |
+| --- | --- | --- |
+| PDF | parser plugin | 60 s per paper, 1.5 GB memory, recycled after 20 papers (configurable for the parser) |
+| Embedding | embedder plugin | defaults above; lower CPU priority |
+| Answer models | entailment and reranker plugins, in one shared process | defaults above; normal priority so answers stay fast |
+
+A worker that exceeds a limit is killed and replaced; only that task fails. PDF and
+embedding workers run at lower CPU priority (`nice 10`), and the PDF pool never starts
+more processes than there are CPUs ([ADR 0006](docs/adr/0006-background-cpu-priority.md)).
+
+Inside the API, work is routed through four priority lanes: interactive chat, manual
+overrides (2 at a time), the worker pool, and scheduled syncs (4 downloads at a time).
+arXiv requests are spaced 3 seconds apart.
+
+### Design invariants
+
+These rules hold for every change, including plugins:
+
+1. **Paper isolation.** Q&A tools never expose `paper_id` to the model; it is bound in
+   code and every vector, SQL or MCP row is filtered by it.
+2. **No unverified claims.** Every claim cites a quote that passes the verifier, or the
+   answer abstains.
+3. **Bounded execution.** 3 tool calls, 12,000 input tokens, 700 output tokens and 25
+   seconds per question.
+4. **Clean ingestion.** Source output is validated, network access is limited to
+   declared hosts, PDFs are size- and type-checked, and writes are atomic.
+5. **No vendor code in the core.** The core imports no SDK or plugin; plugins import only
+   `arie_core.plugin_api` and `arie_core.contracts`, never each other.
+
+Decisions behind them are in [`docs/adr/`](docs/adr/README.md).
+
+## Plug and play: bring your own components
+
+### Slots
+
+A **slot** is a role in the system; a **plugin** fills a slot. These slots are wired
+into the runtime:
+
+| Slot | You implement | Bundled plugins | Select with |
+| --- | --- | --- | --- |
+| `llm` | `complete(ctx, request)`, `stream(ctx, request)` | `deepseek`, `openai`, `gemini`, `openai-compatible` | `plugins.llm.use` |
+| `embedder` | `embed(ctx, texts) -> list[list[float]]` | `fastembed` (local), `openai`, `gemini` | `plugins.embedder.use` |
+| `vector_store` | `upsert`, `search`, `delete`, `stats` | `exact` (SQLite file) | `plugins.vector_store.use` |
+| `database` | `execute(ctx, sql, params)`, `fetch(ctx, sql, params)` | `sqlite`, `mcp-sql` | `plugins.database.use` |
+| `file_storage` | `read(ctx, path)`, `write(ctx, path, content)` | `local` | `plugins.file_storage.use` |
+| `parser` | `parse(ctx, file_path) -> ParsedDoc` | `pymupdf4llm`, `docling` (OCR) | `plugins.parser.use` |
+| `source` | `fetch_page(ctx, since, until, cursor, limit)`, `allowed_hosts` | `arxiv`, `deepmind` | `plugins.sources` (a list) |
+| `entailment` | `score(ctx, pairs) -> list[float]` | `nli-onnx` | `plugins.entailment.use` |
+| `reranker` | `score(ctx, query, passages) -> list[float]` | `onnx-cross-encoder` | `plugins.reranker.use` |
+
+The exact signatures and contracts are the `Protocol` classes in
+[`core/arie_core/plugin_api/__init__.py`](core/arie_core/plugin_api/__init__.py).
+`openreview` is an example source that implements only `discover()`, so it cannot be
+used for sync until it gains `fetch_page()`.
+
+### How plugins are found
+
+At startup the registry looks in two places:
+
+1. **Folders under `plugins/`.** Every `.py` file in a plugin folder is imported, and
+   any class decorated with `@plugin(slot=..., name=...)` is registered. Each folder
+   needs a `pyproject.toml`, because `plugins/*` are uv workspace members.
+2. **Installed packages** that declare an `arie.plugins` entry point. This is how you
+   ship a plugin from its own repository:
+
+   ```toml
+   [project.entry-points."arie.plugins"]
+   chroma = "arie_vector_chroma.plugin"
+   ```
+
+A plugin that fails to import is skipped and logged with the reason; the rest of ARIE
+still starts. `GET /v1/plugins` and **Settings** list what was found.
+
+### Write a plugin in four steps
+
+**1. Scaffold the package.**
+
+```sh
+uv run arie plugin new --slot vector_store --name memory
+```
+
+This creates `plugins/vector_store-memory/` with a `pyproject.toml` and a plugin class.
+The generated class has a placeholder `run()` method; replace it with the methods of
+your slot (except for `source`, which gets a matching template).
+
+**2. Implement the slot.** A complete vector store that passes the slot contract tests:
+
+```python
+import math
+from collections.abc import Mapping, Sequence
+
+from arie_core.contracts import Hit, VectorRow, VectorStats
+from arie_core.plugin_api import Ctx, plugin
+
+
+@plugin(slot="vector_store", name="memory")
+class MemoryVectorStore:
+    """In-process cosine index; vectors are lost on restart."""
+
+    def __init__(self, max_rows: int = 100_000) -> None:
+        self.max_rows = max_rows
+        self.rows: dict[str, VectorRow] = {}
+
+    async def upsert(self, ctx: Ctx, rows: Sequence[VectorRow]) -> None:
+        for row in rows:  # validate the whole batch first: no partial writes
+            if not row.metadata.get("paper_id") or not row.metadata.get("model"):
+                raise ValueError("every row needs paper_id and model metadata")
+        self.rows.update({row.id: row for row in rows})
+
+    async def search(
+        self, ctx: Ctx, query: Sequence[float], k: int, *, filters: Mapping[str, str]
+    ) -> list[Hit]:
+        def cosine(a: Sequence[float], b: Sequence[float]) -> float:
+            norm = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b))
+            return sum(x * y for x, y in zip(a, b)) / norm if norm else 0.0
+
+        matches = [
+            Hit(row.id, cosine(query, row.vector), dict(row.metadata))
+            for row in self.rows.values()
+            if all(row.metadata.get(key) == value for key, value in filters.items())
+        ]
+        return sorted(matches, key=lambda hit: hit.score, reverse=True)[:k]
+
+    async def delete(self, ctx: Ctx, *, filters: Mapping[str, str]) -> None:
+        self.rows = {
+            key: row
+            for key, row in self.rows.items()
+            if not all(row.metadata.get(f) == v for f, v in filters.items())
+        }
+
+    async def stats(self, ctx: Ctx) -> VectorStats:
+        return VectorStats(vectors=len(self.rows))
+```
+
+**3. Test it.** The contract suite runs every slot's tests against every discovered
+plugin, so your plugin is tested as soon as it is found:
+
+```sh
+make test-contracts                       # all plugins
+uv run arie plugin test vector_store-memory
+```
+
+Put your own plugin tests in `contract_tests/`, not under `plugins/`: every `.py` file
+in a plugin folder is imported at startup.
+
+**4. Select it** in `arie.yaml`. Keys other than `use` are passed to the constructor:
+
+```yaml
+plugins:
+  vector_store: {use: memory, max_rows: 50000}
+```
+
+Restart the API. In Docker, run `uv lock` and rebuild the image after adding a plugin
+package.
+
+### Rules for plugin authors
+
+- Import only `arie_core.plugin_api` and `arie_core.contracts` from ARIE. Never import
+  another plugin.
+- Take `ctx: Ctx` as the first argument of every call. It carries the deadline
+  (`ctx.deadline`, a `time.monotonic()` value), a trace ID and the budget; respect the
+  deadline.
+- Any plugin that makes network requests declares `allowed_hosts` and must not follow
+  redirects to other hosts.
+- Keep heavy models out of the API process. Embedder, entailment, reranker and parser
+  plugins run in worker processes; load models lazily on the first call.
+- Let errors propagate. The core decides the fallback (keyword search, source excerpts
+  or a failed paper) and shows the reason.
+- A vector store or database must still return correct rows when the core filters by
+  `paper_id`; the core filters again either way.
+
+### Recipes
+
+**A local or self-hosted LLM** (Ollama, vLLM, LM Studio or any OpenAI-compatible
+server):
+
+```yaml
+llm_providers:
+  openai-compatible: {model: llama3.1, api_key_env: LOCAL_LLM_KEY, base_url: http://localhost:11434/v1}
+plugins:
+  llm: {use: openai-compatible}
+```
+
+Set `LOCAL_LLM_KEY` in `.env` to any non-empty value if the server needs no key.
+
+**An online or local embedder.** Online embedders free about 350 MB of memory and the
+CPU used for indexing, but send paper text to the provider:
+
+```yaml
+plugins:
+  embedder: {use: gemini}       # or openai, or fastembed (local), or auto
+```
+
+`auto` follows the LLM provider when it offers embeddings and its key is set, and
+otherwise uses local FastEmbed. Changing the embedder re-embeds the library in the
+background; until a paper is done, its search is keyword-only. Each embedder has a
+calibrated similarity floor in `embedding_providers.<name>.min_score`.
+
+**A database behind an MCP server.** `mcp-sql` sends SQL to a stateless MCP SQL server
+over HTTP:
+
+```yaml
+plugins:
+  database: {use: mcp-sql, server_url: http://127.0.0.1:9000/mcp, allowed_hosts: [127.0.0.1]}
+```
+
+**A new paper source.** Implement `fetch_page(ctx, since, until, cursor, limit)`
+returning a `SourcePage` of `ScrapedPaperInput` records (`paper_id`, `title`, `source`,
+`pdf_url`, and optional `abstract`, `authors`, `published_at`, `metadata`), declare
+`allowed_hosts`, and call `await wait_for_source_host(ctx, host)` before each request
+to respect rate limits. Add the name to `plugins.sources`.
+
+**A different PDF parser.** Implement `parse(ctx, file_path) -> ParsedDoc`. Parser
+workers may raise their own limits (see [Configuration reference](#configuration-reference)).
+
+**A different claim checker.** Implement `score(ctx, pairs)` returning, for each
+`(quote, claim)` pair, the probability that the quote entails the claim. Recalibrate
+`plugins.entailment.min_score` for your model.
+
+**A different reranker.** Implement `score(ctx, query, passages)` returning one
+relevance score per passage, higher meaning more relevant. Scores are compared only
+within one call, so any scale works.
+
+**A new local model slot.** Local model plugins all run through one generic worker
+pool (`arie_worker.models.ModelPool`), so a new slot needs no new pool class. Declare
+its `Protocol` in `plugin_api`, add one `AnswerSlot` entry in
+[`api/arie_api/models.py`](api/arie_api/models.py) (its warm-up call, status text and
+fallback), and call its scores from the harness step that uses them. Configuration,
+warm-up, retries, the shared worker and the health pane then come from that entry.
+
+### Tools and MCP: current status
+
+| Capability | Status |
+| --- | --- |
+| Custom Q&A tools | **Not pluggable yet.** The paper-bound reading steps are built into the harness. |
+| Connect ARIE to an external MCP server as a tool | **Not available yet.** |
+| Use an MCP server as the database | **Available** through `mcp-sql`. |
+| Expose ARIE's paper tools over MCP (`POST /mcp/p/<handle>`) | **Preview.** The endpoint speaks MCP and verifies signed, paper-scoped handles (`ARIE_MCP_SECRET`), but it serves a built-in demo paper rather than your library, and no API route issues handles yet. |
+| `reranker` slot | **Available.** `onnx-cross-encoder` (default) picks each answer's passages in `arie-worker` (ADR 0007). |
+
+Pluggable tools are planned as a slot with two constraints from the design invariants:
+a tool never receives `paper_id` from the model, and what it returns is context, not
+evidence, unless it passes the verifier.
+
+## Configuration reference
+
+`arie.yaml` in the repository root (or the file named by `ARIE_CONFIG`):
+
+| Section | Purpose |
+| --- | --- |
+| `plugins` | Which plugin fills each slot, plus constructor keys. |
+| `llm_providers` | Default model, key variable and optional `base_url` per LLM plugin. |
+| `embedding_providers` | Default model, similarity floor and key variable per embedder. |
+| `sync` | Default sync window and limits (see [Sync](#sync)). |
+| `runtime_qos` | Worker counts, download concurrency, arXiv spacing, event-loop warnings. `shared_model_worker` (default `true`) runs the claim checker and reranker in one process; `false` gives each its own. |
+
+Keys for the local-model plugins:
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `entailment.threads`, `embedder.threads` (`fastembed`) | 1 | CPU threads per model. Higher is faster per answer but uses more cores. |
+| `entailment.min_score` | 0.5 | Claims scoring below this are dropped. |
+| `entailment.max_length` | 512 | Tokens per quote and claim pair. |
+| `reranker.threads` | 2 | CPU threads for the reranker; two keep 24 passages under its 3 s budget. |
+| `reranker.max_length`, `reranker.batch_size` | 512, 8 | Tokens per passage, and passages scored per batch. |
+| `entailment.memory_arena`, `reranker.memory_arena` | false | Keep ONNX Runtime's CPU memory arena. About 0.5 GB more memory for the answer worker, at the same measured speed. |
+
+Worker limits for `plugins.parser` (every other `parser` key goes to the parser):
+
+| Key | Default | Allowed | Effect |
+| --- | --- | --- | --- |
+| `timeout_sec` | 60 | up to 1800 | Kill the worker if one paper takes longer. |
+| `max_rss_mb` | 1536 | 1536-8192 | Kill the worker above this memory. |
+| `tasks_per_worker` | 20 | 1-20 | Replace the worker after this many papers. |
+
+ARIE refuses to start if a value is out of range. The embedding and answer-model pools
+always use the defaults.
+
+`.env`:
+
+| Key | Purpose |
+| --- | --- |
+| `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY` | Provider keys; set the ones you use. Keys stay on the server; the UI shows only whether each is set. |
+| `ARIE_MCP_SECRET` | Signs MCP handles. Use a random value (`openssl rand -hex 32`) for shared deployments. |
+| `ARIE_WEB_PORT`, `ARIE_API_PORT` | Docker host ports (default 8080 and 8000; the API binds to 127.0.0.1). |
+| `ARIE_EXTRAS` | Docker image extras, such as `docling`. Rebuild after changing. |
+
+## Memory and CPU
+
+Measured on one machine; expect similar proportions elsewhere.
+
+| Component | Memory | CPU |
+| --- | --- | --- |
+| Local embedder (`fastembed`, bge-small) | ~350 MB | short bursts while indexing; ~20 ms per question |
+| Answer models: claim checker (`nli-onnx`) and reranker (`onnx-cross-encoder`), one shared worker | ~0.7 GB on Linux at the worst case per answer (12 claims, 24 long passages); ~1.2 GB with `memory_arena: true` | claim check ~0.2 s per claim on one thread; reranking up to 3 s on two threads |
+| PDF worker (`pymupdf4llm`) | up to ~500 MB each | busy during sync, at lower priority |
+| PDF worker (`docling`) | 1.4-1.5 GB peak per paper | 73-165 s per 15-page paper |
+
+To make ARIE lighter:
+
+- Use an online embedder (`embedder: {use: gemini}` or `openai`) to drop the local
+  embedding model.
+- Keep `threads: 1` on local models so one question uses about one core.
+- Lower `runtime_qos.utility_worker_processes` to run fewer PDF workers at once.
+- Keep `runtime_qos.shared_model_worker: true` (the default) and leave `memory_arena`
+  off on the ONNX plugins ([ADR 0009](docs/adr/0009-one-model-pool-shared-answer-worker.md)).
+- Set `reranker: {use: none}` to drop the reranker; answers then use keyword and
+  vector order.
+- Set `entailment: {use: none}` only on very small machines: claims then rest on quote
+  matching and the LLM reviewer, without the Tier 3 check.
+
+**Docling** adds layout analysis, table structure and OCR for scanned PDFs, at a much
+higher cost:
+
+```sh
+uv sync --extra docling       # local; in Docker set ARIE_EXTRAS=docling and rebuild
+```
+
+```yaml
+plugins:
+  parser: {use: docling, timeout_sec: 300, tasks_per_worker: 1, max_rss_mb: 2560, do_ocr: true}
+runtime_qos:
+  utility_worker_processes: 1
+```
+
+Allow 2.5 GB of memory per Docling worker. The Docker image grows to about 2.7 GB;
+PyTorch comes from the CPU-only index.
+
+## Using the workspace
+
+### Sync
+
+Choose **Sync options**, pick a date window, source, page size and paper limit, then
+**Sync papers**. **Save defaults to arie.yaml** keeps these choices. The same settings
+in `arie.yaml`:
 
 ```yaml
 sync:
-  mode: range
+  mode: range            # relative | year | month | since | range
   start_month: "2025-01"
   end_month: "2025-06"
   batch_size: 20
   max_papers: 100
 ```
 
-For a whole year, use `mode: year` and `year: 2025`. For a single month, use
-`mode: month`, `year: 2025`, and `month: 6`. To sync from January 2026 onward,
-use `mode: since` and `start_month: "2026-01"`. For a rolling window, use
-`mode: relative` and `initial_months: 6`. Do not combine these date selectors.
-Each run snapshots its settings, so saving different defaults cannot change an
-active or paused run.
+Use `mode: year` with `year`, `mode: month` with `year` and `month`, `mode: since` with
+`start_month`, or `mode: relative` with `initial_months`. Dates are UTC and end months
+are inclusive. Reaching `max_papers` pauses the run; **Resume saved run** continues
+where it stopped. Each run snapshots its settings, so changing defaults never changes a
+running sync. Recent-month syncs overlap by one day and skip unchanged papers.
 
-**Filter & sort** in the library filters all saved papers by publication month
-and research domain, with newest, oldest, or domain ordering. Search covers all
-library summaries, ignores case and accents, and ranks partial or misspelled title
-matches ahead of topic and abstract matches. Searching does not automatically
-choose a result: select a paper before asking a question. Suggested domain tags (LLMs, agents, NLP, vision, and others)
-come from exact matches in source categories, titles, abstracts, and the first
-five extracted pages. Their metadata records the matching text and its origin;
-they are navigation hints. Existing saved papers receive tags at startup. Source
-metadata and parser metadata remain attached to each paper.
+A paper appears in the library only after its text is extracted and indexed.
+Image-only PDFs are reported as needing OCR; use the Docling parser for them.
 
-**Layout** moves the library left or right and places **Read a specific paper**
-in the library or the right activity pane. The browser remembers your choice.
-**Import & status** opens the compact right pane for current extraction activity,
-the selected document's tags and evidence counts, database size, PDF storage and
-free disk space. Storage probes are cached for 15 seconds and large directory
-scans report partial totals. Remote storage sizes are unavailable unless measured.
-The vector index reports measured coverage: how many chat-ready papers are
-embedded with the configured model, the vector count and its size on disk.
+### Import one paper
 
-## Vector search and bringing your own vector store
+Paste an arXiv PDF link into **Read a specific paper** and choose **Import paper**.
+This skips the date window but keeps every validation step. The paper opens when it is
+ready.
 
-Sync saves evidence chunks in the main database, so a paper is chat-ready before
-it is embedded. A background indexer in `arie-api` then embeds each paper in a
-recycled `arie-worker` process and writes the vectors to the configured store. It
-also backfills existing papers and re-embeds the library when `plugins.embedder.model`
-changes, since vectors from different models are not comparable. Answers fuse keyword
-and vector rankings (RRF, k=60) inside the selected paper only. Vector-only matches
-below `plugins.embedder.min_score` (default 0.6, tuned for `bge-small-en-v1.5`) are
-dropped. If the embedder or store fails, answers fall back to keyword retrieval and
-the status pane shows `degraded` with the reason. Set either plugin's `use` to `none`
-for keyword-only retrieval.
+### Library and chat
 
-To use your own store, add a class under `plugins/` (or ship a package with an
-`arie.plugins` entry point) that implements `arie_core.plugin_api.VectorStore`
-(`upsert`, `search`, `delete`, `stats`):
+- **Filter & sort** filters by month and research domain. Search ignores case and
+  accents and ranks title matches first. Domain tags come from exact matches in
+  categories, titles, abstracts and the first five pages; they are navigation hints.
+- Select a paper, then ask a question. **What is this paper about?** gives a summary of
+  contribution, method, evaluation, findings and limitations where the paper supports
+  them. Each claim links to its page and quote.
+- **Import & status** shows extraction activity, evidence counts, database and PDF
+  size, free disk and vector index coverage.
+- **Delete PDF** keeps the extracted text for chat; **Delete paper** removes the PDF,
+  metadata and evidence. Pause sync before deleting.
+- Rate any answer with the thumbs under it. A thumbs-down can carry a short note, and
+  that question joins the paper's evaluation for review.
 
-```python
-@plugin(slot="vector_store", name="chroma")
-class ChromaVectorStore:
-    def __init__(self, host: str = "localhost", collection: str = "arie") -> None: ...
-```
+### Evaluate answers on one paper
 
-```yaml
-plugins:
-  vector_store: {use: chroma, host: chroma.internal, collection: arie}
-```
+Open a paper and choose **Evaluate answers on this paper**. The paper you picked is
+the ground truth:
 
-Keys other than `use` go to the constructor. `make test-contracts` runs the
-`VectorStore` contract against every discovered store. A plugin that fails to import
-is logged at startup with the reason. In Docker, a new plugin package needs `uv lock`
-and an image rebuild. The bundled `qdrant` and `pgvector` stores are local SQLite
-stand-ins and do not connect to those servers.
+1. The configured LLM receives up to 18 exact sentences from the paper, spread across
+   its sections (references and credits excluded), and writes up to 8 questions, each
+   answered by one sentence, with 1-3 key facts copied from it. The model only points
+   at sentences by ID, and a question is dropped unless every key fact appears verbatim
+   in its sentence. So the reference answers are the paper's own words.
+2. Three fixed questions are added that ARIE must refuse: a cross-paper request, a
+   prompt injection, and an energy-use question (only when the paper never mentions
+   energy).
+3. Every question is answered exactly as in chat, with the same models and budgets,
+   and scored without a model judge:
+   - **Grounded**: every cited quote exists in the paper at its stated offsets.
+   - **Cited the source**: the answer quotes the sentence the question came from.
+   - **Key facts**: the share of key facts that appear in the answer.
+   - **Passed**: grounded, not a refusal, and it cited the source or contains at least
+     half the key facts. For the refusal questions, passed means it gave no claims.
+4. Questions you rated down are re-asked and listed for review, not scored, because
+   they have no reference answer.
 
-For local storage, the selected document offers **Delete PDF** (retain extracted
-text for chat) and **Delete paper** (remove its PDF, metadata, and evidence).
-Confirm the selected action in the pane. Pause sync and wait for active imports
-before deleting. Files are staged before the database change and restored if
-that change fails. A later sync can rediscover a fully deleted paper; import its
-link again to restore a deleted PDF.
+Questions are saved per paper and reused, so runs stay comparable when you change a
+model or setting; **Write new questions** replaces them. **Also answer without the
+reranker** runs every question twice and shows both summaries side by side. Writing
+questions needs an LLM key; answering does not (answers then fall back to excerpts).
+The last 10 runs per paper are kept. From a terminal:
+`make eval-paper PAPER=<paper_id> ARGS="--compare-reranker"`.
 
-If import reports that the running API has no import route, restart the API with
-the command above. During local development, add `--reload` so new routes are
-loaded after source edits.
+### API
 
-## Claim checker (Tier 3 entailment)
-
-Quote matching proves a quotation exists in the paper, not that a summary of it is
-faithful: "the model performs badly", citing "the model performs well", shares nearly
-every word with its quote. Tier 3 closes that gap with a local natural-language
-inference model, `cross-encoder/nli-deberta-v3-xsmall` (ONNX, CPU), that scores how
-strongly each quotation entails its drafted claim:
-
-```yaml
-plugins:
-  entailment: {use: nli-onnx, model: cross-encoder/nli-deberta-v3-xsmall, min_score: 0.5}
-```
-
-It runs in a recycled `arie-worker` process, warms up at startup, and checks a whole
-answer in about 0.1 s. Claims scoring below `min_score` are dropped before review. On
-paraphrases of source sentences it scores 0.90 or higher, and on polarity flips and
-contradictions 0.01 or lower. While the model is loading or unavailable, model-written
-claims cannot pass, and chat shows exact source excerpts with the reason. Set
-`use: none` to rely on quote matching and the model reviewer only. To use another
-model, implement `arie_core.plugin_api.Entailment` (`score`) as an `entailment`
-plugin and recalibrate `min_score`. The design is recorded in
-[ADR 0003](docs/adr/0003-quote-verifier-ladder.md).
-
-## PDF parsers
-
-`pymupdf4llm` (default) is fast and handles born-digital PDFs. `docling` adds layout
-analysis, table structure and OCR, so scanned papers become searchable. It is much
-slower and heavier, because it installs PyTorch models:
-
-```sh
-uv sync --extra docling
-```
-
-```yaml
-plugins:
-  parser: {use: docling, timeout_sec: 300, tasks_per_worker: 1, do_ocr: true}
-runtime_qos:
-  utility_worker_processes: 1
-```
-
-Keys other than `use`, `timeout_sec` and `tasks_per_worker` go to the parser's
-constructor. Each paper is parsed in a worker process that is killed after
-`timeout_sec` (default 60) or 1.5 GB of memory; that paper fails and the rest of the
-sync continues. Workers are replaced after `tasks_per_worker` papers (default 20).
-
-Docling is far heavier than PyMuPDF4LLM. Measured on a 15-page paper with CPU-only
-PyTorch, one conversion takes 73-165 s and peaks at 1.38-1.53 GB of memory. That sits at
-the 1.5 GB worker limit, so some papers fail with a memory error. Use one paper per
-worker (`tasks_per_worker: 1`), so memory never carries over between papers, and one
-worker process for each 2 GB of memory you can spare.
-
-In Docker, set `ARIE_EXTRAS=docling` in `.env` and rebuild (`docker compose up
---build -d`); the image grows to about 2.7 GB. Then select the parser in the volume's
-`arie.yaml` as described in Data and settings. PyTorch comes from its CPU-only index,
-so no CUDA libraries are installed.
-
-## Answer prompts and source-grounding evaluations
-
-Edit `prompts/qa.v1.yaml` to refine the planner, writer and independent evidence-review
-instructions. New questions load the current playbook. Overviews request the
-contribution, method, evaluation, findings and limitations when supported; absent
-sections are omitted. `prompts/brief.v1.yaml` records the same fidelity policy for
-briefs. No external knowledge may fill gaps in the saved paper.
-
-Run `make check` for deterministic regressions covering typo search, exact source
-offsets, foreign-paper isolation, fabricated quotes, changed numbers, missing
-negation, unsupported paraphrases, claim-checker rejections and malformed review
-verdicts.
-
-Run `make eval-llm` to exercise the configured provider against fixed synthetic
-source facts. Cases cover summary coverage, qualified limitations, missing evidence
-and source prompt injection. It also checks comparisons, methodology, compound
-questions, unsupported premises, input overrides and cross-paper requests.
-Reference facts and forbidden distortions are fixed
-in code rather than written by the judging model. Each case reports exact-source
-grounding, fact coverage, review completion and budgets separately. A fallback is
-not counted as a successful model summary. Authentication rejection stops the run
-and reports its HTTP status without exposing the key. Configure a valid provider
-key before rerunning. Passing this small regression set is not a guarantee that
-all future summaries will be correct; citations remain available for inspection.
-
-The backend uses the configured model in three bounded roles: plan what the
-question needs, write from exact source passages, then independently check support,
-relevance and requested coverage. The planner returns a validated reading plan,
-never executable actions. Paper-bound Python functions search and expand sections
-or pages under three tool calls. All roles share 12,000 input tokens, 700 output
-tokens and a 25-second deadline. Explicit instruction overrides and external reads
-are blocked before model calls. History contains previous questions and validated
-source locators; previous generated prose never becomes evidence. Provider failure
-uses clearly labelled exact source excerpts and is not counted as model-reviewed.
-The configured four-process PDF pool and two import consumers are extraction and
-queue workers, not additional LLM agents.
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /v1/papers`, `GET /v1/papers/{id}` | Library and one paper |
+| `POST /v1/papers/{id}/questions` | Ask a question; answers stream as server-sent events (`progress`, `answer`, `claim`, `abstention`, `done`, `error`) |
+| `GET /v1/papers/{id}/pdf`, `.../pages/{n}`, `.../chat` | Original PDF, extracted page, chat history |
+| `PUT /v1/papers/{id}/chat/{turn_id}/feedback` | Rate a saved answer `up`, `down` or `null`, with an optional note |
+| `GET /v1/papers/{id}/eval`, `POST .../eval/runs`, `GET .../eval/runs/{run}` | A paper's evaluation questions, runs and feedback; start a run |
+| `POST /v1/sync`, `GET /v1/sync/{job}`, `POST /v1/sync/{job}/pause` | Run and control syncs |
+| `POST /v1/imports` | Import one paper by URL |
+| `GET /v1/plugins`, `PUT /v1/plugins/{slot}`, `POST /v1/plugins/{slot}/test` | List, switch and test plugins |
+| `GET /v1/events` | Live pipeline events |
+| `GET /v1/storage`, `GET /v1/health` | Storage use and health |
 
 ## Development
 
 | Command | Runs |
 | --- | --- |
-| `make check` | `ruff`, `lint-imports` (core imports no SDK or plugin), strict `pyright`, then the core, API and contract test suites |
-| `make test-contracts` | Slot contracts and per-plugin tests: file storage, databases, sources, parsers, vector stores and the claim checker. No network is used. |
+| `make check` | `ruff`, `lint-imports` (core imports no SDK or plugin), strict `pyright`, and the core, API and contract tests |
+| `make test-contracts` | Slot contracts and per-plugin tests, without network access |
 | `make web-check` | `oxlint`, TypeScript and Vitest for `web/` |
-| `make eval-llm` | Source-grounding evaluation against the configured provider, with the claim checker enabled |
+| `make eval-llm` | Source-grounding evaluation against the configured LLM |
+| `make eval-paper PAPER=<id>` | Evaluate answers on one ingested paper (see [Evaluate answers on one paper](#evaluate-answers-on-one-paper)) |
 
-The real claim-checker model test runs only when the model is already cached. To run
-it on purpose, point `ARIE_NLI_CACHE` at a Hugging Face cache directory that holds it.
+`make check` covers typo search, exact source offsets, cross-paper isolation,
+fabricated quotes, changed numbers, missing negation, unsupported paraphrases and
+claim-checker rejections. `make eval-llm` runs fixed cases (summary coverage,
+limitations, missing evidence, prompt injection, comparisons, cross-paper requests)
+against a real provider; reference facts are fixed in code, not judged by the model.
+The real claim-checker test runs only when the model is cached; set `ARIE_NLI_CACHE`
+to a Hugging Face cache directory to run it.
 
-GitHub Actions (`.github/workflows/ci.yml`) runs `make check`, the web checks and
-build, and both Docker image builds on every pull request and push to `main`.
+After changing API routes, run `npm run generate:api` in `web/`. GitHub Actions runs
+`make check`, the web checks and both Docker builds on every pull request and push to
+`main`.
 
-Architecture decisions (plugin slots, paper isolation, the verifier ladder, worker
-processes) are recorded in [`docs/adr/`](docs/adr/README.md).
+### Contributing
+
+- Python 3.14 with strict typing; no `Any` in slot `Protocol` signatures.
+- Use `msgspec.Struct(frozen=True)` for runtime data and Pydantic only for config and
+  scraper input validation.
+- Start concurrent work with `asyncio.TaskGroup`, never bare `asyncio.create_task`, so
+  one failing paper cannot cancel a batch.
+- Never run PDF parsing or ONNX models in the API process or its threads; use a worker
+  pool.
+- Record a decision that changes the architecture as a new ADR in `docs/adr/`.
+- Write commits as Conventional Commits (`feat:`, `fix:`, `docs:`, ...).
+
+## License
+
+ARIE is released under the [MIT License](LICENSE). The default PDF parser depends on
+PyMuPDF, which is licensed under AGPL-3.0 (or a commercial license from Artifex). If you
+distribute ARIE with `pymupdf4llm`, its terms apply; the Docling parser
+(`uv sync --extra docling`) is MIT-licensed.

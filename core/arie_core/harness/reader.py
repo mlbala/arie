@@ -82,10 +82,16 @@ STOP = frozenset(
         "described",
     ]
 )
+# Whole-paper requests. With a model the planner decides; this is the no-model fallback.
 OVERVIEW = re.compile(
-    r"\b(?:summari[sz]e|summary|overview|main (?:idea|contribution)|high.level|"
-    r"(?:what|whats|what's) (?:is |does )?(?:this |the |that )?(?:paper|it) "
-    r"(?:about|do|propose)|explain (?:this|the|that) paper|tell me about (?:this|the|that) paper)\b"
+    r"\b(?:summari[sz]e|summary|overview|gist|tl;?dr|high.level|"
+    r"(?:main|key|core) (?:ideas?|contributions?|takeaways?)|"
+    r"(?:what|whats|what's) (?:is |does )?(?:this |the |that )?(?:paper|work|study|article|it) "
+    r"(?:is )?(?:about|do|propose)|"
+    r"what (?:this|the) (?:paper|work|study|article) (?:is about|does|proposes)|"
+    r"(?:explain|describe|tell me about) (?:this|the|that) (?:paper|work|study|article)|"
+    r"what (?:problem|question) does (?:this|the) (?:paper|work|study) "
+    r"(?:solve|address|tackle))\b"
 )
 
 
@@ -174,8 +180,14 @@ def _overview_score(row: EvidenceChunk) -> int:
     return base + (8 if finding else 0)
 
 
+def is_table_of_contents(text: str) -> bool:
+    """A contents listing: rows of dot leaders ("2.1 Methods . . . . . 3"), not evidence."""
+    return len(re.findall(r"(?:\.\s?){8,}", text)) >= 3
+
+
 def eligible(question: str, rows: Sequence[EvidenceChunk]) -> list[EvidenceChunk]:
-    """Drop contributor notes and bibliography unless the question asks about authors."""
+    """Drop contents listings, and contributor notes and bibliography unless asked about."""
+    rows = [row for row in rows if not is_table_of_contents(row.text)]
     if re.search(r"\b(?:who|authors?|contributors?)\b", question, re.I):
         return list(rows)
     return [
@@ -338,7 +350,7 @@ def _fallback(
             outcome = bool(
                 re.search(
                     r"\b(?:experiments?|achieves?|results?|improved?|increased|gains?|"
-                    r"training time|parallelizable)\b",
+                    r"outperform\w*|reduc\w*)\b",
                     quote,
                     re.IGNORECASE,
                 )
@@ -350,7 +362,7 @@ def _fallback(
                     40
                     if detailed
                     and re.search(
-                        r"method|model|architecture|attention", row.section.split(" / ")[0], re.I
+                        r"method|model|architecture|approach", row.section.split(" / ")[0], re.I
                     )
                     else 0
                 )
@@ -364,7 +376,7 @@ def _fallback(
         or (
             detailed
             and re.search(
-                r"method|model|architecture|attention|result|experiment|discuss", row.section, re.I
+                r"method|model|architecture|approach|result|experiment|discuss", row.section, re.I
             )
         )
         or re.search(

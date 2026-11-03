@@ -43,7 +43,6 @@ class IngestionStage(StrEnum):
     DOWNLOADING = "downloading"
     PARSED = "parsed"
     INDEXED = "indexed"
-    BRIEFED = "briefed"
     QUARANTINED = "quarantined"
 
 
@@ -374,10 +373,6 @@ class IngestionPipeline:
         self._paper_states[parsed.paper_id] = IngestionStage.INDEXED
         return rows
 
-    async def brief_document(self, paper_id: str, parsed: ParsedDoc) -> str:
-        self._paper_states[paper_id] = IngestionStage.BRIEFED
-        return f"Brief for {paper_id}: {parsed.title}"
-
     async def run(
         self,
         raw_items: Iterable[ScrapedPaperInput | Mapping[str, object]],
@@ -395,7 +390,6 @@ class IngestionPipeline:
             file_path = await self.download_pdf(paper)
             parsed = await self.parse_document(paper.paper_id, file_path)
             await self.index_document(parsed)
-            await self.brief_document(paper.paper_id, parsed)
             return paper
         finally:
             self.queue.task_done()
