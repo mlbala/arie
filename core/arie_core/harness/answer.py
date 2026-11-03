@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import cast
@@ -20,6 +21,12 @@ from arie_core.harness.reader import (
     select_excerpts,
 )
 from arie_core.harness.session import ModelSession, failure_reason
+from arie_core.harness.verifier import (
+    MIN_ENTAILMENT,
+    EntailmentCheck,
+    EvidenceVerifier,
+    preserves_anchors,
+)
 from arie_core.plugin_api import LLM, Ctx
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -37,6 +44,7 @@ class AnswerResult(msgspec.Struct, frozen=True):
     answer_relevant: bool = False
     covered_aspects: int = 0
     required_aspects: int = 0
+    input_tokens: int = 0
 
 
 def load_playbook(project_root: Path) -> dict[str, str]:
@@ -113,23 +121,37 @@ def _source_windows(
     return windows
 
 
-def preserves_anchors(text: str, quote: str) -> bool:
-    """Reject changed numbers, lost qualifications and new absolutes before model review."""
+def fit_evidence(claims: Sequence[Excerpt], allowance: int) -> list[str]:
+    """Fit review evidence into ``allowance`` bytes, keeping each claim's most relevant sentences.
 
-    def numbers(value: str) -> set[str]:
-        return set(re.findall(r"\d+(?:\.\d+)?", value.replace(",", "")))
-
-    if not numbers(text) <= numbers(quote):
-        return False
-    groups = (
-        r"\b(?:not|no|never|without|cannot|neither|fails?|unable|lacks?|removes?|dispensing)\b|n't",
-        r"\b(?:may|might|could|suggests?|appears?|potentially|preliminary)\b",
-        r"\b(?:only|limited|small|restricted)\b",
-    )
-    if any(re.search(group, quote, re.I) and not re.search(group, text, re.I) for group in groups):
-        return False
-    absolutes = r"\b(?:always|never|every|guarantees?|proves?|perfect|all datasets)\b"
-    return not (re.search(absolutes, text, re.I) and not re.search(absolutes, quote, re.I))
+    Kept sentences are verbatim from the cited passage, so support the reviewer finds in
+    them is support in the full citation shown to the user; trimming can only add
+    rejections. Evidence that still cannot fit is empty, so its claim is rejected.
+    """
+    quotes = [claim.quote for claim in claims]
+    if sum(len(quote.encode("utf-8")) for quote in quotes) <= allowance:
+        return quotes
+    share = max(0, allowance) // max(1, len(claims))
+    fitted: list[str] = []
+    for claim in claims:
+        # Every sentence or line is a candidate, including tables, never a filtered subset.
+        sentences = [part for part in re.split(r"(?<=[.!?])\s+|\n+", claim.quote) if part.strip()]
+        terms = query_terms(claim.text)
+        ranked = sorted(
+            range(len(sentences)),
+            key=lambda i: len(terms & query_terms(sentences[i])),
+            reverse=True,
+        )
+        kept: list[int] = []
+        used = 0
+        for index in ranked:
+            # JSON-escaped bytes plus a joining space; the request already holds the quotes.
+            size = len(msgspec.json.encode(sentences[index])) - 1
+            if used + size <= share:
+                kept.append(index)
+                used += size
+        fitted.append(" ".join(sentences[index] for index in sorted(kept)))
+    return fitted
 
 
 async def compose_answer(
@@ -142,11 +164,15 @@ async def compose_answer(
     project_root: Path | None = None,
     plan: AnswerPlan | None = None,
     session: ModelSession | None = None,
+    entail: EntailmentCheck | None = None,
+    entail_floor: float = MIN_ENTAILMENT,
 ) -> AnswerResult:
-    """Draft then review against exact, paper-scoped evidence; fall back if either stage fails.
+    """Draft, entailment-check, then review against exact, paper-scoped evidence.
 
     Writer and reviewer share the planner's input/output limits when orchestrated.
     The caller owns the 25-second request timeout. Neither model receives tools.
+    With ``entail``, each drafted claim must pass Tier 3 against its own quote before
+    review; a model failure or timeout abstains to source excerpts (I2), never skips it.
     """
     scoped = [
         row for row in rows if row.paper_id == paper_id and not is_untrusted_instruction(row.text)
@@ -177,17 +203,19 @@ async def compose_answer(
             session.output_tokens,
             reason or session.unavailable_reason,
             required_aspects=len(plan.aspects),
+            input_tokens=session.input_tokens,
         )
 
     if session.llm is None or not scoped:
         return await fallback()
-    windows = _source_windows(scoped, plan, max_bytes=2500 if session.calls else 3500)
+    windows = _source_windows(scoped, plan, max_bytes=8000 if session.calls else 8500)
     if not windows:
         return await fallback()
 
     try:
         writer, reviewer = await asyncio.to_thread(answer_prompts, project_root or PROJECT_ROOT)
-        writer_limit = 472 if session.calls else 600
+        # Planner 160 + writer 440 + reviewer 100 = the 700-token output cap (I3).
+        writer_limit = 440 if session.calls else 600
         draft = await session.call(
             writer,
             {
@@ -271,22 +299,47 @@ async def compose_answer(
             rejected -= 1
         if not candidates:
             return await fallback("no_supported_draft")
-        verdict = await session.call(
-            reviewer,
-            {
-                "question": question,
-                "user_question": plan.user_question or question,
-                "task": plan.task,
-                "required_aspects": list(plan.aspects),
-                "depth": plan.depth,
-                "claims": [
-                    {"id": i, "summary": item.text, "evidence": item.quote}
-                    for i, item in enumerate(candidates)
-                ],
-            },
-            100,
-            7.0,
-        )
+        if entail is not None:
+            # Tier 3 runs before review so coverage is judged only on entailed claims.
+            budget = min(4.0, ctx.deadline - time.monotonic() - 3.0)
+            if budget <= 0.2:
+                return await fallback("entailment_timeout")
+            try:
+                async with asyncio.timeout(budget):
+                    verdicts = await EvidenceVerifier.tier_3(
+                        entail,
+                        [(item.quote, item.text) for item in candidates],
+                        floor=entail_floor,
+                    )
+            except TimeoutError:
+                return await fallback("entailment_timeout")
+            except Exception:
+                return await fallback("entailment_unavailable")
+            entailed = [
+                msgspec.structs.replace(item, checks=(*item.checks, "tier_3_entailment"))
+                for item, ok in zip(candidates, verdicts, strict=True)
+                if ok
+            ]
+            rejected += len(candidates) - len(entailed)
+            candidates = entailed
+            if not candidates:
+                return await fallback("entailment_rejected")
+        review_request: dict[str, object] = {
+            "question": question,
+            "user_question": plan.user_question or question,
+            "task": plan.task,
+            "required_aspects": list(plan.aspects),
+            "depth": plan.depth,
+            "claims": [
+                {"id": i, "summary": item.text, "evidence": ""} for i, item in enumerate(candidates)
+            ],
+        }
+        evidence = fit_evidence(candidates, session.remaining_input(reviewer, review_request))
+        review_request["claims"] = [
+            {"id": i, "summary": item.text, "evidence": quote}
+            for i, (item, quote) in enumerate(zip(candidates, evidence, strict=True))
+        ]
+        verdict = await session.call(reviewer, review_request, 100, 7.0)
         reviewed = len(candidates)
         if not isinstance(verdict, dict):
             return await fallback("invalid_review")
@@ -294,7 +347,8 @@ async def compose_answer(
         if review.get("answers_question") is not True:
             rejected += len(candidates)
             return await fallback("question_not_answered")
-        if plan.depth == "detailed" and review.get("adequate_detail") is not True:
+        # Shallow answers fail only when the user asked for depth, not when ARIE chose it.
+        if plan.detail_requested and review.get("adequate_detail") is not True:
             rejected += len(candidates)
             return await fallback("insufficient_detail")
         supported = review.get("supported")
@@ -330,6 +384,7 @@ async def compose_answer(
             answer_relevant=True,
             covered_aspects=len(covered_ids),
             required_aspects=len(plan.aspects),
+            input_tokens=session.input_tokens,
         )
     except Exception as exc:
         return await fallback(failure_reason(exc))

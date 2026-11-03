@@ -1,7 +1,13 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ChatWorkspace } from "./ChatWorkspace";
-import type { PaperSummary } from "../api/client";
+import { getChat, type PaperSummary } from "../api/client";
+
+// Saved history is fetched separately from the answer stream these tests script.
+vi.mock("../api/client", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../api/client")>(),
+  getChat: vi.fn(async () => ({ turns: [] })),
+}));
 
 const papers: PaperSummary[] = [
   {
@@ -33,6 +39,7 @@ describe("ChatWorkspace", () => {
       papers,
       activePaperId: "paper-1",
       onSelectPaper,
+      onClosePaper: vi.fn(),
       onCitation: vi.fn(),
     };
     const { rerender } = render(<ChatWorkspace {...props} />);
@@ -64,6 +71,7 @@ describe("ChatWorkspace", () => {
       papers,
       activePaperId: "paper-1",
       onSelectPaper: vi.fn(),
+      onClosePaper: vi.fn(),
       onCitation: vi.fn(),
     };
     const { rerender } = render(<ChatWorkspace {...props} />);
@@ -145,7 +153,7 @@ describe("verified answer stream", () => {
       <ChatWorkspace
         papers={papers}
         activePaperId="paper-1"
-        onSelectPaper={vi.fn()}
+        onSelectPaper={vi.fn()} onClosePaper={vi.fn()}
         onCitation={onCitation}
         onProgress={onProgress}
       />,
@@ -191,7 +199,7 @@ describe("verified answer stream", () => {
       <ChatWorkspace
         papers={papers}
         activePaperId="paper-1"
-        onSelectPaper={vi.fn()}
+        onSelectPaper={vi.fn()} onClosePaper={vi.fn()}
         onCitation={vi.fn()}
       />,
     );
@@ -216,7 +224,7 @@ it("renders reviewed summary text with its source and discards empty supporting 
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(new ReadableStream({
     start(controller) { controller.enqueue(new TextEncoder().encode(wire)); controller.close(); },
   }))));
-  render(<ChatWorkspace papers={papers} activePaperId="paper-1" onSelectPaper={vi.fn()} onCitation={vi.fn()} />);
+  render(<ChatWorkspace papers={papers} activePaperId="paper-1" onSelectPaper={vi.fn()} onClosePaper={vi.fn()} onCitation={vi.fn()} />);
   fireEvent.click(screen.getByRole("button", { name: "What is this paper about?" }));
   expect(await screen.findByRole("heading", { name: "Paper summary" })).toBeInTheDocument();
   expect(await screen.findByText(text, { exact: false, selector: "p" })).toBeInTheDocument();
@@ -243,7 +251,7 @@ it("combines three verified statements into one paragraph before grouped sources
   ].join("");
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(wire)));
   const onCitation = vi.fn();
-  render(<ChatWorkspace papers={papers} activePaperId="paper-1" onSelectPaper={vi.fn()} onCitation={onCitation} />);
+  render(<ChatWorkspace papers={papers} activePaperId="paper-1" onSelectPaper={vi.fn()} onClosePaper={vi.fn()} onCitation={onCitation} />);
   fireEvent.click(screen.getByRole("button", { name: "What is this paper about?" }));
   await screen.findByRole("heading", { name: "Answer" });
   const paragraph = document.querySelector(".answer-summary")!;
@@ -262,16 +270,18 @@ it("sends paper-specific question history for follow-ups and renders detailed pa
   const quote = "The method uses isolated worker processes to read evidence.";
   const response = (paperId: string, detailed = false) => new Response([
     event("answer", { paper_id: paperId, mode: "source_excerpts", context_question: "What is this paper about?", heading: detailed ? "Detailed explanation" : "Answer" }),
-    event("claim", { paper_id: paperId, verified: true, claim: { text: quote, quote, paragraph: 0, citation: { page_start: 1, char_start: 0, char_end: quote.length, chunk_id: `${paperId}:first` } } }),
-    ...(detailed ? [event("claim", { paper_id: paperId, verified: true, claim: { text: "The workers keep each paper isolated.", quote: "The workers keep each paper isolated throughout extraction.", paragraph: 1, citation: { page_start: 2, char_start: 0, char_end: 58, chunk_id: `${paperId}:second` } } })] : []),
+    event("claim", { paper_id: paperId, verified: true, claim: { text: quote, quote, paragraph: 0, label: "Method", citation: { page_start: 1, char_start: 0, char_end: quote.length, chunk_id: `${paperId}:first` } } }),
+    ...(detailed ? [event("claim", { paper_id: paperId, verified: true, claim: { text: "The workers keep each paper isolated.", quote: "The workers keep each paper isolated throughout extraction.", paragraph: 1, label: "Findings", citation: { page_start: 2, char_start: 0, char_end: 58, chunk_id: `${paperId}:second` } } })] : []),
     event("done", { paper_id: paperId, mode: "source_excerpts" }),
   ].join(""));
   const fetcher = vi.fn().mockResolvedValueOnce(response("paper-1")).mockResolvedValueOnce(response("paper-1", true)).mockResolvedValueOnce(response("paper-1", true)).mockResolvedValueOnce(response("paper-1", true)).mockResolvedValueOnce(response("paper-1", true)).mockResolvedValueOnce(response("paper-2"));
   vi.stubGlobal("fetch", fetcher);
-  const props = { papers, activePaperId: "paper-1", onSelectPaper: vi.fn(), onCitation: vi.fn() };
+  const props = { papers, activePaperId: "paper-1", onSelectPaper: vi.fn(), onClosePaper: vi.fn(), onCitation: vi.fn() };
   const { rerender } = render(<ChatWorkspace {...props} />);
   fireEvent.click(screen.getByRole("button", { name: "What is this paper about?" }));
   await screen.findByRole("heading", { name: "Answer", level: 3 });
+  // A single-paragraph answer has no theme lead-in.
+  expect(document.querySelectorAll(".answer-theme")).toHaveLength(0);
   fireEvent.change(screen.getByLabelText("Ask about Evidence and Verification"), { target: { value: "explain. more detail" } });
   fireEvent.click(screen.getByRole("button", { name: "Send question" }));
   await screen.findByRole("heading", { name: "Detailed explanation" });
@@ -280,6 +290,7 @@ it("sends paper-specific question history for follow-ups and renders detailed pa
   expect(JSON.stringify(body)).not.toContain(quote);
   const lastTurn = screen.getAllByRole("article").at(-1)!;
   expect(lastTurn.querySelectorAll(".answer-summary")).toHaveLength(2);
+  expect(Array.from(lastTurn.querySelectorAll(".answer-theme")).map((item) => item.textContent)).toEqual(["Method. ", "Findings. "]);
   expect(lastTurn.querySelectorAll(".supporting-passages blockquote")).toHaveLength(2);
   for (let followUp = 0; followUp < 3; followUp++) {
     fireEvent.change(screen.getByLabelText("Ask about Evidence and Verification"), { target: { value: "continue" } });
@@ -294,4 +305,36 @@ it("sends paper-specific question history for follow-ups and renders detailed pa
   fireEvent.click(screen.getByRole("button", { name: "What is this paper about?" }));
   await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(6));
   expect(JSON.parse(String(fetcher.mock.calls[5]![1].body))).toEqual({ question: "What is this paper about?" });
+});
+
+it("restores saved turns as verified answers and uses them as follow-up context", async () => {
+  const quote = "The method uses isolated worker processes to read evidence.";
+  const citation = { page_start: 3, char_start: 10, char_end: 10 + quote.length, chunk_id: "paper-1:7" };
+  vi.mocked(getChat).mockResolvedValueOnce({ turns: [{
+    question: "How does the method work?",
+    events: [
+      { event: "answer", data: { paper_id: "paper-1", mode: "reviewed_answer", heading: "Detailed explanation", context_question: "How does the method work?", evaluation: { reviewed_claims: 1, rejected_claims: 0, answer_relevant: true } } },
+      { event: "claim", data: { paper_id: "paper-1", verified: true, claim: { text: "Isolated workers read the evidence.", quote, paragraph: 0, citation } } },
+      { event: "claim", data: { paper_id: "other-paper", verified: true, claim: { text: "Foreign claim.", quote: "Foreign claim text here.", citation } } },
+      { event: "done", data: { paper_id: "paper-1", mode: "reviewed_answer" } },
+    ],
+  }] });
+  const event = (kind: string, data: object) => `event: ${kind}\ndata: ${JSON.stringify(data)}\n\n`;
+  const fetcher = vi.fn().mockResolvedValue(new Response([
+    event("answer", { paper_id: "paper-1", mode: "source_excerpts", heading: "Answer" }),
+    event("done", { paper_id: "paper-1", mode: "source_excerpts" }),
+  ].join("")));
+  vi.stubGlobal("fetch", fetcher);
+  render(<ChatWorkspace papers={papers} activePaperId="paper-1" onSelectPaper={vi.fn()} onClosePaper={vi.fn()} onCitation={vi.fn()} />);
+  expect(await screen.findByRole("heading", { name: "Detailed explanation" })).toBeInTheDocument();
+  const turn = screen.getAllByRole("article")[0]!;
+  expect(within(turn).getByText("How does the method work?")).toBeInTheDocument();
+  expect(within(turn).getByText("Isolated workers read the evidence.", { exact: false })).toBeInTheDocument();
+  expect(screen.queryByText("Foreign claim.", { exact: false })).not.toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("Ask about Evidence and Verification"), { target: { value: "continue" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send question" }));
+  await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+  expect(JSON.parse(String(fetcher.mock.calls[0]![1].body)).history).toEqual([
+    { question: "How does the method work?", source_ids: ["paper-1:7"] },
+  ]);
 });

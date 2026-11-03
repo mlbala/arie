@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import heapq
 import json
+import logging
 import os
 import re
 import tempfile
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -16,6 +17,8 @@ from typing import Any, cast
 
 import yaml
 from arie_core.budget import BudgetHandle
+from arie_core.contracts import VectorRow
+from arie_core.harness.verifier import MIN_ENTAILMENT
 from arie_core.pipeline import IngestionPipeline
 from arie_core.pipeline.chunker import chunk_spans
 from arie_core.pipeline.topics import TOPICS, topic_tags
@@ -24,6 +27,7 @@ from arie_core.plugin_api import (
     PagedSourcePlugin,
     PaperURLSource,
     ScrapedPaperInput,
+    VectorStore,
     normalize_scraper_output,
 )
 from arie_core.registry.manager import ArieConfig, RegistryManager
@@ -31,11 +35,31 @@ from arie_core.registry.sync import SyncConfig
 from arie_core.registry.sync import months_ago as months_ago
 from arie_core.sched import supervised
 from arie_core.search import score_paper
+from arie_worker.embedding import EmbeddingPool
+from arie_worker.entailment import EntailmentPool
 from arie_worker.extraction import ExtractionPool
 
-from arie_api.providers import LLMProviders
+from arie_api.providers import (
+    AUTO_EMBEDDER,
+    DEFAULT_LLM,
+    LLMProviders,
+    config_path,
+    embedding_key_configured,
+    resolve_embedder,
+    save_plugin_selection,
+)
 
 Document = dict[str, Any]
+
+logger = logging.getLogger(__name__)
+
+# Chunks per embedding call: about 2 s on CPU, the longest a chat query waits behind it.
+EMBED_BATCH = 16
+# bge-small-en-v1.5 scores unrelated questions up to ~0.58 and paraphrases from ~0.6.
+DEFAULT_MIN_SCORE = 0.6
+# Saved chats: the most recent turns of the most recently used papers; older ones are dropped.
+CHAT_PAPERS = 10
+CHAT_TURNS = 10
 
 
 @dataclass(frozen=True)
@@ -54,16 +78,20 @@ class ResearchRuntime:
 
     def __init__(self, root: Path, config: ArieConfig | None = None) -> None:
         self.root = root
-        self.config = config or ArieConfig.from_yaml(root / "arie.yaml")
+        self.config = config or ArieConfig.from_yaml(config_path(root))
         self.manager = RegistryManager(project_root=root, config=self.config)
         self.db = cast(Database, self.instance("database"))
         file_config = cast(dict[str, object], self.config.plugins.get("file_storage", {}))
         self.storage_root = root / str(file_config.get("root") or "data/papers")
-        parser_config = cast(dict[str, object], self.config.plugins.get("parser", {}))
+        parser_config = dict(cast(dict[str, object], self.config.plugins.get("parser", {})))
+        parser_name = str(parser_config.pop("use", "") or "pymupdf4llm")
+        parse_timeout = float(cast(float, parser_config.pop("timeout_sec", 60.0)))
         self.pool = ExtractionPool(
             root,
-            str(parser_config.get("use") or "pymupdf4llm"),
+            parser_name,
             self.config.runtime_qos.utility_worker_processes,
+            parser_config,
+            parse_timeout,
         )
         self.file_storage = self.instance("file_storage")
         self.jobs: dict[str, Document] = {}
@@ -73,16 +101,104 @@ class ResearchRuntime:
         self.url_source = cast(PaperURLSource, self.manager.instantiate_plugin("source", "arxiv"))
         self.subscribers: set[asyncio.Queue[Document]] = set()
         self.providers = LLMProviders(root, self.config, self.manager, self.lock)
+        vector_name = str(
+            cast(dict[str, object], self.config.plugins.get("vector_store", {})).get("use")
+            or "none"
+        )
+        self.min_score = DEFAULT_MIN_SCORE
+        # Vectors are comparable only within one embedder model; rows are tagged with this.
+        self.embedder_id = "none"
+        self.embedder_reason = ""
+        self.vector_store: VectorStore | None = None
+        self.embedding: EmbeddingPool | None = None
+        self.vector_wakeup = asyncio.Event()
+        self.vector_errors: dict[str, str] = {}
+        if vector_name != "none" and resolve_embedder(self.config) is not None:
+            self.vector_store = cast(VectorStore, self.instance("vector_store"))
+            self.apply_embedder()
+        entail_config = dict(cast(dict[str, object], self.config.plugins.get("entailment", {})))
+        self.entail_name = str(entail_config.pop("use", "") or "none")
+        self.entail_floor = float(cast(float, entail_config.pop("min_score", MIN_ENTAILMENT)))
+        self.entailment = (
+            EntailmentPool(root, self.entail_name, entail_config)
+            if self.entail_name != "none"
+            else None
+        )
+        self.entailment_ready = False
+        self.entailment_error = ""
+
+    def apply_embedder(self) -> None:
+        """Adopt the embedder resolved from config; a new model re-embeds in the background.
+
+        Until a paper is re-embedded, its old vectors no longer match ``embedder_id`` and
+        semantic search returns nothing for it, so answers fall back to keyword retrieval.
+        """
+        choice = resolve_embedder(self.config)
+        if self.vector_store is None or choice is None:
+            return
+        model = choice.settings.get("model")
+        embedder_id = f"{choice.name}:{model}" if model else choice.name
+        self.embedder_reason = choice.reason
+        if embedder_id == self.embedder_id and self.embedding is not None:
+            return
+        previous = self.embedding
+        self.embedding = EmbeddingPool(self.root, choice.name, choice.settings)
+        self.embedder_id, self.min_score = embedder_id, choice.min_score
+        self.vector_errors.clear()
+        if previous is not None:
+            previous.close()
+        self.vector_wakeup.set()
+
+    async def check_embedder(self, name: str) -> None:
+        """Embed one probe text with ``name`` in a disposable worker; raise ``ValueError``."""
+        if name not in {AUTO_EMBEDDER, *self.manager.get_available_plugins("embedder")}:
+            raise ValueError("Unknown embedder")
+        candidate = self.config.model_copy(deep=True)
+        candidate.plugins["embedder"] = {"use": name}
+        choice = resolve_embedder(candidate)
+        if choice is None:
+            raise ValueError("Unknown embedder")
+        profile = self.config.embedding_providers.get(choice.name)
+        if (
+            profile
+            and profile.api_key_env
+            and not embedding_key_configured(choice.name, self.config)
+        ):
+            raise ValueError(
+                f"{profile.api_key_env} is not configured. Add it to .env and restart ARIE."
+            )
+        pool = EmbeddingPool(self.root, choice.name, choice.settings)
+        try:
+            # First use may download a local model, so allow more than a chat-sized wait.
+            vectors = await pool.embed(["ARIE embedder connection check"], kill_after=120.0)
+        except Exception as exc:
+            raise ValueError(f"{choice.name} embedding check failed: {exc}") from None
+        finally:
+            pool.close()
+        if len(vectors) != 1 or not vectors[0]:
+            raise ValueError(f"{choice.name} returned no embedding")
+
+    async def switch_embedder(self, name: str) -> Document:
+        """Verify, save to arie.yaml, then adopt; the library re-embeds in the background."""
+        if self.vector_store is None:
+            raise ValueError("Vector search is off; set plugins.vector_store in arie.yaml")
+        await self.check_embedder(name)
+        selection: dict[str, object] = {"use": name}
+        async with self.lock:
+            await asyncio.to_thread(save_plugin_selection, self.root, "embedder", selection)
+            self.config.plugins["embedder"] = selection
+            self.apply_embedder()
+        return {"slot": "embedder", "plugin": name, "embedder": self.embedder_id}
 
     def instance(self, slot: str, name: str | None = None) -> object:
         settings = cast(dict[str, object], self.config.plugins.get(slot, {}))
         if slot == "llm":
-            provider = name or str(settings.get("use") or "deepseek")
+            provider = name or str(settings.get("use") or DEFAULT_LLM)
             return self.manager.instantiate_plugin(
                 slot, provider, **self.providers.settings(provider)
             )
         kwargs = {key: value for key, value in settings.items() if key != "use"}
-        if slot == "database" and "path" in kwargs:
+        if slot in {"database", "vector_store"} and "path" in kwargs:
             kwargs["db_path"] = self.root / str(kwargs.pop("path"))
         if slot == "file_storage" and "root" in kwargs:
             kwargs["root"] = self.root / str(kwargs["root"])
@@ -107,6 +223,12 @@ class ResearchRuntime:
             ctx,
             "CREATE INDEX IF NOT EXISTS arie_library_date ON arie_library(status, published_at)",
         )
+        await self.db.execute(
+            ctx,
+            """CREATE TABLE IF NOT EXISTS arie_vector_index (
+            paper_id TEXT PRIMARY KEY, model TEXT NOT NULL, revision TEXT NOT NULL,
+            vectors INTEGER NOT NULL, updated_at TEXT NOT NULL)""",
+        )
         while True:
             untagged = await self.db.fetch(
                 ctx, "SELECT document_json FROM arie_library WHERE topics_text = '|' LIMIT 50"
@@ -115,6 +237,17 @@ class ResearchRuntime:
                 break
             for row in untagged:
                 await self.save_paper(cast(Document, json.loads(str(row["document_json"]))))
+        await self.db.execute(
+            ctx,
+            """CREATE TABLE IF NOT EXISTS arie_chat_turns (
+            turn_id TEXT PRIMARY KEY, paper_id TEXT NOT NULL, question TEXT NOT NULL,
+            events_json TEXT NOT NULL, created_at TEXT NOT NULL)""",
+        )
+        await self.db.execute(
+            ctx,
+            """CREATE INDEX IF NOT EXISTS arie_chat_turns_paper
+            ON arie_chat_turns(paper_id, created_at)""",
+        )
         await self.db.execute(
             ctx,
             """CREATE TABLE IF NOT EXISTS arie_sync_runs (
@@ -129,6 +262,56 @@ class ResearchRuntime:
             if job["status"] in {"running", "queued"}:
                 job.update(status="interrupted", message="Sync interrupted. Resume to continue.")
                 await self.update_job(job)
+
+    async def save_chat_turn(
+        self, paper_id: str, question: str, events: Sequence[Document]
+    ) -> None:
+        """Store one answered turn as the exact events streamed, then enforce both limits.
+
+        Keeps the last ``CHAT_TURNS`` turns of each paper and only the ``CHAT_PAPERS`` papers
+        asked about most recently. Saved answers are display history; they never become
+        evidence for later answers (I2).
+        """
+        ctx = context(f"chat:{paper_id}", 5.0)
+        await self.db.execute(
+            ctx,
+            """INSERT INTO arie_chat_turns (turn_id, paper_id, question, events_json, created_at)
+            VALUES (?, ?, ?, ?, ?)""",
+            (
+                uuid.uuid4().hex,
+                paper_id,
+                question[:2000],
+                json.dumps(list(events)),
+                datetime.now(UTC).isoformat(),
+            ),
+        )
+        await self.db.execute(
+            ctx,
+            """DELETE FROM arie_chat_turns WHERE paper_id = ? AND turn_id NOT IN (
+            SELECT turn_id FROM arie_chat_turns WHERE paper_id = ?
+            ORDER BY created_at DESC, rowid DESC LIMIT ?)""",
+            (paper_id, paper_id, CHAT_TURNS),
+        )
+        await self.db.execute(
+            ctx,
+            """DELETE FROM arie_chat_turns WHERE paper_id NOT IN (
+            SELECT paper_id FROM arie_chat_turns GROUP BY paper_id
+            ORDER BY MAX(created_at) DESC LIMIT ?)""",
+            (CHAT_PAPERS,),
+        )
+
+    async def chat_history(self, paper_id: str) -> list[Document]:
+        """Return a paper's saved turns, oldest first, as ``{question, events}``."""
+        rows = await self.db.fetch(
+            context(f"chat:{paper_id}", 5.0),
+            """SELECT question, events_json FROM arie_chat_turns WHERE paper_id = ?
+            ORDER BY created_at DESC, rowid DESC LIMIT ?""",
+            (paper_id, CHAT_TURNS),
+        )
+        return [
+            {"question": str(row["question"]), "events": json.loads(str(row["events_json"]))}
+            for row in reversed(rows)
+        ]
 
     async def list_papers(
         self,
@@ -170,7 +353,8 @@ class ResearchRuntime:
         elif start_month:
             window = SyncConfig(
                 mode="range" if end_month else "since",
-                start_month=start_month, end_month=end_month,
+                start_month=start_month,
+                end_month=end_month,
             )
         if window is not None:
             try:
@@ -354,6 +538,13 @@ class ResearchRuntime:
                 raise
             if tombstone is not None:
                 await asyncio.to_thread(tombstone.unlink, missing_ok=True)
+            if not pdf_only:
+                await self._forget_vectors(paper_id)
+                await self.db.execute(
+                    context("delete-chat"),
+                    "DELETE FROM arie_chat_turns WHERE paper_id = ?",
+                    (paper_id,),
+                )
 
     async def update_job(self, job: Document, **changes: Any) -> None:
         job.update(changes, updated_at=datetime.now(UTC).isoformat())
@@ -376,7 +567,7 @@ class ResearchRuntime:
         settings.window(datetime.now(UTC))
 
         def save() -> None:
-            path = self.root / "arie.yaml"
+            path = config_path(self.root)
             original = path.read_text(encoding="utf-8")
             block = yaml.safe_dump(
                 {"sync": settings.model_dump(exclude_none=True)}, sort_keys=False
@@ -823,6 +1014,7 @@ class ResearchRuntime:
                 status_reason="PDF extracted and indexed",
             )
             await self.save_paper(document)
+            self.vector_wakeup.set()
             job["indexed"] += 1
         except Exception as exc:
             job["failed"] += 1
@@ -850,5 +1042,234 @@ class ResearchRuntime:
         finally:
             self.subscribers.discard(queue)
 
+    async def _vector_backlog(self, ctx: CallContext) -> tuple[list[str], int]:
+        """Return chat-ready papers lacking current vectors, and the chat-ready total."""
+        rows = await self.db.fetch(
+            ctx,
+            """SELECT l.paper_id, l.summary_json, v.model AS vector_model,
+            v.revision AS vector_revision FROM arie_library l
+            LEFT JOIN arie_vector_index v ON v.paper_id = l.paper_id
+            WHERE l.status IN ('INDEXED', 'BRIEFED') ORDER BY l.published_at DESC""",
+        )
+        pending: list[str] = []
+        for row in rows:
+            summary = cast(Document, json.loads(str(row["summary_json"])))
+            revision = f"{summary.get('revision', '')}:{summary.get('chunk_count', 0)}"
+            if (row["vector_model"], row["vector_revision"]) != (self.embedder_id, revision):
+                pending.append(str(row["paper_id"]))
+        return pending, len(rows)
+
+    async def index_paper_vectors(self, paper_id: str) -> None:
+        """Replace one paper's vectors in batches, then record the embedder and revision.
+
+        The marker is written last, so an interrupted run is retried by the next backlog scan.
+        """
+        # Capture the embedder: a switch mid-run must not tag old-model vectors as new.
+        embedding, embedder_id = self.embedding, self.embedder_id
+        if self.vector_store is None or embedding is None:
+            return
+        paper = await self.get_paper(paper_id)
+        if paper is None or paper["status"] not in {"INDEXED", "BRIEFED"}:
+            return
+        chunks: list[Document] = [
+            chunk
+            for chunk in paper.get("chunks", [])
+            if chunk.get("paper_id") == paper_id
+            and chunk.get("chunk_id")
+            and str(chunk.get("text", "")).strip()
+        ]
+        ctx = context(f"vectors:{paper_id}", 600.0)
+        await self.vector_store.delete(ctx, filters={"paper_id": paper_id})
+        for start in range(0, len(chunks), EMBED_BATCH):
+            batch = chunks[start : start + EMBED_BATCH]
+            vectors = await embedding.embed([str(chunk["text"]) for chunk in batch])
+            await self.vector_store.upsert(
+                ctx,
+                [
+                    VectorRow(
+                        id=str(chunk["chunk_id"]),
+                        vector=vector,
+                        metadata={
+                            "paper_id": paper_id,
+                            "model": embedder_id,
+                            "page": str(chunk.get("page_start", "")),
+                        },
+                    )
+                    for chunk, vector in zip(batch, vectors, strict=True)
+                ],
+            )
+        await self.db.execute(
+            ctx,
+            """INSERT INTO arie_vector_index (paper_id, model, revision, vectors, updated_at)
+            VALUES (?, ?, ?, ?, ?) ON CONFLICT(paper_id) DO UPDATE SET model=excluded.model,
+            revision=excluded.revision, vectors=excluded.vectors, updated_at=excluded.updated_at""",
+            (
+                paper_id,
+                embedder_id,
+                f"{paper.get('dedup_hash', '')}:{len(paper.get('chunks', []))}",
+                len(chunks),
+                datetime.now(UTC).isoformat(),
+            ),
+        )
+
+    async def run_vector_index(self) -> None:
+        """Keep vectors in step with the library: backfill, re-embed on model change, retry.
+
+        Wakes at startup, whenever sync indexes a paper, and every 5 minutes while any paper
+        failed. A failing paper stays keyword-searchable; its error is shown in the monitor.
+        """
+        if self.vector_store is None or self.embedding is None:
+            return
+        warmed = ""
+        while True:
+            self.vector_wakeup.clear()
+            pending, _ = await self._vector_backlog(context("vector-backlog", 10.0))
+            try:
+                if pending and warmed != self.embedder_id:
+                    # The first load may download the model, which can exceed a batch timeout.
+                    await self.embedding.embed(["warm-up"], kill_after=600.0)
+                    warmed = self.embedder_id
+                    self.vector_errors.pop("*", None)
+                for paper_id in pending:
+                    try:
+                        await self.index_paper_vectors(paper_id)
+                        self.vector_errors.pop(paper_id, None)
+                    except Exception as exc:
+                        logger.warning("Vector indexing failed for %s", paper_id, exc_info=True)
+                        self.vector_errors[paper_id] = str(exc) or type(exc).__name__
+            except Exception as exc:
+                logger.warning("Embedder %s failed to load", self.embedder_id, exc_info=True)
+                self.vector_errors["*"] = str(exc) or type(exc).__name__
+            try:
+                timeout = 300.0 if self.vector_errors else None
+                await asyncio.wait_for(self.vector_wakeup.wait(), timeout)
+            except TimeoutError:
+                pass
+
+    async def warm_entailment(self) -> None:
+        """Load the Tier 3 model at startup so the first answer need not download it.
+
+        Until it is ready, model-written claims cannot pass Tier 3 and answers use exact
+        source excerpts. A failed load is retried every 5 minutes and shown as degraded.
+        """
+        if self.entailment is None:
+            return
+        while not self.entailment_ready:
+            try:
+                await self.entailment.score([("ARIE warm-up premise.", "Warm-up.")], 600.0)
+                self.entailment_ready, self.entailment_error = True, ""
+            except Exception as exc:
+                logger.warning(
+                    "Entailment model %s failed to load", self.entail_name, exc_info=True
+                )
+                self.entailment_error = str(exc) or type(exc).__name__
+                await asyncio.sleep(300.0)
+
+    async def entailment_scores(self, pairs: Sequence[tuple[str, str]]) -> Sequence[float]:
+        """Tier 3 scores for (quote, claim) pairs; raises while the model is unavailable."""
+        if self.entailment is None or not self.entailment_ready:
+            raise RuntimeError("Entailment model is not ready")
+        return await self.entailment.score(list(pairs))
+
+    def entailment_status(self) -> Document:
+        """Report whether model-written claims can currently pass Tier 3."""
+        if self.entailment is None:
+            return {
+                "plugin": "none",
+                "status": "disabled",
+                "detail": "Tier 3 entailment is off; summaries rest on quote matching "
+                "and the model reviewer.",
+            }
+        status = "healthy" if self.entailment_ready else "loading"
+        if not self.entailment_ready and self.entailment_error:
+            status = "degraded"
+        detail = {
+            "healthy": "Every summary claim is checked for entailment by its own quote.",
+            "loading": "Loading the entailment model; answers use exact source excerpts "
+            "until then.",
+            "degraded": f"Entailment model unavailable ({self.entailment_error}); "
+            "answers use exact source excerpts.",
+        }[status]
+        return {"plugin": self.entail_name, "status": status, "detail": detail}
+
+    async def semantic_search(self, paper_id: str, queries: Sequence[str]) -> list[str]:
+        """Rank one paper's chunk IDs by best cosine similarity to any query, best first.
+
+        Returns [] when vectors are off or the paper has no vectors for this embedder.
+        Hits below ``min_score`` are dropped and every hit is re-checked against
+        ``paper_id`` (I1). Embedder or store errors propagate to the caller.
+        """
+        embedding, embedder_id, floor = self.embedding, self.embedder_id, self.min_score
+        if self.vector_store is None or embedding is None or not queries:
+            return []
+        ctx = context(f"semantic:{paper_id}", 6.0)
+        marker = await self.db.fetch(
+            ctx, "SELECT model FROM arie_vector_index WHERE paper_id = ?", (paper_id,)
+        )
+        if not marker or marker[0]["model"] != embedder_id:
+            return []
+        best: dict[str, float] = {}
+        for vector in await embedding.embed(list(queries), kill_after=6.0):
+            hits = await self.vector_store.search(
+                ctx, vector, 8, filters={"paper_id": paper_id, "model": embedder_id}
+            )
+            for hit in hits:
+                if hit.payload.get("paper_id") == paper_id and hit.score >= floor:
+                    best[hit.id] = max(best.get(hit.id, hit.score), hit.score)
+        return sorted(best, key=best.__getitem__, reverse=True)
+
+    async def vector_status(self) -> Document:
+        """Report measured index coverage for the configured embedder and vector store."""
+        provider = cast(dict[str, object], self.config.plugins.get("vector_store", {})).get("use")
+        status: Document = {
+            "provider": provider,
+            "embedder": self.embedder_id,
+            "embedder_reason": self.embedder_reason,
+            "status": "disabled",
+            "size_bytes": None,
+            "vectors": None,
+            "papers_indexed": None,
+            "papers_total": None,
+            "detail": "Vector search is off; set plugins.embedder and plugins.vector_store "
+            "in arie.yaml. Answers use keyword retrieval.",
+        }
+        if self.vector_store is None:
+            return status
+        ctx = context("vector-health", 3.0)
+        stats = await self.vector_store.stats(ctx)
+        pending, total = await self._vector_backlog(ctx)
+        failed = [paper_id for paper_id in pending if paper_id in self.vector_errors]
+        error = self.vector_errors.get("*") or next(
+            (self.vector_errors[paper_id] for paper_id in failed), None
+        )
+        status.update(
+            status="degraded" if error else "indexing" if pending else "healthy",
+            size_bytes=stats.size_bytes,
+            vectors=stats.vectors,
+            papers_indexed=total - len(pending),
+            papers_total=total,
+            detail=f"{total - len(pending)} of {total} papers embedded with {self.embedder_id}"
+            + (f"; {len(failed) or 'all'} failing: {error}" if error else ""),
+        )
+        return status
+
+    async def _forget_vectors(self, paper_id: str) -> None:
+        """Best-effort cleanup after a paper is deleted; orphans never match a live paper."""
+        if self.vector_store is None:
+            return
+        ctx = context(f"forget:{paper_id}", 10.0)
+        try:
+            await self.vector_store.delete(ctx, filters={"paper_id": paper_id})
+            await self.db.execute(
+                ctx, "DELETE FROM arie_vector_index WHERE paper_id = ?", (paper_id,)
+            )
+        except Exception:
+            logger.warning("Could not remove vectors of deleted paper %s", paper_id, exc_info=True)
+        self.vector_errors.pop(paper_id, None)
+
     def close(self) -> None:
         self.pool.close()
+        if self.embedding is not None:
+            self.embedding.close()
+        if self.entailment is not None:
+            self.entailment.close()

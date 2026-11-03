@@ -1,5 +1,6 @@
 import {
   useInfiniteQuery,
+  useQueries,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
@@ -11,6 +12,7 @@ import {
   Circle,
   FileStack,
   FolderOpen,
+  History,
   LoaderCircle,
   Menu,
   Search,
@@ -20,7 +22,7 @@ import {
   Activity,
   SlidersHorizontal,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import {
   getPaper,
   getPapers,
@@ -40,6 +42,7 @@ import { SyncControls } from "./components/SyncControls";
 import { SelectedDocument, StorageHealth, SystemPane } from "./components/SystemPane";
 import { PublicationWindowFields } from "./components/PublicationWindow";
 import { RECENT_WINDOW, publicationLabel, publicationParams, type PublicationWindow } from "./publication";
+import { loadSessions, MAX_HISTORY, paperSessionsReducer, saveSessions } from "./paperSessions";
 import { ThemeControl } from "./components/ThemeControl";
 
 type Layout = { library: "left" | "right"; import: "library" | "right"; libraryWidth: number; activityWidth: number; sizing: "auto" | "custom" };
@@ -77,8 +80,9 @@ const ANSWER_STEPS = [
 
 export default function App() {
   const queryClient = useQueryClient();
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [recentIds, setRecentIds] = useState<string[]>([]);
+  const [sessions, dispatchSessions] = useReducer(paperSessionsReducer, undefined, loadSessions);
+  // Reopen the same paper tabs after a reload; each tab then restores its saved chat.
+  useEffect(() => saveSessions(sessions), [sessions]);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [dateWindow, setDateWindow] = useState<PublicationWindow>(RECENT_WINDOW);
@@ -174,35 +178,30 @@ export default function App() {
     () => papersQuery.data?.pages.flatMap((page) => page.items) ?? [],
     [papersQuery.data],
   );
-  const selectedPaperQuery = useQuery({
-    queryKey: ["paper", selectedId],
-    queryFn: () => getPaper(selectedId!),
-    enabled: Boolean(
-      selectedId && !loadedPapers.some((paper) => paper.id === selectedId),
-    ),
+  // Pinned and history papers may fall outside the current filter, so fetch them individually.
+  const sessionIds = [...sessions.pinned, ...sessions.history];
+  const missingIds = sessionIds.filter((id) => !loadedPapers.some((paper) => paper.id === id));
+  const sessionPapers = useQueries({
+    queries: missingIds.map((id) => ({ queryKey: ["paper", id], queryFn: () => getPaper(id) })),
   });
-  const papers = useMemo(() => {
-    const merged = new Map(loadedPapers.map((paper) => [paper.id, paper]));
-    if (selectedPaperQuery.data)
-      merged.set(selectedPaperQuery.data.id, selectedPaperQuery.data);
-    return [...merged.values()];
-  }, [loadedPapers, selectedPaperQuery.data]);
-  const activeId = selectedId ?? (debouncedSearch ? null : papers[0]?.id ?? null);
-  const activePaper = papers.find((paper) => paper.id === activeId);
-  const recentPapers = useMemo(() => {
-    const ids = activeId
-      ? [activeId, ...recentIds.filter((id) => id !== activeId)]
-      : recentIds;
-    return ids
-      .slice(0, 5)
-      .map((id) => papers.find((paper) => paper.id === id))
-      .filter((paper): paper is PaperSummary => paper !== undefined);
-  }, [activeId, papers, recentIds]);
+  const papersById = useMemo(() => {
+    const merged = new Map<string, PaperSummary>(loadedPapers.map((paper) => [paper.id, paper]));
+    for (const query of sessionPapers) if (query.data) merged.set(query.data.id, query.data);
+    return merged;
+  }, [loadedPapers, sessionPapers]);
+  const resolve = (ids: string[]) =>
+    ids.flatMap((id) => papersById.get(id) ?? []);
+  const activeId = sessions.activeId ?? (debouncedSearch
+    ? null
+    : sessions.pinned.at(-1) ?? (sessions.touched ? null : loadedPapers[0]?.id ?? null));
+  const activePaper = activeId ? papersById.get(activeId) : undefined;
+  // An unpinned default paper still gets a tab so it can be closed like any other.
+  const pinnedPapers = resolve(
+    activeId && !sessions.pinned.includes(activeId) ? [activeId] : sessions.pinned,
+  );
+  const historyPapers = resolve(sessions.history);
   const selectPaper = useCallback((id: string) => {
-    setSelectedId(id);
-    setRecentIds((current) =>
-      [id, ...current.filter((item) => item !== id)].slice(0, 5),
-    );
+    dispatchSessions({ type: "open", id });
     setCitation(null);
     setSourceOpen(false);
     setLibraryOpen(false);
@@ -251,6 +250,29 @@ export default function App() {
         </a>
         <div className="sidebar-scroll">
         {layout.import === "library" && <ImportPaper key={importRevision} onImported={selectPaper} onProgress={importProgress} />}
+        {historyPapers.length > 0 && (
+          <section className="history-section" aria-label="Recently viewed papers">
+            <div className="library-heading">
+              <span>
+                <History size={15} /> Recently viewed
+              </span>
+              <button className="text-button history-clear" onClick={() => dispatchSessions({ type: "clearHistory" })}>
+                Clear history
+              </button>
+            </div>
+            <ul className="history-list">
+              {historyPapers.map((paper) => (
+                <li key={paper.id}>
+                  <button title={paper.title} onClick={() => selectPaper(paper.id)}>
+                    <BookOpen size={12} />
+                    <span>{paper.title}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <p className="history-caption">{historyPapers.length} of {MAX_HISTORY} · reopen to pin again</p>
+          </section>
+        )}
         <section className="library-section" aria-label="Library papers">
         <div className="library-heading">
           <span>
@@ -267,7 +289,7 @@ export default function App() {
             value={search}
             onChange={(event) => {
               setSearch(event.target.value);
-              setSelectedId(null);
+              dispatchSessions({ type: "deselect" });
               setCitation(null);
               setSourceOpen(false);
             }}
@@ -354,10 +376,7 @@ export default function App() {
           setSourceOpen(false);
           setImportJob(null);
           setImportRevision((value) => value + 1);
-          if (!pdfOnly) {
-            setRecentIds((ids) => ids.filter((item) => item !== id));
-            setSelectedId(null);
-          }
+          if (!pdfOnly) dispatchSessions({ type: "forget", id });
         }} />}
         </div>
         <div className="library-storage"><StorageHealth /></div>
@@ -427,9 +446,16 @@ export default function App() {
         )}
         {debouncedSearch && !activeId && <div className="search-choice-notice" role="status">Choose a paper from the library results to start asking questions.</div>}
         <ChatWorkspace
-          papers={activeId ? recentPapers : []}
+          papers={activeId ? pinnedPapers : []}
           activePaperId={activeId}
           onSelectPaper={selectPaper}
+          onClosePaper={(id) => {
+            if (id === activeId) {
+              setCitation(null);
+              setSourceOpen(false);
+            }
+            dispatchSessions({ type: "close", id });
+          }}
           onCitation={(range) => {
             setCitation(range);
             setSourceOpen(true);

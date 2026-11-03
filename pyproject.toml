@@ -22,11 +22,16 @@ dependencies = [
     "arie-llm-openai-compatible",
     "arie-llm-gemini",
     "arie-plugin-embed-fastembed",
+    "arie-plugin-entail-nli-onnx",
     "arie-plugin-parser-pymupdf4llm",
     "arie-plugin-source-arxiv",
     "arie-plugin-source-deepmind",
     "arie-plugin-vector-exact",
 ]
+
+[project.optional-dependencies]
+# Docling parser with OCR for scanned PDFs; pulls PyTorch models. `uv sync --extra docling`.
+docling = ["arie-plugin-parser-docling"]
 
 [dependency-groups]
 dev = [
@@ -52,6 +57,8 @@ arie-llm-deepseek = { workspace = true }
 arie-llm-openai-compatible = { workspace = true }
 arie-llm-gemini = { workspace = true }
 arie-plugin-embed-fastembed = { workspace = true }
+arie-plugin-entail-nli-onnx = { workspace = true }
+arie-plugin-parser-docling = { workspace = true }
 arie-plugin-parser-pymupdf4llm = { workspace = true }
 arie-plugin-source-arxiv = { workspace = true }
 arie-plugin-source-deepmind = { workspace = true }
@@ -70,6 +77,14 @@ typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
 extraPaths = ["core", "plugins/db-sqlite", "api", "worker"]
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    # PyMuPDF's SWIG bindings and Starlette's TestClient warn on Python 3.14; not ours.
+    "ignore:builtin type [Ss]wig.* has no __module__ attribute:DeprecationWarning",
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+]
 
 [tool.importlinter]
 root_packages = ["arie_core", "arie_api", "arie_worker"]

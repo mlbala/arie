@@ -1,0 +1,40 @@
+# ARIE: `docker compose up --build`, then open http://localhost:8080
+name: arie
+
+services:
+  api:
+    build:
+      context: .
+      target: api
+    image: arie-api:0.1.0
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      ARIE_CONFIG: /app/data/arie.yaml
+    volumes:
+      # SQLite database, PDFs, embedding model cache and the persisted arie.yaml.
+      - arie-data:/app/data
+    ports:
+      # Direct API / MCP access; bound to localhost only.
+      - "127.0.0.1:${ARIE_API_PORT:-8000}:8000"
+    # The extraction pool uses spawn-started processes; give shared memory headroom.
+    shm_size: 256m
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      target: web
+    image: arie-web:0.1.0
+    environment:
+      ARIE_API_UPSTREAM: api:8000
+    ports:
+      - "${ARIE_WEB_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  arie-data:

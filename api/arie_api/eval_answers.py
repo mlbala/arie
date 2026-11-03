@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 
 import msgspec
 from arie_core.harness.evaluation import score_answer, source_truth_cases
 from arie_core.harness.orchestrator import answer_question
+from arie_core.harness.verifier import MIN_ENTAILMENT, EntailmentCheck
 from arie_core.plugin_api import LLM
 from arie_core.registry.manager import ArieConfig, RegistryManager
+from arie_worker.entailment import EntailmentPool
 
-from arie_api.providers import LLMProviders
+from arie_api.providers import DEFAULT_LLM, LLMProviders, config_path
 from arie_api.runtime import context
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -19,15 +22,35 @@ ROOT = Path(__file__).resolve().parents[2]
 
 async def evaluate() -> bool:
     """Evaluate the configured model against fixed, synthetic source facts."""
-    config = ArieConfig.from_yaml(ROOT / "arie.yaml")
+    config = ArieConfig.from_yaml(config_path(ROOT))
     manager = RegistryManager(project_root=ROOT, config=config)
     settings = cast(dict[str, object], config.plugins.get("llm", {}))
     providers = LLMProviders(ROOT, config, manager, asyncio.Lock())
-    name = str(settings.get("use") or "deepseek")
+    name = str(settings.get("use") or DEFAULT_LLM)
     llm = cast(LLM, manager.build_plugin("llm", name, **providers.settings(name)))
     if not getattr(llm, "api_key", None):
         print(json.dumps({"status": "not_run", "reason": "Configured LLM has no API key"}))
         return False
+    entail_config = dict(cast(dict[str, object], config.plugins.get("entailment", {})))
+    entail_name = str(entail_config.pop("use", "") or "none")
+    floor = float(cast(float, entail_config.pop("min_score", MIN_ENTAILMENT)))
+    pool = EntailmentPool(ROOT, entail_name, entail_config) if entail_name != "none" else None
+    if pool is not None:
+        # The first load may download the model; answers are then timed as in production.
+        await pool.score([("ARIE warm-up premise.", "Warm-up.")], 600.0)
+
+    async def entail(pairs: Sequence[tuple[str, str]]) -> list[float]:
+        assert pool is not None
+        return await pool.score(list(pairs))
+
+    try:
+        return await _run_cases(llm, entail if pool is not None else None, floor)
+    finally:
+        if pool is not None:
+            pool.close()
+
+
+async def _run_cases(llm: LLM, entail: EntailmentCheck | None, floor: float) -> bool:
     passed = True
     for case in source_truth_cases():
         async with asyncio.timeout(25.0):
@@ -40,6 +63,8 @@ async def evaluate() -> bool:
                 llm,
                 project_root=ROOT,
                 history=case.history,
+                entail=entail,
+                entail_floor=floor,
             )
         result = run.answer
         score = score_answer(

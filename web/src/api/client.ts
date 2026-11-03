@@ -74,21 +74,26 @@ export interface SkippedPaper {
   overridden_by_user: number;
 }
 
-export interface LLMProvider {
+/** A selectable model provider or embedder; only model providers report connection status. */
+export interface ProviderOption {
   name: string;
   label: string;
   model: string;
-  key_env: string;
+  key_env: string | null;
   key_configured: boolean;
-  status: "missing_key" | "not_tested" | "verified" | "error";
-  message: string;
+  /** The provider ARIE ships with; others need the customer's own key. */
+  default?: boolean;
+  status?: "missing_key" | "not_tested" | "verified" | "error";
+  message?: string;
 }
 
 export interface PluginSlot {
   slot: string;
   configured: Record<string, unknown>;
   available: string[];
-  providers?: LLMProvider[];
+  providers?: ProviderOption[];
+  /** Embedder slot only: the embedder in use and why automatic mode chose it. */
+  effective?: { embedder: string; reason: string };
 }
 
 export interface PluginResponse {
@@ -167,6 +172,17 @@ export async function getPapers(
 
 export async function getPaper(paperId: string): Promise<Paper> {
   return requestJson<Paper>(`/v1/papers/${encodeURIComponent(paperId)}`);
+}
+
+/** One saved Q&A turn: the question and the events the server streamed for its answer. */
+export interface SavedChatTurn {
+  question: string;
+  events: { event: string; data: Record<string, unknown> }[];
+}
+
+/** The last saved turns for a paper, oldest first (the server keeps 10 per paper). */
+export async function getChat(paperId: string, signal?: AbortSignal): Promise<{ turns: SavedChatTurn[] }> {
+  return requestJson(`/v1/papers/${encodeURIComponent(paperId)}/chat`, signal ? { signal } : {});
 }
 
 export async function getSkippedPapers(): Promise<{ items: SkippedPaper[] }> {
@@ -314,7 +330,11 @@ export interface StorageHealth {
     provider: string; status: string; size_bytes: number | null; files: number | null;
     disk_free_bytes: number | null; disk_total_bytes: number | null;
   };
-  vector_store: { provider: string; status: string; size_bytes: number | null; detail: string };
+  vector_store: {
+    provider: string; status: string; size_bytes: number | null; detail: string;
+    embedder?: string; vectors?: number | null; papers_indexed?: number | null; papers_total?: number | null;
+  };
+  entailment?: { plugin: string; status: string; detail: string };
   active_jobs: SyncJob[];
 }
 

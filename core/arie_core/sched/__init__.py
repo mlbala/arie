@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import time
 from collections import defaultdict
@@ -142,7 +141,11 @@ class QoSPriorityGate:
 
 
 class EventLoopLagMonitor:
-    """Checks callback lag and warns when it exceeds the configured threshold."""
+    """Warn when event-loop callbacks run later than ``threshold_ms``.
+
+    ``run`` loops until cancelled; start it inside the caller's ``asyncio.TaskGroup``
+    with ``supervised()`` so its lifetime is owned by structured concurrency.
+    """
 
     def __init__(
         self,
@@ -154,9 +157,8 @@ class EventLoopLagMonitor:
         self.threshold_ms = threshold_ms
         self.interval_ms = interval_ms
         self._logger = logger or logging.getLogger("arie_core.sched")
-        self._task: asyncio.Task[None] | None = None
 
-    async def _run(self) -> None:
+    async def run(self) -> None:
         loop = asyncio.get_running_loop()
         while True:
             before = loop.time()
@@ -169,18 +171,6 @@ class EventLoopLagMonitor:
                     lag_ms,
                     self.threshold_ms,
                 )
-
-    def start(self) -> None:
-        if self._task is not None and not self._task.done():
-            return
-        self._task = asyncio.create_task(self._run())
-
-    async def stop(self) -> None:
-        if self._task is not None:
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
-            self._task = None
 
 
 __all__ = [

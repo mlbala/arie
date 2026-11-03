@@ -64,6 +64,39 @@ async def test_overview_uses_pdf_narrative_even_with_no_keyword_or_provider(ques
 
 
 @pytest.mark.asyncio
+async def test_brief_overview_budget_counts_attribution_rewrite() -> None:
+    # 238 bytes as quoted; "The paper proposes" pushes it past the 240-byte brief budget.
+    purpose = (
+        "We propose "
+        + "a source-free online adaptation method " * 5
+        + "for robust and reliable testing."
+    )
+    abstract = f"## Abstract\n\n{purpose} Stochastic entropy improved accuracy on all benchmarks."
+    row = EvidenceChunk("selected", "abstract", abstract, 1, 0, len(abstract))
+    assert len(purpose.encode("utf-8")) <= 240
+    answer = await select_excerpts(
+        context("brief"), "What is this paper about?", [row], max_quotes=2, max_bytes=240
+    )
+    assert answer
+    assert all(len(item.text.encode("utf-8")) <= 240 for item in answer)
+
+
+@pytest.mark.asyncio
+async def test_pdf_emphasis_is_removed_from_answer_text_but_not_quotes() -> None:
+    text = (
+        "We introduce ALPS ( **_A_** _lign_ **_L_** _ong-term by_ **_P_** _lanning_ "
+        "**_S_** _hort-term_ ), a simulated student model for **Exp1** settings."
+    )
+    row = EvidenceChunk("paper", "c", f"## Abstract\n\n{text}", 1, 0, len(text) + 13)
+    answer = await select_excerpts(context("emphasis"), "What is this paper about?", [row])
+    assert answer[0].quote == text
+    assert answer[0].text == (
+        "The paper introduces ALPS (Align Long-term by Planning Short-term), "
+        "a simulated student model for Exp1 settings."
+    )
+
+
+@pytest.mark.asyncio
 async def test_model_quote_normalization_preserves_authoritative_offsets() -> None:
     text = "We propose an efﬁcient\nmodel that uses verified source passages."
     row = EvidenceChunk("paper", "c", text, 3, 40, 40 + len(text))
@@ -158,6 +191,8 @@ with pymupdf.open() as doc:
     plugins.update(
         database={"use": "sqlite", "path": str(tmp_path / "import.db")},
         file_storage={"use": "local", "root": str(tmp_path / "papers")},
+        embedder={"use": "none"},
+        entailment={"use": "none"},
     )
     runtime = ResearchRuntime(ROOT, config.model_copy(update={"plugins": plugins}))
     metadata_requests: list[dict[str, str | int]] = []

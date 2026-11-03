@@ -45,6 +45,8 @@ async def test_adapters_send_real_bounded_json_requests_and_server_credentials(
         assert request.headers["authorization"] == "Bearer server-secret"
         assert body["model"] != "gemini-3.5-flash-lite"
         assert body["max_completion_tokens" if provider == "openai" else "max_tokens"] == 32
+        if provider == "deepseek":
+            assert body["thinking"] == {"type": "disabled"}
         return httpx.Response(
             200,
             json={
@@ -107,6 +109,8 @@ async def runtime_at(tmp_path: Path) -> ResearchRuntime:
     plugins.update(
         database={"use": "sqlite", "path": str(tmp_path / "arie.db")},
         file_storage={"use": "local", "root": str(tmp_path / "papers")},
+        embedder={"use": "none"},
+        entailment={"use": "none"},
     )
     runtime = ResearchRuntime(ROOT, config.model_copy(update={"plugins": plugins}))
     runtime.providers.root = tmp_path
@@ -161,7 +165,7 @@ async def test_connection_probe_is_isolated_and_successful_selection_persists(
 
     def build(slot: str, name: str, **kwargs: object) -> object:
         assert (slot, name) == ("llm", "openai")
-        assert kwargs["model"] == "gpt-4.1-mini"
+        assert kwargs["model"] == "gpt-5.4-mini"
         assert kwargs["api_key"] == "private-test-key"
         return candidate
 
@@ -170,11 +174,11 @@ async def test_connection_probe_is_isolated_and_successful_selection_persists(
         await runtime.providers.check("openai")
         assert runtime.manager.active_plugins["llm"] is active
         assert runtime.config.plugins["llm"] != {"use": "openai"}
-        result = await runtime.providers.switch("openai", {"model": "gpt-4.1-mini"})
+        result = await runtime.providers.switch("openai", {"model": "gpt-5.4-mini"})
         assert len(calls) == 1  # Saving reuses the successful check for this model and key.
         assert runtime.manager.active_plugins["llm"] is candidate
         saved = ArieConfig.from_yaml(tmp_path / "arie.yaml")
-        assert saved.plugins["llm"] == {"use": "openai", "model": "gpt-4.1-mini"}
+        assert saved.plugins["llm"] == {"use": "openai", "model": "gpt-5.4-mini"}
         assert set(saved.llm_providers) >= {"openai", "gemini", "deepseek"}
         assert "private-test-key" not in json.dumps(result)
         assert "private-test-key" not in json.dumps(runtime.providers.options())

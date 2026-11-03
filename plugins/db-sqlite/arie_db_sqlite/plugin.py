@@ -40,7 +40,7 @@ class SQLiteDatabasePlugin:
         / "arie_core"
         / "persistence"
         / "migrations"
-        / "0001_arie_v6_initial.sql"
+        / "0001_arie_initial.sql"
     )
 
     def __init__(

@@ -1,0 +1,19 @@
+[project]
+name = "arie-plugin-parser-docling"
+version = "0.1.0"
+requires-python = ">=3.14"
+# Docling brings PyTorch layout and OCR models (several GB); install only when selected.
+dependencies = [
+    "arie-core",
+    "docling>=2.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+arie-core = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["arie_parser_docling"]

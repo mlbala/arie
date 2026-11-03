@@ -17,7 +17,7 @@ it("shows measured storage and deletes only the selected PDF after confirmation"
   vi.mocked(getStorageHealth).mockResolvedValue({
     checked_at: "2026-11-02T12:00:00Z", active_jobs: [],
     database: { provider: "sqlite", status: "healthy", size_bytes: 1048576, papers: 1, evidence_chunks: 5 },
-    vector_store: { provider: "exact", status: "inactive", size_bytes: null, detail: "Vector provider is not populated." },
+    vector_store: { provider: "exact", status: "indexing", size_bytes: 4096, vectors: 12, detail: "1 of 2 papers embedded with fastembed:BAAI/bge-small-en-v1.5" },
     file_storage: { provider: "local", status: "healthy", size_bytes: 2097152, files: 1, disk_free_bytes: 1000, disk_total_bytes: 2000 },
   });
   vi.mocked(deletePaper).mockResolvedValue(undefined);
@@ -26,7 +26,9 @@ it("shows measured storage and deletes only the selected PDF after confirmation"
   render(<QueryClientProvider client={client}><StorageHealth /><SelectedDocument paper={paper} onDeleted={onDeleted} /></QueryClientProvider>);
   fireEvent.click(screen.getByText("Storage & health"));
   await screen.findByText("sqlite · 1.0 MB");
-  expect(screen.getByText("Vector provider is not populated.")).toBeInTheDocument();
+  expect(screen.getByText("1 of 2 papers embedded with fastembed:BAAI/bge-small-en-v1.5")).toBeInTheDocument();
+  expect(screen.getByText("exact · 12 vectors · 4.0 KB")).toBeInTheDocument();
+  expect(screen.getByText("indexing")).toHaveClass("health-pill", "indexing");
   fireEvent.click(screen.getByRole("button", { name: "Delete PDF" }));
   expect(deletePaper).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Confirm delete" }));

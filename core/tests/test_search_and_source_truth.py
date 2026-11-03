@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -22,6 +23,8 @@ def runtime_at(tmp_path: Path) -> ResearchRuntime:
     plugins.update(
         database={"use": "sqlite", "path": str(tmp_path / "arie.db")},
         file_storage={"use": "local", "root": str(tmp_path / "papers")},
+        embedder={"use": "none"},
+        entailment={"use": "none"},
     )
     return ResearchRuntime(ROOT, config.model_copy(update={"plugins": plugins}))
 
@@ -142,8 +145,83 @@ async def test_summary_is_rephrased_reviewed_and_cited_to_exact_saved_offsets() 
     for item in result.excerpts:
         assert SOURCE[item.char_start - 120 : item.char_end - 120] == item.quote
     assert "Secret foreign" not in " ".join(request.prompt for request in model.requests)
-    assert result.input_bytes <= 12000 and result.output_tokens <= 700
+    assert result.input_tokens <= 12000 and result.output_tokens <= 700
     assert sum(request.max_output_tokens for request in model.requests) == 700
+
+
+def drafted(text: str) -> ScriptedModel:
+    return ScriptedModel(
+        [
+            {"claims": [{"text": text, "quote": SOURCE.split(". ")[0] + ".", "source": 0}]},
+            {"supported": [0], "answers_question": True},
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_tier_3_entailment_marks_claims_that_reach_the_reviewer() -> None:
+    seen: list[tuple[str, str]] = []
+
+    async def entail(pairs: Sequence[tuple[str, str]]) -> list[float]:
+        seen.extend(pairs)
+        return [0.97 for _ in pairs]
+
+    text = "Cedar retrieves evidence with a gated memory bank."
+    result = await compose_answer(
+        context("tier3"),
+        "chosen",
+        "What is the paper about?",
+        [ROW],
+        cast(LLM, drafted(text)),
+        entail=entail,
+    )
+    assert result.mode == "grounded_summary"
+    assert result.excerpts[0].checks == ("tier_1", "llm_review", "tier_3_entailment")
+    assert seen == [(SOURCE.split(". ")[0] + ".", text)]
+
+
+@pytest.mark.parametrize(
+    ("scores", "reason"),
+    [([0.02], "entailment_rejected"), ([0.4, 0.9], "entailment_unavailable")],
+)
+@pytest.mark.asyncio
+async def test_tier_3_rejection_or_malformed_scores_skip_the_reviewer(
+    scores: list[float], reason: str
+) -> None:
+    async def entail(pairs: Sequence[tuple[str, str]]) -> list[float]:
+        del pairs
+        return scores
+
+    model = drafted("Cedar retrieves evidence without any memory component at all.")
+    result = await compose_answer(
+        context("tier3-reject"),
+        "chosen",
+        "Summarize this paper",
+        [ROW],
+        cast(LLM, model),
+        entail=entail,
+    )
+    assert result.mode == "extractive_summary" and result.fallback_reason == reason
+    assert result.model_calls == 1, "a rejected draft must not be sent for review"
+    assert all(item.checks == ("tier_1",) for item in result.excerpts)
+
+
+@pytest.mark.asyncio
+async def test_unavailable_entailment_model_abstains_to_exact_excerpts() -> None:
+    async def entail(pairs: Sequence[tuple[str, str]]) -> list[float]:
+        raise RuntimeError("Entailment model is not ready")
+
+    result = await compose_answer(
+        context("tier3-down"),
+        "chosen",
+        "Summarize this paper",
+        [ROW],
+        cast(LLM, drafted("Cedar retrieves evidence with a gated memory bank.")),
+        entail=entail,
+    )
+    assert result.fallback_reason == "entailment_unavailable"
+    assert result.mode == "extractive_summary" and result.excerpts
+    assert all("tier_3_entailment" not in item.checks for item in result.excerpts)
 
 
 @pytest.mark.parametrize(
