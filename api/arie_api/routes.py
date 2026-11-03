@@ -187,7 +187,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
     @app.post("/v1/papers/{paper_id:path}/questions")
     async def ask_question(paper_id: str, request: QuestionRequest) -> StreamingResponse:
         paper = await document(paper_id)
-        if paper["status"] not in {"INDEXED", "BRIEFED"}:
+        if paper["status"] != "INDEXED":
             raise HTTPException(
                 status_code=409, detail="Wait for PDF extraction and indexing to finish"
             )

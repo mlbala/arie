@@ -345,7 +345,7 @@ class ResearchRuntime:
             conditions.append("status = ?")
             params.append(status.upper())
         else:
-            conditions.append("status IN ('INDEXED', 'BRIEFED')")
+            conditions.append("status = 'INDEXED'")
         if source:
             conditions.append("source = ?")
             params.append(source)
@@ -905,7 +905,7 @@ class ResearchRuntime:
             if (
                 existing
                 and existing.get("dedup_hash") == paper.dedup_hash
-                and existing["status"] in {"INDEXED", "BRIEFED"}
+                and existing["status"] == "INDEXED"
                 and not (job.get("kind") == "import" and existing.get("pdf_deleted"))
             ):
                 job["duplicates"] += 1
@@ -934,8 +934,6 @@ class ResearchRuntime:
                 pages=[],
                 chunks=[],
                 outline=[],
-                brief={"parts": []},
-                verified_5_part_brief=[],
             )
             if (
                 existing
@@ -1059,7 +1057,7 @@ class ResearchRuntime:
             """SELECT l.paper_id, l.summary_json, v.model AS vector_model,
             v.revision AS vector_revision FROM arie_library l
             LEFT JOIN arie_vector_index v ON v.paper_id = l.paper_id
-            WHERE l.status IN ('INDEXED', 'BRIEFED') ORDER BY l.published_at DESC""",
+            WHERE l.status = 'INDEXED' ORDER BY l.published_at DESC""",
         )
         pending: list[str] = []
         for row in rows:
@@ -1079,7 +1077,7 @@ class ResearchRuntime:
         if self.vector_store is None or embedding is None:
             return
         paper = await self.get_paper(paper_id)
-        if paper is None or paper["status"] not in {"INDEXED", "BRIEFED"}:
+        if paper is None or paper["status"] != "INDEXED":
             return
         chunks: list[Document] = [
             chunk

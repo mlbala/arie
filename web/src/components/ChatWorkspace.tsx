@@ -201,7 +201,7 @@ function ChatPanel({
     }).catch(() => { /* Without saved history the chat simply starts empty. */ });
     return () => controller.abort();
   }, [paper.id]);
-  const ready = ["INDEXED", "BRIEFED"].includes(paper.status);
+  const ready = paper.status === "INDEXED";
 
   const submitQuestion = async (suggestion?: string) => {
     const prompt = (suggestion ?? question).trim();
