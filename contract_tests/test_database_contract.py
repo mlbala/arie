@@ -78,3 +78,15 @@ async def test_database_contract_atomic_rollback_on_partial_failure(tmp_path: Pa
         ("paper-rollback",),
     )
     assert count[0]["c"] == 0
+
+
+def test_migrations_drop_the_unused_briefs_and_answers_tables(tmp_path: Path) -> None:
+    path = tmp_path / "old.sqlite"
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE briefs (brief_id TEXT PRIMARY KEY)")
+        conn.execute("CREATE TABLE answers (answer_id TEXT PRIMARY KEY)")
+    SQLiteDatabasePlugin(path)
+    with sqlite3.connect(path) as conn:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
+    assert {"briefs", "answers"}.isdisjoint(tables)
+    assert {"papers", "chunks", "outbox"} <= tables

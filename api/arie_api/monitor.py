@@ -107,7 +107,7 @@ class StorageMonitor:
                     chunks = await runtime.db.fetch(
                         context("evidence-count", 3.0),
                         "SELECT SUM(json_extract(summary_json, '$.chunk_count')) "
-                        "AS count FROM arie_library WHERE status IN ('INDEXED', 'BRIEFED')",
+                        "AS count FROM arie_library WHERE status = 'INDEXED'",
                     )
                     db["evidence_chunks"] = int(str(chunks[0]["count"] or 0))
         except Exception:

@@ -32,13 +32,9 @@ class SQLiteDatabasePlugin:
     paper-level post-filtering before returning rows to preserve Invariant I1.
     """
 
-    _MIGRATION_PATH = (
-        Path(__file__).resolve().parents[3]
-        / "core"
-        / "arie_core"
-        / "persistence"
-        / "migrations"
-        / "0001_arie_initial.sql"
+    # Every script is idempotent and runs at each startup, in file-name order.
+    _MIGRATIONS_DIR = (
+        Path(__file__).resolve().parents[3] / "core" / "arie_core" / "persistence" / "migrations"
     )
 
     def __init__(
@@ -95,8 +91,8 @@ class SQLiteDatabasePlugin:
             self._writer_conn.execute("PRAGMA foreign_keys = ON;")
             self._writer_conn.execute("PRAGMA temp_store = MEMORY;")
             self._writer_conn.execute("PRAGMA mmap_size = 268435456;")
-            script = self._MIGRATION_PATH.read_text(encoding="utf-8")
-            self._writer_conn.executescript(script)
+            for migration in sorted(self._MIGRATIONS_DIR.glob("*.sql")):
+                self._writer_conn.executescript(migration.read_text(encoding="utf-8"))
 
     def _writer_loop(self) -> None:
         while True:

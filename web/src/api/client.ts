@@ -45,17 +45,8 @@ export interface CitationRange {
   chunk_id?: string | undefined;
 }
 
-export interface BriefPart {
-  label: string;
-  title: string;
-  content: string;
-  citations?: CitationRange[] | undefined;
-}
-
 export interface Paper extends PaperSummary {
   outline: string[];
-  brief: { parts: BriefPart[] };
-  verified_5_part_brief: BriefPart[];
   pdf_url?: string | undefined;
 }
 

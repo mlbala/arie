@@ -15,8 +15,6 @@ it("opens an imported older paper even when it is outside the first library page
     overridden_by_user: 0,
     page_count: 15,
     outline: [],
-    brief: { parts: [] },
-    verified_5_part_brief: [],
     revision: "old-paper-version",
   };
   const recent = Array.from({ length: 20 }, (_, index) => ({
