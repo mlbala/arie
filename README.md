@@ -157,7 +157,7 @@ flowchart LR
 | `worker/arie_worker/` | Supervised, recycled worker processes for CPU-heavy work. |
 | `plugins/` | Bundled plugins, one package per folder. |
 | `sdk/` | The `arie` CLI for scaffolding and testing plugins. |
-| `prompts/` | Versioned prompts: `qa.v1.yaml` (planner, writer, reviewer), `explain.v1.yaml` (explain-mode header, writer rules, target length per depth) and `eval.v1.yaml` (evaluation questions). |
+| `prompts/` | Versioned prompts: `qa.v1.yaml` (planner, writer, reviewer), `explain.v1.yaml` (explain-mode header, writer rules, target length per depth), `judge.v1.yaml` (the citation-support and pairwise judges) and `eval.v1.yaml` (evaluation questions). |
 | `contract_tests/` | Slot contract tests run against every discovered plugin. |
 | `web/` | React 19 workspace. |
 | `docs/adr/` | Architecture decision records. |
@@ -487,6 +487,8 @@ evidence, unless it passes the verifier.
 | `embedding_providers` | Default model, similarity floor and key variable per embedder. |
 | `explain` | `max_pack_share` (default 0.6): the whole paper goes in the prompt only if its estimated tokens are at most this share of the model's `context_tokens` ([ADR 0010](docs/adr/0010-explain-mode-paper-in-the-prompt.md)). |
 | `answer` | `default_mode` (`strict`, the default, or `explain`): the answer path of a question whose request sets no `mode`. |
+| `judge` | `chat` (`all`, the default, or `off`): whether each explain answer's cited sentences are judged in the chat with one extra model call on the writer's provider. Evaluations always judge. |
+| `eval` | `judge_provider` (an `llm_providers` name): the provider that compares explain with strict in evaluations. Unset, it is another provider whose key is set, else the writer's. |
 | `sync` | Default sync window and limits (see [Sync](#sync)). |
 | `runtime_qos` | `utility_worker_processes` (PDF workers, capped to the CPUs), `slow_callback_threshold_ms` (event-loop lag warning) and `shared_model_worker` (default `true`: the claim checker and reranker share one process; `false` gives each its own). Older files may still carry `use_uvloop`, `user_initiated_override_concurrency`, `background_pdf_stream_concurrency` and `arxiv_rate_limit_delay_sec`; they are ignored and logged as deprecated. uvloop is chosen by the uvicorn `--loop` flag and arXiv spacing is fixed at 3 s. |
 
@@ -639,7 +641,8 @@ the ground truth:
    prompt injection, and an energy-use question (only when the paper never mentions
    energy).
 3. Every question is answered exactly as in chat, with the same models and budgets,
-   and scored without a model judge:
+   and scored without a model judge (an explain run also asks the judge whether its cited
+   sentences are supported and whether it beats the strict answer):
    - **Grounded**: every cited quote exists in the paper at its stated offsets.
    - **Cited the source**: the answer quotes the sentence the question came from.
    - **Key facts**: the share of key facts that appear in the answer.
@@ -668,7 +671,7 @@ downloaded once into `data/eval/qasper/`. Needs network and an LLM key.
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /v1/papers`, `GET /v1/papers/{id}` | Library and one paper |
-| `POST /v1/papers/{id}/questions` | Ask a question; answers stream as server-sent events (`progress`, `answer`, `claim`, `abstention`, `done`, `error`). Body `mode` is `strict` (default) or `explain`, which streams `delta` text, then `citations` and `checks` (a verdict per sentence) instead of `claim`s |
+| `POST /v1/papers/{id}/questions` | Ask a question; answers stream as server-sent events (`progress`, `answer`, `claim`, `abstention`, `done`, `error`). Body `mode` is `strict` (default) or `explain`, which streams `delta` text, then `citations`, `checks` (a verdict per sentence) and `judge` (the model's verdict per cited sentence, unless `judge.chat` is `off`) instead of `claim`s |
 | `GET /v1/papers/{id}/pdf`, `.../pages/{n}`, `.../chat` | Original PDF, extracted page, chat history |
 | `PUT /v1/papers/{id}/chat/{turn_id}/feedback` | Rate a saved answer `up`, `down` or `null`, with an optional note |
 | `PUT /v1/papers/{id}/chat/{turn_id}/feedback/facts` | Attach 1-3 key facts (and the paper sentence that holds them) to an answer rated down, so its question is scored in evaluations |

@@ -1,8 +1,9 @@
 """The events of an explain-mode answer, as ``(kind, payload)`` pairs for the question route.
 
 Strict mode's events are built in the route. Explain mode's live here: the text arrives as
-``delta`` events, then ``answer``, ``citations``, ``checks`` and ``done`` describe it. A reload
-shows the same turn from the saved events, with the text saved as one ``delta``. SPEC 8.9 and 11.
+``delta`` events, then ``answer``, ``citations``, ``checks``, ``judge`` and ``done`` describe it.
+A reload shows the same turn from the saved events, with the text saved as one ``delta``.
+SPEC 8.9 and 11.
 """
 
 from __future__ import annotations
@@ -47,9 +48,11 @@ async def explain_events(
     """Stream one explanation and append the events a reload needs to ``saved``.
 
     Order: ``progress``, ``delta`` (one per piece of text), ``answer``, ``citations`` and
-    ``checks`` (only if text arrived), ``abstention`` (only if none did) and ``done``. ``answer``
-    and the events after it come last because the trace is complete only when the stream has
-    ended; ``checks`` is the sentence-by-sentence verdict of ``check_answer`` (SPEC 8.9).
+    ``checks`` (only if text arrived), ``progress`` and ``judge`` (only if ``judge.chat`` is
+    ``all`` and the answer cites something), ``abstention`` (only if no text arrived) and
+    ``done``. ``answer`` and the events after it come last because the trace is complete only
+    when the stream has ended; ``checks`` is the sentence-by-sentence verdict of
+    ``check_answer`` and ``judge`` the model's verdict on each cited sentence (SPEC 8.9).
     """
     paper_id = str(paper["id"])
 
@@ -67,7 +70,8 @@ async def explain_events(
     )
     turns = await runtime.explain_turns(paper_id)
     result: ExplainResult | None = None
-    stream = runtime.explain_paper_question(f"explain:{uuid.uuid4().hex}", paper, question, turns)
+    trace_id = f"explain:{uuid.uuid4().hex}"
+    stream = runtime.explain_paper_question(trace_id, paper, question, turns)
     async with aclosing(stream) as items:
         async for item in items:
             if isinstance(item, str):
@@ -129,6 +133,13 @@ async def explain_events(
                 )
         yield emit("citations", paper_id=paper_id, citations=citations)
         yield emit("checks", paper_id=paper_id, **msgspec.to_builtins(result.checks))
+        if runtime.config.judge.chat == "all" and result.checks.cited:
+            yield (
+                "progress",
+                {"paper_id": paper_id, "status": "judging", "message": "Checking the citations"},
+            )
+            judgement = await runtime.judge_explanation(trace_id, result)
+            yield emit("judge", paper_id=paper_id, **msgspec.to_builtins(judgement))
     else:
         yield emit(
             "abstention",

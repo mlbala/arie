@@ -85,3 +85,33 @@ it("says so when a run saved before traces existed has no fallback reasons", asy
   expect(await screen.findByLabelText("As configured fallbacks")).toHaveTextContent("Fallback reasons were not recorded for this run.");
   expect(screen.queryByText(/slowest:/)).not.toBeInTheDocument();
 });
+
+it("shows the judge's citation support and the comparison with strict for an explain run", async () => {
+  const judged = {
+    ...run,
+    summary: { configured: { ...summary, citation_support: 0.875, win_rate: 0.75, win_cases: 2, judge_failed: 1 } },
+    results: [
+      { ...run.results[0], mode: "explain", citation_support: 1, win_rate: 1, judge_status: "complete" },
+      { ...run.results[0], case_id: "c1b", question: "Second question", mode: "explain", citation_support: 0.5, win_rate: 0.5, judge_status: "complete" },
+      { ...run.results[0], case_id: "c1c", question: "Third question", mode: "explain", citation_support: null, win_rate: null, judge_status: "failed" },
+    ],
+  };
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ paper_id: "paper-1", cases: [{ case_id: "c1" }], runs: [], latest: judged, feedback: [] }))));
+  render(<EvaluationPanel paperId="paper-1" ready />);
+  const summaryList = await screen.findByLabelText("As configured summary");
+  expect(summaryList).toHaveTextContent("Citation support88%");
+  expect(summaryList).toHaveTextContent("Wins against strict75% of 2");
+  expect(summaryList).toHaveTextContent("Judge failed1");
+  expect(screen.getByText("citation support 100%")).toBeInTheDocument();
+  expect(screen.getByText("citation support 50%")).toBeInTheDocument();
+  expect(screen.getByText("better than strict")).toBeInTheDocument();
+  expect(screen.getByText("tied with strict")).toBeInTheDocument();
+  expect(screen.getByText("judge failed")).toBeInTheDocument();
+});
+
+it("shows no judge metrics for a strict run", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ paper_id: "paper-1", cases: [{ case_id: "c1" }], runs: [], latest: run, feedback: [] }))));
+  render(<EvaluationPanel paperId="paper-1" ready />);
+  expect(await screen.findByLabelText("As configured summary")).not.toHaveTextContent("Citation support");
+  expect(screen.queryByText(/than strict|with strict/)).not.toBeInTheDocument();
+});

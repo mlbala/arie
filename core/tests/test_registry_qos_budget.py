@@ -218,6 +218,11 @@ def test_a_custom_endpoint_without_a_window_gets_the_fallback(tmp_path: Path) ->
         ("explain:\n  budget: 3\n", "budget"),
         ("answer:\n  default_mode: fast\n", "default_mode"),
         ("answer:\n  mode: explain\n", "mode"),
+        ("judge:\n  chat: sometimes\n", "chat"),
+        ("judge:\n  chat: 1\n", "chat"),
+        ("judge:\n  eval: all\n", "eval"),
+        ("eval:\n  judge_provider: nowhere\n", "judge_provider"),
+        ("eval:\n  judge_provider: ''\n", "judge_provider"),
         (
             "llm_providers:\n  x: {model: m, api_key_env: X_KEY, context_tokens: 100}\n",
             "context_tokens",
@@ -253,3 +258,18 @@ def test_the_default_answer_mode_is_strict_and_a_config_can_change_it(tmp_path: 
     path = tmp_path / "arie.yaml"
     path.write_text("answer:\n  default_mode: explain\n", encoding="utf-8")
     assert ArieConfig.from_yaml(path).answer.default_mode == "explain"
+
+
+def test_the_judge_is_on_in_chat_by_default_and_a_config_can_turn_it_off(tmp_path: Path) -> None:
+    assert ArieConfig().judge.chat == "all" and ArieConfig().eval.judge_provider is None
+    root = Path(__file__).resolve().parents[2]
+    assert ArieConfig.from_yaml(root / "arie.yaml").judge.chat == "all"
+    path = tmp_path / "arie.yaml"
+    path.write_text("judge:\n  chat: off\neval:\n  judge_provider: openai\n", encoding="utf-8")
+    loaded = ArieConfig.from_yaml(path)
+    assert loaded.judge.chat == "off" and loaded.eval.judge_provider == "openai"
+    # YAML reads the unquoted words as booleans; they still mean what they say.
+    path.write_text("judge:\n  chat: off\n", encoding="utf-8")
+    assert ArieConfig.from_yaml(path).judge.chat == "off"
+    path.write_text("judge:\n  chat: on\n", encoding="utf-8")
+    assert ArieConfig.from_yaml(path).judge.chat == "all"

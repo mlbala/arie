@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sqlite3
 import sys
 import time
 from collections.abc import AsyncIterator, Iterator, Sequence
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Protocol, cast
 
 import httpx
@@ -16,10 +18,11 @@ from arie_api.export_openapi import export_openapi
 from arie_api.mcp_server import create_scope_handle, verify_scope_handle
 from arie_api.routes import create_app
 from arie_api.runtime import ResearchRuntime
+from arie_api.runtime.base import RuntimeBase
 from arie_core.contracts import LLMDelta, LLMRequest, LLMResponse, TokenUsage
 from arie_core.harness.trace import STAGES
 from arie_core.plugin_api import Ctx
-from arie_core.registry.manager import AnswerConfig, ArieConfig
+from arie_core.registry.manager import AnswerConfig, ArieConfig, EvalConfig, JudgeConfig
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -58,6 +61,49 @@ class _StreamingLLM:
         if self.fail_after:
             raise ConnectionResetError("provider dropped the stream")
         yield LLMDelta(finish=True, usage=TokenUsage(2000, 40, 1500, 500))
+
+
+class _RoleLLM:
+    """One LLM for every role of an explain evaluation, told apart by the role line of the prompt.
+
+    The writer says ``WRITTEN``; the support judge answers ``verdicts``; the pairwise judge
+    prefers the explanation, the strict answer, or always the first one (``pairwise``). The
+    strict pipeline's non-streaming calls fail, so strict falls back to the paper's excerpts.
+    """
+
+    api_key = "test-key"
+    WRITTEN = "The method verifies source quotes [c0]."
+
+    def __init__(
+        self, verdicts: str = "1 | supported | Stated.\n", pairwise: str = "explain"
+    ) -> None:
+        self.verdicts, self.pairwise = verdicts, pairwise
+        self.requests: list[LLMRequest] = []
+
+    async def complete(self, ctx: Ctx, request: LLMRequest) -> LLMResponse:
+        raise ConnectionError("the strict pipeline has no scripted model")
+
+    async def stream(self, ctx: Ctx, request: LLMRequest) -> AsyncIterator[LLMDelta]:
+        self.requests.append(request)
+        prompt = request.prompt
+        if "Role: writer." in prompt:
+            reply = self.WRITTEN
+        elif "Role: support judge." in prompt:
+            reply = self.verdicts
+        else:
+            first = prompt.split("Answer A:\n")[1].split("\n\nAnswer B:")[0]
+            a_is_explain = first == self.WRITTEN.replace(" [c0]", "")
+            if self.pairwise == "first":
+                reply = "A | I prefer the first."
+            else:
+                explain_wins = self.pairwise == "explain"
+                reply = "A | Better." if a_is_explain == explain_wins else "B | Better."
+        yield LLMDelta(reply)
+        yield LLMDelta(finish=True, usage=TokenUsage(2000, 40, 1500, 500))
+
+    def roles(self) -> list[str]:
+        names = ("Role: writer.", "Role: support judge.", "Role: pairwise judge.")
+        return [next(n for n in names if n in request.prompt) for request in self.requests]
 
 
 @pytest.fixture
@@ -435,6 +481,8 @@ def test_an_unknown_evaluation_mode_is_rejected_before_anything_runs(
 
 
 ANSWER = ["Cedar verifies source quotes ", "before it answers [c0]. ", "It cites [c42] too."]
+# The judge's reply to ANSWER: its two cited sentences, in order.
+JUDGE = ["1 | supported | The abstract says so.\n", "2 | unsupported | No such chunk.\n"]
 
 
 def _explain(client: _APIClient, question: str = "What is Cedar?") -> httpx.Response:
@@ -452,7 +500,7 @@ def _kinds(text: str) -> list[str]:
 def test_an_explain_request_streams_text_then_the_answer_citations_and_usage(
     client: _APIClient, llm: list[object]
 ) -> None:
-    model = _StreamingLLM(ANSWER)
+    model = _StreamingLLM(ANSWER, JUDGE)
     llm.append(model)
     text = _explain(client).text
     assert _kinds(text) == [
@@ -463,6 +511,8 @@ def test_an_explain_request_streams_text_then_the_answer_citations_and_usage(
         "answer",
         "citations",
         "checks",
+        "progress",
+        "judge",
         "done",
     ]
     assert "".join(item["text"] for item in _events(text, "delta")) == "".join(ANSWER)
@@ -510,17 +560,40 @@ def test_an_explain_request_streams_text_then_the_answer_citations_and_usage(
     assert done["status"] == "complete" and done["mode"] == "explained_answer"
     assert done["usage"] == trace["tokens"] and done["claims_count"] == 1
 
-    # One call, the paper in the prompt and no paper id anywhere in it.
-    [request] = model.requests
-    sent = request.prompt + (request.system_prompt or "")
-    assert SOURCE in request.prompt and "paper-1" not in sent
-    assert not request.tools and request.max_output_tokens == 1200
+    # The judge follows the checks and gives a verdict for each cited sentence, at the same
+    # offsets; its tokens are its own, not added to the writer's in ``done``.
+    [judge] = _events(text, "judge")
+    assert judge["status"] == "complete" and judge["prompt_version"] == "judge.v1"
+    assert [(v["number"], v["verdict"]) for v in judge["verdicts"]] == [
+        (1, "supported"),
+        (2, "unsupported"),
+    ]
+    assert [(v["start"], v["end"]) for v in judge["verdicts"]] == [
+        (s["start"], s["end"]) for s in checks["sentences"]
+    ]
+    assert (judge["supported"], judge["partial"], judge["unsupported"]) == (1, 0, 1)
+    assert judge["usage"] == trace["tokens"] and judge["fallback_reason"] == ""
+    assert [e["status"] for e in _events(text, "progress")] == ["reading", "judging"]
+
+    # Two calls over the same paper: the writer's and the judge's. The paper is in both
+    # prompts, no paper id anywhere, and both start with the same header and pack bytes.
+    writer, judged = model.requests
+    for request in (writer, judged):
+        sent = request.prompt + (request.system_prompt or "")
+        assert SOURCE in request.prompt and "paper-1" not in sent and not request.tools
+    assert writer.max_output_tokens == 1200 and judged.max_output_tokens == 60 + 45 * 2
+    assert writer.system_prompt == judged.system_prompt
+    shared = os.path.commonprefix([writer.prompt, judged.prompt])
+    assert SOURCE in shared and shared.rstrip().endswith("Role:")
+    # The pack holds the abstract and the chunk; the judge adds markers, not chunk text.
+    assert judged.prompt.count(SOURCE) == shared.count(SOURCE)
+    assert "1. Cedar verifies source quotes before it answers [c0]." in judged.prompt
 
 
 def test_a_saved_explain_turn_replays_the_same_events_and_feeds_the_next_prompt(
     client: _APIClient, llm: list[object]
 ) -> None:
-    model = _StreamingLLM(ANSWER, ["Second answer."])
+    model = _StreamingLLM(ANSWER, JUDGE, ["Second answer."])
     llm.append(model)
     streamed = _explain(client).text
     [turn] = client.get("/v1/papers/paper-1/chat").json()["turns"]
@@ -528,16 +601,18 @@ def test_a_saved_explain_turn_replays_the_same_events_and_feeds_the_next_prompt(
     # The streamed pieces are saved as one delta; the other events as sent. Progress is not
     # saved, in strict mode either.
     events = [event["event"] for event in turn["events"]]
-    assert events == ["delta", "answer", "citations", "checks", "done"]
+    assert events == ["delta", "answer", "citations", "checks", "judge", "done"]
     by_kind = {event["event"]: event["data"] for event in turn["events"]}
     assert by_kind["delta"]["text"] == "".join(ANSWER)
-    for kind in ("answer", "citations", "checks", "done"):
+    for kind in ("answer", "citations", "checks", "judge", "done"):
         assert by_kind[kind] == _events(streamed, kind)[0]
     assert by_kind["done"]["turn_id"] == turn["turn_id"]
 
     # The next explanation sees the saved question and answer, with the markers stripped.
-    _explain(client, "And how is it evaluated?")
-    prompt = model.requests[1].prompt
+    # It cites nothing, so there is no judge call after it (the third request is the writer's).
+    follow_up = _explain(client, "And how is it evaluated?").text
+    assert "event: judge" not in follow_up and len(model.requests) == 3
+    prompt = model.requests[2].prompt
     earlier = "Reader: What is Cedar?\nARIE: Cedar verifies source quotes before it answers."
     assert earlier + " It cites too." in prompt
     assert "[c0]" not in prompt.split("Earlier turns")[1]
@@ -564,12 +639,56 @@ def test_an_explanation_cut_short_keeps_its_text_and_says_so(
 ) -> None:
     llm.append(_StreamingLLM(["Cedar verifies quotes [c0]. "], fail_after=True))
     text = _explain(client).text
-    assert _kinds(text) == ["progress", "delta", "answer", "citations", "checks", "done"]
+    # The judge has no second script, so it fails; that never costs the reader the answer.
+    assert _kinds(text) == [
+        "progress",
+        "delta",
+        "answer",
+        "citations",
+        "checks",
+        "progress",
+        "judge",
+        "done",
+    ]
     [answer] = _events(text, "answer")
     assert answer["mode"] == "explained_answer" and answer["evaluation"]["complete"] is False
     assert answer["evaluation"]["fallback_reason"] == "ConnectionResetError"
+    [judge] = _events(text, "judge")
+    assert judge["status"] == "failed" and judge["verdicts"] == [] and judge["fallback_reason"]
     [done] = _events(text, "done")
     assert done["status"] == "partial"
+
+
+@pytest.mark.parametrize("settings", [{"judge": JudgeConfig(chat="off")}], indirect=True)
+def test_judge_chat_off_makes_no_judge_call_and_sends_no_judge_events(
+    client: _APIClient, llm: list[object]
+) -> None:
+    model = _StreamingLLM(ANSWER, JUDGE)
+    llm.append(model)
+    text = _explain(client).text
+    assert _kinds(text) == [
+        "progress",
+        "delta",
+        "delta",
+        "delta",
+        "answer",
+        "citations",
+        "checks",
+        "done",
+    ]
+    assert len(model.requests) == 1 and "judging" not in text
+    [turn] = client.get("/v1/papers/paper-1/chat").json()["turns"]
+    assert "judge" not in [event["event"] for event in turn["events"]]
+
+
+def test_an_answer_that_cites_nothing_is_not_judged(
+    client: _APIClient, llm: list[object]
+) -> None:
+    model = _StreamingLLM(["Cedar is a model for verification."], JUDGE)
+    llm.append(model)
+    text = _explain(client).text
+    assert _kinds(text) == ["progress", "delta", "answer", "citations", "checks", "done"]
+    assert len(model.requests) == 1
 
 
 def test_a_blocked_question_is_refused_in_explain_mode_without_a_model_call(
@@ -654,3 +773,100 @@ def test_an_explain_evaluation_without_a_key_fails_every_case_visibly(
     assert result["answer_written"] is False and result["cache_hit_rate"] is None
     assert result["citation_valid_rate"] is None and result["background_share"] is None
     assert run["summary"]["configured"]["fallbacks"] == {"model_unavailable": 1}
+
+
+def _evaluate(client: _APIClient, mode: str) -> dict[str, Any]:
+    started = client.post("/v1/papers/paper-1/eval/runs", json={"mode": mode})
+    return _finished_run(client, started)
+
+
+def test_an_explain_evaluation_judges_support_and_explain_against_strict(
+    client: _APIClient, llm: list[object], tmp_path: Path
+) -> None:
+    _seed_fact_case(tmp_path)
+    model = _RoleLLM()
+    llm.append(model)
+    run = _evaluate(client, "explain")
+    [result] = run["results"]
+    # The writer once, the support judge once and the pairwise judge once each way round.
+    assert sorted(model.roles()) == sorted(
+        ["Role: writer.", "Role: support judge.", "Role: pairwise judge.", "Role: pairwise judge."]
+    )
+    assert result["citation_support"] == 1.0 and result["win_rate"] == 1.0
+    assert result["judge_status"] == "complete"
+    assert result["passed"] is True  # the judge adds metrics; it does not decide passing
+    summary = run["summary"]["configured"]
+    assert summary["citation_support"] == 1.0 and summary["win_rate"] == 1.0
+    assert summary["win_cases"] == 1 and summary["judge_failed"] == 0
+    # The answer's own time stays the explanation's; the writer's trace has no judge in it.
+    assert result["trace"]["tokens"]["prompt"] == 2000
+    pairs = [r.prompt for r in model.requests if "Role: pairwise judge." in r.prompt]
+    assert all("Key facts:\n- source quotes" in prompt for prompt in pairs)
+    assert all("[c0]" not in prompt.split("Answer A:")[1] for prompt in pairs)
+
+
+def test_a_judge_that_always_prefers_the_first_answer_makes_the_comparison_a_tie(
+    client: _APIClient, llm: list[object], tmp_path: Path
+) -> None:
+    _seed_fact_case(tmp_path)
+    llm.append(_RoleLLM("1 | partial | Only part of it.\n", pairwise="first"))
+    run = _evaluate(client, "explain")
+    [result] = run["results"]
+    assert result["win_rate"] == 0.5 and result["citation_support"] == 1.0  # partial counts
+
+
+def test_an_unreadable_support_verdict_leaves_the_case_out_of_the_mean_and_is_counted(
+    client: _APIClient, llm: list[object], tmp_path: Path
+) -> None:
+    _seed_fact_case(tmp_path)
+    llm.append(_RoleLLM("The paper seems fine.\n"))
+    run = _evaluate(client, "explain")
+    [result] = run["results"]
+    assert result["citation_support"] is None and result["judge_status"] == "failed"
+    assert result["passed"] is True and result["win_rate"] == 1.0
+    summary = run["summary"]["configured"]
+    assert summary["citation_support"] is None and summary["judge_failed"] == 1
+
+
+def test_a_strict_evaluation_makes_no_judge_calls_and_reports_no_judge_metrics(
+    client: _APIClient, llm: list[object], tmp_path: Path
+) -> None:
+    _seed_fact_case(tmp_path)
+    model = _RoleLLM()
+    llm.append(model)
+    run = _evaluate(client, "strict")
+    assert model.requests == []
+    [result] = run["results"]
+    assert result["citation_support"] is None and result["win_rate"] is None
+    assert result["judge_status"] == ""
+    assert run["summary"]["configured"]["win_cases"] == 0
+
+
+def _stub_runtime(llm: str, keys: dict[str, str], named: str | None) -> RuntimeBase:
+    def settings(name: str) -> dict[str, str]:
+        return {"api_key": keys.get(name, "")}
+
+    stub = SimpleNamespace(
+        config=ArieConfig(eval=EvalConfig(judge_provider=named)),
+        providers=SimpleNamespace(settings=settings),
+        llm_provider=lambda: llm,
+    )
+    return cast(RuntimeBase, stub)
+
+
+@pytest.mark.parametrize(
+    ("writer", "keys", "named", "expected"),
+    [
+        ("deepseek", {"deepseek": "k", "openai": "k"}, None, "openai"),
+        ("deepseek", {"deepseek": "k", "gemini": "k"}, None, "gemini"),
+        ("openai", {"deepseek": "k", "openai": "k"}, None, "deepseek"),
+        ("deepseek", {"deepseek": "k"}, None, "deepseek"),
+        ("deepseek", {}, None, "deepseek"),
+        ("deepseek", {"deepseek": "k", "openai": "k"}, "gemini", "gemini"),
+        ("deepseek", {"deepseek": "k", "openai": "k"}, "deepseek", "deepseek"),
+    ],
+)
+def test_the_pairwise_judge_is_another_provider_than_the_writer_when_a_key_is_set(
+    writer: str, keys: dict[str, str], named: str | None, expected: str
+) -> None:
+    assert RuntimeBase.eval_judge_provider(_stub_runtime(writer, keys, named)) == expected

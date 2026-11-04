@@ -222,6 +222,12 @@ export interface EvalResult {
   fallback_reason?: string;
   /** Seconds per stage (`plan`, `vector`, `read`, `rerank`, `write`, `tier3`, `review`, `total`). */
   trace?: { seconds: Record<string, number>; prompt_version: string; model: string };
+  /** Explain runs only: the share of cited sentences the checks and the judge accept; null if not judged. */
+  citation_support?: number | null;
+  /** Explain runs only: 1, 0.5 or 0 for the explanation against the strict answer; null if not compared. */
+  win_rate?: number | null;
+  /** The support judge's status: `complete`, `failed`, `skipped`; empty in a strict run. */
+  judge_status?: string;
 }
 
 export interface EvalSummary {
@@ -237,6 +243,12 @@ export interface EvalSummary {
   errors: number;
   median_seconds: number | null;
   review: number;
+  /** Explain runs only; absent or null in a strict run. */
+  citation_support?: number | null;
+  win_rate?: number | null;
+  /** Cases behind `win_rate`, and support judgements that failed (left out of `citation_support`). */
+  win_cases?: number;
+  judge_failed?: number;
 }
 
 export interface EvalRun {

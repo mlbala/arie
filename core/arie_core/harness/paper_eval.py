@@ -28,6 +28,11 @@ import yaml
 
 from arie_core.harness.answer import AnswerResult
 from arie_core.harness.explain import ExplainResult
+from arie_core.harness.judge import (
+    PairwiseJudgement,
+    SupportJudgement,
+    citation_support,
+)
 from arie_core.harness.reader import (
     EvidenceChunk,
     annotate_sections,
@@ -95,9 +100,14 @@ class PaperEvalResult(msgspec.Struct, frozen=True, kw_only=True):
     fact_recall_prose: float = 0.0
     # None unless the case has key facts to score.
     passed_written: bool | None = None
-    # Reserved for the judge and the head-to-head comparison (S13).
+    # Explain runs only (S13). ``citation_support`` is the share of cited sentences that pass
+    # the deterministic checks and are not judged unsupported; ``win_rate`` is 1.0, 0.5 or 0.0
+    # for explain against strict on this case, judged both ways round (fact cases only).
+    # Each is None when its judge did not run or failed. ``judge_status`` is the support
+    # judge's status (``complete``, ``failed`` or ``skipped``), empty in a strict run.
     citation_support: float | None = None
     win_rate: float | None = None
+    judge_status: str = ""
     # The mode the run asked for (``strict`` or ``explain``); ``mode`` above is what the
     # answer turned out to be.
     requested_mode: str = "strict"
@@ -460,8 +470,14 @@ def score_explained(
     result: ExplainResult,
     *,
     seconds: float,
+    judgement: SupportJudgement | None = None,
+    pairwise: PairwiseJudgement | None = None,
 ) -> PaperEvalResult:
-    """Score one explain-mode answer against the paper text; no model judges the result.
+    """Score one explain-mode answer against the paper text.
+
+    ``judgement`` and ``pairwise`` (S13) are the judge's verdicts, if it ran. They fill
+    ``citation_support`` and ``win_rate`` and never change ``passed``; every other score is
+    deterministic and model-free.
 
     ``fact_recall`` and ``fact_recall_prose`` are both the share of key facts found in the
     written text, since an explanation has no separate quote. ``grounded`` means every
@@ -521,7 +537,18 @@ def score_explained(
         first_token_seconds=result.first_token_seconds,
         citation_valid_rate=result.checks.valid_rate,
         background_share=result.checks.background_share,
+        citation_support=citation_support(result.checks, judgement) if judgement else None,
+        win_rate=pairwise.score if pairwise else None,
+        judge_status=judgement.status if judgement else "",
     )
+
+
+def answer_text(answer: AnswerResult) -> str:
+    """What a strict answer wrote, whole: the claim texts, or the excerpts of a fallback.
+
+    The saved ``answer`` is cut at 1,200 characters; the pairwise judge reads this instead.
+    """
+    return " ".join(item.text for item in answer.excerpts)
 
 
 def summarize(results: Sequence[PaperEvalResult]) -> dict[str, object]:
@@ -550,6 +577,8 @@ def summarize(results: Sequence[PaperEvalResult]) -> dict[str, object]:
         item.citation_valid_rate for item in results if item.citation_valid_rate is not None
     ]
     background = [item.background_share for item in results if item.background_share is not None]
+    supports = [item.citation_support for item in results if item.citation_support is not None]
+    wins = [item.win_rate for item in results if item.win_rate is not None]
     traced = [item.trace.seconds for item in results if not item.error and item.trace.seconds.total]
     stage_medians = {
         stage: sorted(getattr(seconds, stage) for seconds in traced)[len(traced) // 2]
@@ -593,8 +622,13 @@ def summarize(results: Sequence[PaperEvalResult]) -> dict[str, object]:
         "mean_background_share": round(sum(background) / len(background), 3)
         if background
         else None,
-        "citation_support": None,
-        "win_rate": None,
+        # Explain runs only (S13); None when no case was judged. ``win_cases`` and
+        # ``judge_failed`` say how many cases stand behind the two means, and how many
+        # support judgements failed (those cases are left out of ``citation_support``).
+        "citation_support": round(sum(supports) / len(supports), 3) if supports else None,
+        "win_rate": round(sum(wins) / len(wins), 3) if wins else None,
+        "win_cases": len(wins),
+        "judge_failed": sum(item.judge_status == "failed" for item in results),
     }
 
 
@@ -602,6 +636,7 @@ __all__ = [
     "MAX_FEEDBACK_FACTS",
     "PaperEvalCase",
     "PaperEvalResult",
+    "answer_text",
     "catalog",
     "check_feedback_facts",
     "error_result",

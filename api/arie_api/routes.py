@@ -15,7 +15,7 @@ from urllib.parse import quote
 
 import msgspec
 from arie_core.harness.intent import DialogueTurn
-from arie_core.harness.session import EXPLAIN_SECONDS
+from arie_core.harness.session import EXPLAIN_SECONDS, JUDGE_SECONDS
 from arie_core.registry.sync import SyncConfig
 from arie_core.sched import EventLoopLagMonitor, supervised
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -410,7 +410,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
             saved: list[Document] = []
             turn_id = uuid.uuid4().hex
             try:
-                async with asyncio.timeout(EXPLAIN_SECONDS):
+                async with asyncio.timeout(EXPLAIN_SECONDS + JUDGE_SECONDS):
                     async for kind, payload in explain_events(
                         active(), paper, request.question, turn_id, saved
                     ):

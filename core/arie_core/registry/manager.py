@@ -160,6 +160,30 @@ class AnswerConfig(BaseModel):
     default_mode: Literal["strict", "explain"] = "strict"
 
 
+class JudgeConfig(BaseModel):
+    """The in-chat judge (S13). It is a chat switch only: eval runs always judge."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    # all: after each explain answer, one batched call judges every cited sentence on the
+    # writer's provider. off: no judge call in chat and no ``judge`` events.
+    chat: Literal["all", "off"] = "all"
+
+    @field_validator("chat", mode="before")
+    @classmethod
+    def _yaml_booleans(cls, value: object) -> object:
+        # YAML 1.1 reads an unquoted `off` as false and `on` as true.
+        return {False: "off", True: "all"}.get(value, value) if isinstance(value, bool) else value
+
+
+class EvalConfig(BaseModel):
+    """Evaluation settings that do not belong to a plugin."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    # The provider that judges explain against strict. None picks a provider other than the
+    # writer's whose key is set, and the writer's own provider if there is none.
+    judge_provider: str | None = Field(default=None, min_length=1, max_length=64)
+
+
 class ArieConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -173,6 +197,15 @@ class ArieConfig(BaseModel):
     sync: SyncConfig = Field(default_factory=lambda: SyncConfig())
     explain: ExplainConfig = Field(default_factory=ExplainConfig)
     answer: AnswerConfig = Field(default_factory=AnswerConfig)
+    judge: JudgeConfig = Field(default_factory=JudgeConfig)
+    eval: EvalConfig = Field(default_factory=EvalConfig)
+
+    @model_validator(mode="after")
+    def _judge_provider_is_configured(self) -> ArieConfig:
+        named = self.eval.judge_provider
+        if named is not None and named not in self.llm_providers:
+            raise ValueError(f"eval.judge_provider {named!r} is not in llm_providers")
+        return self
 
     def context_tokens_for(self, provider: str) -> int:
         """The context window to plan for with this LLM plugin."""

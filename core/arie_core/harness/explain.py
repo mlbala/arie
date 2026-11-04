@@ -105,6 +105,9 @@ class ExplainResult(msgspec.Struct, frozen=True, kw_only=True):
     # Seconds from the start of the answer to the first text; ``None`` if no text arrived.
     first_token_seconds: float | None = None
     checks: CitationChecks = CitationChecks()
+    # The pack text the writer was sent (the paged one if the paper did not fit), so the judge
+    # can send the same bytes and reuse the provider's cached prefix. Empty if no call was made.
+    pack_text: str = ""
 
 
 def load_explain_prompts(project_root: Path) -> ExplainPrompts:
@@ -333,4 +336,5 @@ async def explain_answer(
         trace=session.trace(mode, reason, time.monotonic() - started),
         first_token_seconds=first_token,
         checks=checks,
+        pack_text=sent.text,
     )
