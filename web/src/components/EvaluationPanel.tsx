@@ -16,6 +16,9 @@ const VARIANT_LABEL: Record<EvalResult["variant"], string> = {
   no_reranker: "Without reranker",
 };
 
+/** How the judge scored an explanation against the strict answer, by `win_rate`. */
+const VERSUS: Record<number, string> = { 1: "better than strict", 0.5: "tied with strict", 0: "worse than strict" };
+
 /** Answer stages in pipeline order; `total` is left out because it contains the others. */
 const STAGES = ["plan", "vector", "read", "rerank", "write", "tier3", "review"];
 
@@ -44,7 +47,8 @@ function fellBack(result: EvalResult): boolean {
  * Evaluate ARIE on this paper, with the paper's own text as the ground truth.
  *
  * Questions are written once from exact sentences of the paper and reused, so runs stay
- * comparable after a setting changes. Answers are scored without a model judge.
+ * comparable after a setting changes. Strict answers are scored without a model judge; an
+ * explain run adds the judge's citation support and its comparison with the strict answer.
  */
 export function EvaluationPanel({ paperId, ready }: { paperId: string; ready: boolean }) {
   const [overview, setOverview] = useState<PaperEvaluation | null>(null);
@@ -153,6 +157,16 @@ function SummaryRow({ label, summary }: { label: string; summary: EvalSummary | 
       <div><dt>Key facts</dt><dd>{percent(summary.mean_fact_recall)}</dd></div>
       <div><dt>Refused correctly</dt><dd>{percent(summary.abstain_correct_rate)}</dd></div>
       <div><dt>Median time</dt><dd>{summary.median_seconds === null ? "–" : `${summary.median_seconds} s`}</dd></div>
+      {(summary.citation_support != null || summary.win_rate != null || Boolean(summary.judge_failed)) && (
+        <>
+          <div><dt>Citation support</dt><dd>{percent(summary.citation_support)}</dd></div>
+          <div>
+            <dt>Wins against strict</dt>
+            <dd>{percent(summary.win_rate)}{summary.win_cases ? ` of ${summary.win_cases}` : ""}</dd>
+          </div>
+          {Boolean(summary.judge_failed) && <div><dt>Judge failed</dt><dd>{summary.judge_failed}</dd></div>}
+        </>
+      )}
     </dl>
   );
 }
@@ -199,6 +213,9 @@ function ResultRow({ result, showVariant }: { result: EvalResult; showVariant: b
         {result.fallback_reason && <span className="evaluation-fallback">{`${fellBack(result) ? "fallback" : "reason"}: ${result.fallback_reason}`}</span>}
         <span>{result.reranked ? "reranked" : "not reranked"}</span>
         {result.seconds ? <span>{`${result.seconds} s`}</span> : null}
+        {result.citation_support != null && <span>{`citation support ${percent(result.citation_support)}`}</span>}
+        {result.judge_status === "failed" && <span className="evaluation-fallback">judge failed</span>}
+        {result.win_rate != null && <span>{VERSUS[result.win_rate] ?? `vs strict ${result.win_rate}`}</span>}
         {slowest && <span>{`slowest: ${slowest.stage} ${slowest.seconds.toFixed(1)} s`}</span>}
       </p>
       {result.answer && <details><summary>Answer</summary><p>{result.answer}</p></details>}

@@ -12,9 +12,18 @@ from arie_core.contracts import LLMRequest, LLMResponse, TokenUsage
 from arie_core.harness.answer import AnswerResult
 from arie_core.harness.citations import CitationChecks, check_answer
 from arie_core.harness.explain import ExplainCitation, ExplainResult
+from arie_core.harness.judge import (
+    COMPLETE,
+    FAILED,
+    SKIPPED,
+    PairwiseJudgement,
+    SentenceVerdict,
+    SupportJudgement,
+)
 from arie_core.harness.paper_eval import (
     PaperEvalCase,
     PaperEvalResult,
+    answer_text,
     catalog,
     check_feedback_facts,
     feedback_case,
@@ -469,3 +478,89 @@ def test_explain_results_carry_the_citation_check_rates_and_the_summary_averages
     assert summary["mean_background_share"] == pytest.approx(0.611, abs=0.001)
     strict = summarize([score_case(fact_case(), ROWS, AnswerResult([], "abstention"), seconds=1)])
     assert strict["mean_citation_valid_rate"] is None and strict["mean_background_share"] is None
+
+
+def _judged(found: CitationChecks, *verdicts: str, status: str = COMPLETE) -> SupportJudgement:
+    cited = [sentence for sentence in found.sentences if sentence.markers]
+    return SupportJudgement(
+        status=status,
+        verdicts=tuple(
+            SentenceVerdict(number, sentence.start, sentence.end, verdict, "")
+            for number, (sentence, verdict) in enumerate(zip(cited, verdicts, strict=True), 1)
+        ),
+    )
+
+
+def test_citation_support_and_win_rate_come_from_the_judge_and_never_change_passed() -> None:
+    text = "Accuracy rose from 62% to 68% [c2]. It also reached 99% [c2]."
+    found = check_answer(text, {2: "Accuracy rose from 62% to 68% on the benchmark."})
+    answer = explained(text, cited=(2,), checks=found)
+    plain = score_explained(fact_case(), ROWS, answer, seconds=1)
+    assert plain.citation_support is None and plain.win_rate is None and plain.judge_status == ""
+
+    supported = _judged(found, "supported", "supported")
+    judged = score_explained(
+        fact_case(),
+        ROWS,
+        answer,
+        seconds=1,
+        judgement=supported,
+        pairwise=PairwiseJudgement(status=COMPLETE, winner="explain", score=1.0),
+    )
+    # The invented 99% is flagged by the deterministic checks, so the judge cannot rescue it.
+    assert [s.status for s in found.sentences] == ["cited_ok", "flagged"]
+    assert judged.citation_support == 0.5 and judged.win_rate == 1.0
+    assert judged.judge_status == COMPLETE
+    assert judged.passed == plain.passed and judged.passed_written == plain.passed_written
+
+    harsh = _judged(found, "unsupported", "supported")
+    unsupported = score_explained(fact_case(), ROWS, answer, seconds=1, judgement=harsh)
+    assert unsupported.citation_support == 0
+
+    failed = score_explained(
+        fact_case(),
+        ROWS,
+        answer,
+        seconds=1,
+        judgement=SupportJudgement(status=FAILED, fallback_reason="malformed_output"),
+        pairwise=PairwiseJudgement(status=FAILED, fallback_reason="first_token_timeout"),
+    )
+    assert failed.citation_support is None and failed.win_rate is None
+    assert failed.judge_status == FAILED
+
+
+def test_the_summary_averages_judged_cases_and_counts_failures_apart() -> None:
+    text = "Accuracy rose from 62% to 68% [c2]."
+    found = check_answer(text, {2: "Accuracy rose from 62% to 68%."})
+    answer = explained(text, cited=(2,), checks=found)
+
+    def result(
+        judgement: SupportJudgement | None, pairwise: PairwiseJudgement | None
+    ) -> PaperEvalResult:
+        return score_explained(
+            fact_case(), ROWS, answer, seconds=1, judgement=judgement, pairwise=pairwise
+        )
+
+    win = PairwiseJudgement(status=COMPLETE, winner="explain", score=1.0)
+    tie = PairwiseJudgement(status=COMPLETE, winner="tie", score=0.5)
+    summary = summarize(
+        [
+            result(_judged(found, "supported"), win),
+            result(_judged(found, "unsupported"), tie),
+            result(SupportJudgement(status=FAILED), PairwiseJudgement(status=FAILED)),
+            result(SupportJudgement(status=SKIPPED), None),
+            result(None, None),
+        ]
+    )
+    assert summary["citation_support"] == 0.5  # (1.0 + 0.0) / 2; failed and skipped are left out
+    assert summary["win_rate"] == 0.75 and summary["win_cases"] == 2
+    assert summary["judge_failed"] == 1
+    strict = summarize([score_case(fact_case(), ROWS, AnswerResult([], "abstention"), seconds=1)])
+    assert strict["citation_support"] is None and strict["win_rate"] is None
+    assert strict["win_cases"] == 0 and strict["judge_failed"] == 0
+
+
+def test_a_strict_answer_is_judged_on_everything_it_wrote_not_the_saved_cut() -> None:
+    long = Excerpt("w " * 900, "q" * 100, 3, 0, 100, "p1:2")
+    assert answer_text(AnswerResult([long], "verified_answer")) == "w " * 900
+    assert answer_text(AnswerResult([], "abstention")) == ""

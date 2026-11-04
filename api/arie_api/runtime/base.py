@@ -53,13 +53,16 @@ def context(trace_id: str, seconds: float = 120.0) -> CallContext:
     return CallContext(time.monotonic() + seconds, trace_id, BudgetHandle(max_wall_sec=seconds))
 
 
-def explain_context(trace_id: str, context_tokens: int) -> CallContext:
-    """A context for one explain request: tokens up to the model's window, 95 s of wall time.
+def explain_context(
+    trace_id: str, context_tokens: int, seconds: float = EXPLAIN_SECONDS
+) -> CallContext:
+    """A context for one explain call: tokens up to the model's window, 95 s of wall time.
 
-    ``context()`` gives 12,000 tokens, which a paper pack alone would exceed.
+    ``context()`` gives 12,000 tokens, which a paper pack alone would exceed. The judge's call
+    over the same pack takes its own context, with ``seconds`` of its own (S13).
     """
-    budget = BudgetHandle(max_tokens=context_tokens, max_wall_sec=EXPLAIN_SECONDS)
-    return CallContext(time.monotonic() + EXPLAIN_SECONDS, trace_id, budget)
+    budget = BudgetHandle(max_tokens=context_tokens, max_wall_sec=seconds)
+    return CallContext(time.monotonic() + seconds, trace_id, budget)
 
 
 class RuntimeBase:
@@ -107,6 +110,26 @@ class RuntimeBase:
         """The name of the configured LLM plugin."""
         settings = cast(dict[str, object], self.config.plugins.get("llm", {}))
         return str(settings.get("use") or DEFAULT_LLM)
+
+    def eval_judge_provider(self) -> str:
+        """The LLM provider that judges explain against strict in evaluations.
+
+        ``eval.judge_provider`` if set. Otherwise the first configured provider other than the
+        writer's whose key is set, so the judge does not grade its own writing, and the
+        writer's provider if there is none.
+        """
+        writer = self.llm_provider()
+        named = self.config.eval.judge_provider
+        if named:
+            return named
+        for name in self.config.llm_providers:
+            try:
+                keyed = bool(self.providers.settings(name)["api_key"])
+            except ValueError:  # a profile with no plugin installed
+                continue
+            if name != writer and keyed:
+                return name
+        return writer
 
     def instance(self, slot: str, name: str | None = None) -> object:
         settings = cast(dict[str, object], self.config.plugins.get(slot, {}))

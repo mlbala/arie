@@ -34,7 +34,7 @@ from that paper. Five invariants hold for all code, plugins included:
 | --- | --- | --- |
 | I1 | **Paper isolation.** No other paper's text can reach an answer. | `paper_id` is bound in Python and never appears in model input or tool schemas. Every row from chunks, vectors, the reranker pool and history is filtered by `paper_id` again (`research.py`, `rerank.py`, `answer.py`, `vectors.semantic_search`). |
 | I2 | **No unverified claims.** Strict mode: every shown claim cites a quote that passes the verifier, or the answer abstains or falls back to exact excerpts. Explain mode ([ADR 0010](adr/0010-explain-mode-paper-in-the-prompt.md)) amends this: every sentence is cited or marked background, and every citation is checked. An unsupported sentence is flagged, not hidden. | Strict: `compose_answer` in `core/arie_core/harness/answer.py`. Explain: `explain_answer` in `core/arie_core/harness/explain.py` maps `[cN]` markers to chunks; `check_answer` in `core/arie_core/harness/citations.py` judges every sentence (8.9), and the route reports each citation with `checked` true only if no sentence that cites it is flagged. |
-| I3 | **Bounded execution.** Per question in strict mode: 3 reading steps, 3 model calls, 12,000 input tokens, 700 output tokens, 25 s. Explain mode has its own budgets (ADR 0010): one streaming call, first text within 10 s, at most 15 s between texts, 90 s in all, 600, 1,200 or 2,500 output tokens (8.9). | `BudgetHandle`, `ModelSession` (`call`, and `stream` for explain mode), the route's `asyncio.timeout(25.0)`; explain requests use `explain_context` and `EXPLAIN_SECONDS` (8.9) |
+| I3 | **Bounded execution.** Per question in strict mode: 3 reading steps, 3 model calls, 12,000 input tokens, 700 output tokens, 25 s. Explain mode has its own budgets (ADR 0010): one streaming call, first text within 10 s, at most 15 s between texts, 90 s in all, 600, 1,200 or 2,500 output tokens (8.9). The judge (S13) is a second, separate request with its own context: one streaming call, first text within 15 s, at most 15 s between texts, 45 s in all, at most 3,000 output tokens (8.9). | `BudgetHandle`, `ModelSession` (`call`, and `stream` for explain mode and the judge), the route's `asyncio.timeout(25.0)`; explain requests use `explain_context` and `EXPLAIN_SECONDS`, the judge `JUDGE_BUDGET` and `JUDGE_SECONDS` (8.9) |
 | I4 | **Clean ingestion.** Source records are validated, downloads go only to declared hosts, PDFs are size- and type-checked, and writes are atomic. | `normalize_scraper_output`, `IngestionPipeline.download_pdf` |
 | I5 | **No vendor code in the core.** `arie_core` imports no SDK or plugin; plugins import only `arie_core.plugin_api` and `arie_core.contracts`. | `lint-imports` in `make check` |
 
@@ -107,6 +107,8 @@ deprecation warning per file that still has them.
 | `embedding_providers` | `resolve_embedder` | Model, cosine floor `min_score` and key variable per embedder. `embedder.use: auto` follows the LLM provider if it offers embeddings and its key is set, and otherwise uses `fastembed`. |
 | `explain` | `ExplainConfig`, `pack_fits` | `max_pack_share` (default 0.6, above 0 and at most 1): the whole paper pack is used when its estimated tokens are at most this share of `context_tokens` (ADR 0010). |
 | `answer` | `AnswerConfig` | `default_mode` (`strict` or `explain`, default `strict`): the answer path of a question whose request sets no `mode`. A request's `mode` always wins (8.9). |
+| `judge` | `JudgeConfig`, `explain_events` | `chat` (`all` or `off`, default `all`): `all` judges every cited sentence of each explain answer in the chat with one extra call (8.9); `off` makes no judge call and sends no `judge` events. It is a chat switch only: evaluations always judge. YAML reads an unquoted `off` as false and `on` as true; both are accepted as `off` and `all`. |
+| `eval` | `EvalConfig`, `RuntimeBase.eval_judge_provider` | `judge_provider` (a key of `llm_providers`; default none): the LLM provider that judges explain against strict in evaluations (10). Unset, it is the first configured provider other than the writer's whose key is set, and the writer's own provider when there is none. |
 | `sync` | `SyncConfig` | Default window (`relative`, `year`, `month`, `since`, `range`), `batch_size`, `max_papers`. |
 | `runtime_qos` | `RuntimeBase`, `AnswerModels`, `routes.py` | `utility_worker_processes`, `slow_callback_threshold_ms` and `shared_model_worker`. arXiv spacing is fixed at 3 s in `wait_for_source_host`, and uvloop is chosen by the uvicorn `--loop` flag (section 12). |
 
@@ -502,7 +504,48 @@ model saw are sources (I1), so in a paged pack a marker for a chunk left out is 
   (an "only" word in the paper's sentence and a different one in the answer), a sentence can
   pass with the right numbers and a wrong claim, and new absolutes ("always") are not
   looked for. No local grounding model runs after these checks (measured in S12 and not
-  added, ADR 0011); the LLM judge (S13), on every cited sentence, is the next check.
+  added, ADR 0011); the LLM judge below, on every cited sentence, is the model check.
+
+**Judge** (`judge_support` in
+[core/arie_core/harness/judge.py](../core/arie_core/harness/judge.py), prompts in
+`prompts/judge.v1.yaml`, version `judge.v1`). After the checks, one streamed call per answer
+judges every cited sentence (each with a marker, flagged or not) on the writer's provider:
+
+- **Prompt.** `system_prompt` is the writer's `shared_header`, so it is the same bytes. The
+  `prompt` is the pack the writer was sent (`ExplainResult.pack_text`, the paged pack if the
+  paper did not fit), then `support_rules`, then the cited sentences numbered `1.` to `n.`
+  with their `[cN]` markers. The chunks are not sent again, so the provider serves the pack
+  from its cache. The reply is one line per sentence, `N | verdict | reason`, where the
+  verdict is `supported`, `partial` (part of the claim, or a weaker one) or `unsupported`.
+- **Budget (I3).** Its own `ModelSession` and its own context (`explain_context` with
+  `JUDGE_SECONDS`), so the writer's tokens and time are not shared. `JUDGE_BUDGET`: first
+  text within 15 s, 15 s of provider time between texts, 45 s in all. Output limit
+  `60 + 45 × sentences` tokens, at most 3,000. Input limit as for the writer. An answer that
+  cites nothing makes no call.
+- **Parsing is strict.** Lines that are not a numbered verdict (a preamble, a table rule) are
+  ignored, and Markdown around a field is stripped. A verdict word that is not one of the
+  three, or a sentence number that is missing, repeated or outside `1..n`, rejects the whole
+  reply: the judgement is `failed` with reason `malformed_output` and no verdicts. There is
+  no retry, so the cost stays one call. A stopped call or a provider error is also `failed`
+  with its reason (`first_token_timeout`, `model_unavailable`, a `failure_reason`, ...); the
+  answer is never lost to the judge.
+- **Result.** `SupportJudgement`: `status` (`complete`, `failed` or `skipped`), `verdicts`
+  (`number`, `start`, `end`, `verdict`, `reason` at most 240 characters), the three counts,
+  `fallback_reason`, `prompt_version`, the judge call's own `usage` and `seconds`.
+- **`citation_support`** (`citation_support()`) is the share of cited sentences whose
+  deterministic status is `cited_ok` and whose verdict is not `unsupported` (`partial`
+  counts). `null` unless the judgement is `complete`.
+- **Limits.** The judge is the same family of model as the writer, so it can share its
+  mistakes, and it reads only the chunks the pack holds. Its false-positive rate on real
+  answers is not measured beyond the gate 2 numbers in `docs/explain-mode/PROGRESS.md`.
+
+**Pairwise** (`judge_pairwise`, role `pairwise_rules`, evaluations only). The judge sees the
+question, the case's key facts and two answers, with no paper and no citation markers, and
+replies `A`, `B` or `tie` with a reason. The explanation and the strict answer are judged
+twice, once in each position. They must agree for one to win; any disagreement is a `tie`.
+`score` is 1.0 (explanation wins), 0.5 (tie) or 0.0. A call that fails, or a verdict that is
+not `A`, `B` or `tie`, fails the judgement and the case has no score. The calls run on
+`eval_judge_provider()` (3), each with its own session.
 
 **Route.** `ChatHistory.explain_paper_question` is what the route and the evaluation call.
 It binds `paper["id"]`, loads the stored pack (`ensure_pack`) and gives the request its own
@@ -528,12 +571,17 @@ because the trace is complete only when the stream has ended:
 | `answer` | `mode`: `explained_answer`, or `abstention` when no text arrived. `heading`, `prompt_version` (`explain.v1`) and `evaluation`: `task: "explain"`, `depth`, `paged`, `guardrail`, `complete` (false for a partial answer), `fallback_reason`, `unknown_markers`, `first_token_seconds` and the `trace` (8.8). |
 | `citations` | Only if text arrived. `citations`: one `{marker, chunk_id, page, char_start, char_end, checked}` per marker that names a chunk of this paper, in order of first use. `page` and the offsets are the whole chunk's (the answer cites chunks, not quotes). `checked` is `true` when at least one sentence cites the marker and none of them is flagged. |
 | `checks` | Only if text arrived, after `citations`. `sentences`: one `{start, end, text, status, markers, reasons}` per sentence (`start` and `end` are character offsets into the joined `delta` text), plus `cited_ok`, `flagged`, `background`, `cited`, `valid_rate` and `background_share` (the citation checks above). |
+| `progress` | `status: "judging"`, `message`. Only when `judge.chat` is `all` and a sentence is cited, just before `judge`. Not saved. |
+| `judge` | Same conditions. The `SupportJudgement` above: `status` (`complete` or `failed`), `verdicts` (`{number, start, end, verdict, reason}` per cited sentence, with the same `start`/`end` as `checks`), `supported`, `partial`, `unsupported`, `fallback_reason`, `prompt_version` (`judge.v1`), `usage` (the judge call's own tokens, not in `done`) and `seconds`. The key is `verdicts`, not `sentences`, so the web does not read it as a sentence check. |
 | `abstention` | Only if no text arrived. `message` says why (no key, a timeout, a blocked question). |
 | `done` | `turn_id`, `status` (`complete`, `partial` or `failed`), `mode`, `claims_count` (citations), `tool_calls` 0, `input_tokens`, `output_tokens`, `usage` (`prompt`, `completion`, `cache_hit`, `cache_miss`) and `first_token_seconds`. |
 
 `error` is sent instead for a request deadline or an unexpected exception, as in strict
-mode. The saved turn holds `delta`, `answer`, `citations` and `checks`, or `abstention`, and
-`done`, so a reload renders it like the live stream. Strict mode's events are unchanged.
+mode. The route's timeout is `EXPLAIN_SECONDS + JUDGE_SECONDS`, so a slow judge cannot
+cancel an answer that was already sent. The saved turn holds `delta`, `answer`, `citations`,
+`checks` and `judge`, or `abstention`, and `done`, so a reload renders it like the live
+stream. `done` comes after the judge, so the chat shows "Checking the citations" for a few
+seconds after the text is complete. Strict mode's events are unchanged.
 
 ## 9. Worker pools
 
@@ -620,8 +668,8 @@ reranker 2), `inter_op_num_threads` = 1, and the CPU memory arena off.
      the answer was not written), and `passed_written` (fact cases: grounded, written and
      `fact_recall_prose` ≥0.5; `null` for refusal and unscored feedback cases).
      `passed` and `fact_recall` are unchanged so old runs stay comparable; runs saved
-     before S04 lack the new fields. `citation_support` and `win_rate` are reserved as
-     `null` until the judge exists (S13).
+     before S04 lack the new fields. `citation_support` and `win_rate` are the judge's
+     scores in explain runs and `null` in strict runs (below).
    - Each result also stores `mode`, `fallback_reason`, `reranked`, `model_calls`
      and `seconds`, plus the answer `trace` (8.8). `GET /v1/papers/{id}/eval/runs/{run}`
      returns all of it. `EvaluationPanel` shows the summary and, per variant, how many
@@ -636,7 +684,10 @@ reranker 2), `inter_op_num_threads` = 1, and the CPU memory arena off.
      upper median of each trace stage and `total` over answers that have a trace) and, for
      explain runs, `median_first_token_seconds`, `mean_cache_hit_rate`,
      `mean_citation_valid_rate` and `mean_background_share` (all `null` for strict runs, and
-     the last two ignore answers where the rate is undefined).
+     the last two ignore answers where the rate is undefined), `citation_support` and
+     `win_rate` (the means of the per-case values that exist), `win_cases` (cases behind
+     `win_rate`) and `judge_failed` (support judgements that failed, which are left out of
+     `citation_support`).
    - **Mode.** A run records the answer path it scored: `mode` (`strict` or `explain`) on
      the run and `requested_mode` on each result; `mode` on a result stays the answer's own
      result mode (8.8). `POST .../eval/runs` takes `mode`, the command line takes
@@ -648,12 +699,24 @@ reranker 2), `inter_op_num_threads` = 1, and the CPU memory arena off.
      the citation checks (8.9) and do not change `passed`. `evidence_hit` means the
      answer cited the chunk of the source sentence. `passed` and `passed_written` follow the
      strict rules with those scores. An answer with no text counts as abstained, so a correct
-     "the paper does not say" explanation fails a refusal case until the judge exists (S13);
-     a failed call never passes. Each result stores `cache_hit_rate` (cache hits over cache
+     "the paper does not say" explanation still fails a refusal case, since the judge does not
+     decide `passed` (a known gap); a failed call never passes. Each result stores `cache_hit_rate` (cache hits over cache
      hits plus misses, `null` if the provider reported neither), `first_token_seconds`,
      `citation_valid_rate` (the share of sentences with a marker that have no flag, `null` if
      none has one) and `background_share`.
      `compare_reranker` is ignored: explain mode has no reranker, so there is one variant.
+   - **Judged metrics** (S13; an explain run always judges, whatever `judge.chat` says). After
+     the explanation, outside its 95 s timeout and so not in `seconds`, `judge_explanation`
+     runs the support judge (8.9) on the writer's provider with its own budget. Each result
+     stores `citation_support` and `judge_status` (`complete`, `failed`, `skipped` when
+     nothing was cited). On a fact case with a written explanation, the strict pipeline then
+     answers the same question (`answer_paper_question`, 25 s, reranker as configured), and
+     `judge_explain_vs_strict` compares the two (8.9, pairwise) on `eval_judge_provider()`.
+     The strict side is everything its excerpts wrote (`answer_text`), or "(No answer was
+     given.)" for an abstention; the explanation's markers are removed. `win_rate` on the
+     result is that judgement's score (1.0, 0.5 or 0.0). Refusal and feedback cases, an
+     explanation with no text, and a strict call that raises or times out have no `win_rate`;
+     the last is not counted as a loss for strict. The judge never changes `passed`.
 5. **Qasper slice** (`make eval-qasper N=<papers>`,
    [api/arie_api/eval_qasper.py](../api/arie_api/eval_qasper.py), conversion in
    [core/arie_core/harness/qasper.py](../core/arie_core/harness/qasper.py)). An outside
@@ -720,7 +783,8 @@ instead of "Healthy" while either model is degraded.
 filters and layout. `ChatWorkspace` streams answers over SSE and keeps recent paper
 sessions in memory (`paperSessions.ts`). `EvidenceDrawer` shows the PDF page (pdf.js in a worker) with the
 quoted span highlighted; a citation without a quote (explain mode) highlights its chunk's
-offsets on its first page, cut at the page end. `EvaluationPanel`, `SyncControls`, `ImportPaper`,
+offsets on its first page, cut at the page end. `EvaluationPanel` (its summary also shows citation support, wins against strict and judge
+failures when a run has them), `SyncControls`, `ImportPaper`,
 `SystemPane` (storage and health), `SettingsDialog` (LLM and embedder) and
 `SkippedDrawer` cover the rest. Types in `src/api/generated.ts` come from
 `web/openapi.json` (`npm run generate:api` after route changes).
@@ -733,7 +797,9 @@ each event as Markdown with markdown-it: raw HTML is escaped, and links, images,
 and reference definitions are off, so model text cannot load or link to another host.
 Each `[cN]` becomes a page chip (`p. 4`) once the `citations` event names its chunk;
 before that, or for a marker with no chunk, the chip is disabled and shows `cN`. A click
-opens `EvidenceDrawer` at the chunk's page and offsets. Any event with a `sentences` list
+opens `EvidenceDrawer` at the chunk's page and offsets. The `judge` event (8.9) is not shown
+yet; it is saved with the turn and its `progress` message appears while it runs. Any event
+with a `sentences` list
 (`checks` today) sets each sentence's status by its `start`/`end`; a later event replaces
 a status but never clears `flagged`, and reasons accumulate. A sentence is wrapped in a
 `status-<status>` span with its reasons as the tooltip (unknown reason codes are shown as

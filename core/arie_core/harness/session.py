@@ -50,6 +50,11 @@ EXPLAIN_BUDGET = StreamBudget()
 # pack and the paged-pack choice. Strict mode's request deadline is 25 s.
 EXPLAIN_SECONDS = EXPLAIN_BUDGET.total + 5.0
 
+# The judge's streamed calls (S13): a verdict list for one answer, or one pairwise verdict. A
+# judge call is its own request with its own budget, so a slow judge never eats the writer's.
+JUDGE_BUDGET = StreamBudget(first_token=15.0, stall=15.0, total=45.0)
+JUDGE_SECONDS = JUDGE_BUDGET.total + 5.0
+
 
 class StreamStopped(Exception):
     """A streaming call stopped by its budget; ``reason`` is the fallback reason to record."""

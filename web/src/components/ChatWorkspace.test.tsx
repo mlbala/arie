@@ -381,6 +381,12 @@ describe("explain answers", () => {
       { ...at("Transformers are common."), status: "background", markers: [], reasons: [] },
       { ...at("The gain is 9.1 points [c3]."), status: "flagged", markers: [3], reasons: ["number_not_in_source"] },
     ] }),
+    // The judge's verdicts (S13) are not shown yet; they must not be read as sentence checks.
+    event("progress", { paper_id: "paper-1", status: "judging", message: "Checking the citations" }),
+    event("judge", { paper_id: "paper-1", status: "complete", supported: 1, partial: 0, unsupported: 1, verdicts: [
+      { number: 1, ...at("**Method.** Workers read isolated processes [c3]."), verdict: "unsupported", reason: "Not in the chunk." },
+      { number: 2, ...at("The gain is 9.1 points [c3]."), verdict: "supported", reason: "Stated." },
+    ] }),
     event("done", { paper_id: "paper-1", mode: "explained_answer", status: "complete", turn_id: "turn-9" }),
   ];
 

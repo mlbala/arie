@@ -11,8 +11,15 @@ from typing import cast
 
 from arie_core.harness.explain import HISTORY_TURNS, ExplainResult, ExplainTurn, explain_answer
 from arie_core.harness.intent import DialogueTurn
+from arie_core.harness.judge import (
+    PairwiseJudgement,
+    SupportJudgement,
+    judge_pairwise,
+    judge_support,
+)
 from arie_core.harness.orchestrator import ResearchAnswer, answer_question
 from arie_core.harness.reader import EvidenceChunk
+from arie_core.harness.session import JUDGE_SECONDS
 from arie_core.plugin_api import (
     LLM,
 )
@@ -198,6 +205,55 @@ class ChatHistory(SyncJobs):
         async with aclosing(stream) as items:
             async for item in items:
                 yield item
+
+    def _keyed_llm(self, provider: str | None = None) -> LLM | None:
+        """The LLM plugin for ``provider`` (default: the writer's), or ``None`` without a key."""
+        llm = cast(LLM, self.instance("llm", provider))
+        return llm if getattr(llm, "api_key", None) else None
+
+    async def judge_explanation(self, trace_id: str, result: ExplainResult) -> SupportJudgement:
+        """Judge every cited sentence of an explain answer in one call on the writer's provider.
+
+        The call sends the pack the writer saw, so the provider serves it from its cache. It
+        gets its own context and budget (I3), separate from the writer's, and never raises on
+        a model failure: the answer is judged ``failed`` instead. Chat and the per-paper
+        evaluation both call this; ``judge.chat`` is the chat route's switch, not checked here.
+        """
+        context_tokens = self.config.context_tokens_for(self.llm_provider())
+        ctx = explain_context(f"{trace_id}:judge", context_tokens, JUDGE_SECONDS)
+        return await judge_support(
+            ctx,
+            self._keyed_llm(),
+            result.pack_text,
+            result.checks,
+            context_tokens=context_tokens,
+        )
+
+    async def judge_explain_vs_strict(
+        self,
+        trace_id: str,
+        question: str,
+        key_facts: Sequence[str],
+        explain_text: str,
+        strict_text: str,
+    ) -> PairwiseJudgement:
+        """Judge an explanation against a strict answer, once each way round (evaluations).
+
+        Runs on ``eval_judge_provider()``: another provider than the writer's when its key is
+        set. The paper is not sent; the key facts are the reference.
+        """
+        provider = self.eval_judge_provider()
+        ctx = explain_context(
+            f"{trace_id}:pairwise", self.config.context_tokens_for(provider), JUDGE_SECONDS
+        )
+        return await judge_pairwise(
+            ctx,
+            self._keyed_llm(provider),
+            question,
+            key_facts,
+            explain_text,
+            strict_text,
+        )
 
     async def entailment_scores(self, pairs: Sequence[tuple[str, str]]) -> Sequence[float]:
         """Tier 3 scores for (quote, claim) pairs; raises while the model is unavailable."""

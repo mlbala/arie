@@ -5,7 +5,9 @@ LLM to write questions answered by exact sentences of the paper (see
 ``arie_core.harness.paper_eval``), saves them, and later runs reuse the same questions
 so results stay comparable across settings. Each question is answered through
 ``ResearchRuntime.answer_paper_question``, the same path as chat, and scored without a
-model judge. Answers a user marked unhelpful join the run as review cases.
+model judge. An explain run also asks the judge (S13) whether each cited sentence is
+supported and, on fact cases, whether the explanation beats the strict answer. Answers a
+user marked unhelpful join the run as review cases.
 """
 
 from __future__ import annotations
@@ -22,9 +24,17 @@ from typing import TYPE_CHECKING, Any, cast
 
 import msgspec
 from arie_core.harness.explain import ExplainResult
+from arie_core.harness.judge import (
+    FAILED,
+    NO_ANSWER,
+    PairwiseJudgement,
+    SupportJudgement,
+    strip_markers,
+)
 from arie_core.harness.paper_eval import (
     PaperEvalCase,
     PaperEvalResult,
+    answer_text,
     check_feedback_facts,
     error_result,
     feedback_case,
@@ -400,7 +410,47 @@ class PaperEvaluations:
             error = "Timed out" if isinstance(exc, TimeoutError) else type(exc).__name__
         if result is None:
             return error_result(case, "explain", time.monotonic() - started, error)
-        return score_explained(case, rows, result, seconds=time.monotonic() - started)
+        # ``seconds`` is the explanation alone; the judge calls below have their own budgets.
+        seconds = time.monotonic() - started
+        trace_id = f"eval:{case.case_id}"
+        try:
+            judgement = await self.runtime.judge_explanation(trace_id, result)
+        except Exception as exc:
+            logger.warning("Support judge crashed for %s", case.case_id, exc_info=True)
+            judgement = SupportJudgement(status=FAILED, fallback_reason=type(exc).__name__)
+        pairwise = await self._pairwise(paper, case, result)
+        return score_explained(
+            case, rows, result, seconds=seconds, judgement=judgement, pairwise=pairwise
+        )
+
+    async def _pairwise(
+        self, paper: Document, case: PaperEvalCase, result: ExplainResult
+    ) -> PairwiseJudgement | None:
+        """Judge the explanation against a strict answer to the same question, both ways round.
+
+        Only fact cases have key facts to judge against, and only a written explanation can
+        win or lose; any other case gets ``None``. A strict answer that raises is not a loss
+        for strict, so the judgement fails and the case is left out of ``win_rate``.
+        """
+        written = result.mode in {"explain", "explain_partial"} and result.text.strip()
+        if case.kind != "fact" or not written:
+            return None
+        try:
+            async with asyncio.timeout(ANSWER_SECONDS):
+                strict = await self.runtime.answer_paper_question(
+                    self._ctx(f"eval-strict:{case.case_id}", ANSWER_SECONDS), paper, case.question
+                )
+            return await self.runtime.judge_explain_vs_strict(
+                f"eval:{case.case_id}",
+                case.question,
+                case.key_facts,
+                strip_markers(result.text),
+                answer_text(strict.answer) or NO_ANSWER,
+            )
+        except Exception as exc:
+            logger.warning("Pairwise judging failed for %s", case.case_id, exc_info=True)
+            reason = "strict_timeout" if isinstance(exc, TimeoutError) else type(exc).__name__
+            return PairwiseJudgement(status=FAILED, fallback_reason=reason)
 
     async def _save_run(self, run: Document) -> None:
         ctx = self._ctx(f"eval-run:{run['run_id']}")
