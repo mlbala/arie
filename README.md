@@ -157,7 +157,7 @@ flowchart LR
 | `worker/arie_worker/` | Supervised, recycled worker processes for CPU-heavy work. |
 | `plugins/` | Bundled plugins, one package per folder. |
 | `sdk/` | The `arie` CLI for scaffolding and testing plugins. |
-| `prompts/` | Versioned prompts: `qa.v1.yaml` (planner, writer, reviewer) and `eval.v1.yaml` (evaluation questions). |
+| `prompts/` | Versioned prompts: `qa.v1.yaml` (planner, writer, reviewer), `explain.v1.yaml` (explain-mode header, writer rules, target length per depth) and `eval.v1.yaml` (evaluation questions). |
 | `contract_tests/` | Slot contract tests run against every discovered plugin. |
 | `web/` | React 19 workspace. |
 | `docs/adr/` | Architecture decision records. |

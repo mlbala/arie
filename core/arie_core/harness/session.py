@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Generator
+from collections.abc import AsyncGenerator, Generator
 from contextlib import contextmanager
 from typing import cast
 
-from arie_core.contracts import LLMRequest, TokenUsage
+import msgspec
+
+from arie_core.contracts import LLMDelta, LLMRequest, TokenUsage
 from arie_core.harness.trace import STAGES, AnswerTrace, StageSeconds
 from arie_core.plugin_api import LLM, Ctx
 
@@ -34,6 +36,26 @@ def model_name(llm: LLM | None) -> str:
     return name if isinstance(name, str) else ""
 
 
+class StreamBudget(msgspec.Struct, frozen=True):
+    """Seconds a streaming call may take: to its first text, between texts, and in total."""
+
+    first_token: float = 10.0
+    stall: float = 15.0
+    total: float = 90.0
+
+
+# Explain mode's writer call (ADR 0010).
+EXPLAIN_BUDGET = StreamBudget()
+
+
+class StreamStopped(Exception):
+    """A streaming call stopped by its budget; ``reason`` is the fallback reason to record."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 class ModelSession:
     """Share hard limits across planning, writing and review; no executable model tools.
 
@@ -47,6 +69,8 @@ class ModelSession:
         self.llm = llm
         self.calls = self.input_bytes = self.input_tokens = self.output_tokens = 0
         self.cache_hit = self.cache_miss = 0
+        # The usage the provider reported on a streaming call's final delta, if any.
+        self.stream_usage: TokenUsage | None = None
         self.unavailable_reason = ""
         # For the answer trace: the configured model (kept even if the LLM is later
         # switched off), the prompt file version in use, and seconds per pipeline stage.
@@ -121,3 +145,88 @@ class ModelSession:
         if response.tool_calls or len(response.text.encode("utf-8")) > 8 * limit:
             raise ValueError("Unexpected tools or oversized model response")
         return cast(object, json.loads(response.text))
+
+    async def stream(
+        self, request: LLMRequest, *, input_limit: int, budget: StreamBudget
+    ) -> AsyncGenerator[str]:
+        """Yield the text of one streaming call within ``budget``; explain mode's writer path.
+
+        Fails closed with ``StreamStopped`` before any model call when the session already
+        streamed, no model is set, the estimated input exceeds ``input_limit`` tokens, or the
+        request budget refuses it. While streaming, the first text must arrive within
+        ``first_token`` seconds, each next one within ``stall`` seconds of asking for it, and
+        all of it within ``total`` (capped by the request deadline). Deltas without text are
+        not progress. Tokens are counted from the final delta's usage; without one, input
+        stays at its estimate and output is estimated from the text.
+        """
+        if self.calls:
+            raise StreamStopped("call_budget")
+        if self.llm is None:
+            raise StreamStopped("model_unavailable")
+        size = len(((request.system_prompt or "") + request.prompt).encode("utf-8"))
+        estimate = estimate_tokens(size)
+        if estimate > input_limit or request.max_output_tokens < 1:
+            raise StreamStopped("input_budget")
+        try:
+            self.ctx.budget.reserve(estimate)
+        except (RuntimeError, ValueError):
+            raise StreamStopped("request_budget") from None
+        self.input_bytes += size
+        self.input_tokens += estimate
+        self.calls += 1
+
+        started = time.monotonic()
+        end = min(started + budget.total, self.ctx.deadline - 0.1)
+        waiting_since = started
+        streamed = 0
+        usage: TokenUsage | None = None
+        deltas = aiter(self.llm.stream(self.ctx, request))
+        try:
+            while True:
+                if streamed:
+                    due, reason = waiting_since + budget.stall, "stall_timeout"
+                else:
+                    due, reason = waiting_since + budget.first_token, "first_token_timeout"
+                if end <= due:
+                    due, reason = end, "total_timeout"
+                wait = due - time.monotonic()
+                if wait <= 0:
+                    raise StreamStopped(reason)
+                try:
+                    async with asyncio.timeout(wait):
+                        delta: LLMDelta = await anext(deltas)
+                except StopAsyncIteration:
+                    break
+                except TimeoutError:
+                    raise StreamStopped(reason) from None
+                if delta.usage is not None:
+                    usage = delta.usage
+                if delta.tool_calls:
+                    raise StreamStopped("unexpected_tools")
+                if delta.text:
+                    streamed += len(delta.text.encode("utf-8"))
+                    if streamed > 8 * request.max_output_tokens:
+                        raise StreamStopped("output_budget")
+                    yield delta.text
+                    # The stall clock measures the provider, not the caller's time between pulls.
+                    waiting_since = time.monotonic()
+        finally:
+            if isinstance(deltas, AsyncGenerator):
+                await cast(AsyncGenerator[LLMDelta], deltas).aclose()
+            # Counted on every exit, so a stopped stream's trace still shows what it used.
+            self.stream_usage = usage
+            if usage is None:
+                usage = TokenUsage(0, estimate_tokens(streamed))
+            self.cache_hit += usage.cache_hit
+            self.cache_miss += usage.cache_miss
+            if usage.prompt > 0:
+                self.input_tokens += usage.prompt - estimate
+            self.output_tokens += usage.completion
+        try:
+            # The request budget has no refunds; charge it only for an undercount.
+            self.ctx.budget.reserve(max(0, usage.prompt - estimate))
+            self.ctx.budget.consume(usage.completion)
+        except (RuntimeError, ValueError):
+            raise StreamStopped("request_budget") from None
+        if usage.completion > request.max_output_tokens:
+            raise StreamStopped("output_budget")

@@ -5,8 +5,8 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 
 ## Current state
 
-- Last done: S07 (2026-11-04)
-- Next: S08 (needs S06 and S07, both done; plan first)
+- Last done: S08 (2026-11-04)
+- Next: S09 (needs S08, done)
 - Default answer mode: strict
 - Baseline (strict, before changes): paper 2610.40325, arie.yaml llm = deepseek, one run, 11 cases per variant.
   configured (reranker on): passed 9/11 (0.818), fact recall 0.688, evidence hit 0.625, grounded 1.0, median 6.18 s.
@@ -34,7 +34,10 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 - Pack sizes on the real library are not measured. The one attempt (a read-only script over `data/arie.db`) was blocked by the permission classifier, so the ADR makes no claim about how many papers fit under the 60% rule. Run `build_pack` over the INDEXED papers (or call `get_pack` once per paper) and record the token estimates against 64,000 and 128,000 before S08 relies on the whole-pack path. The 3 bytes per token estimate is conservative; real counts will be lower.
 - `arie.yaml` now holds the provider-documented windows (S07: deepseek-flash 1,000,000, gpt-5.4-mini 400,000, gemini-3.5-flash-lite 1,048,576). The code defaults in `manager.py` (deepseek 64,000, openai and gemini 128,000, other 32,000) stay conservative on purpose: they apply when a config sets no window, maybe for another model. With the documented windows the 60% rule only sends a paper to the paged pack above 240,000 tokens (openai) or 600,000 (the others), so the paged path will almost never run on real papers; S08's tests for it must set a small `context_tokens`.
 - Gemini streaming uses `:streamGenerateContent?alt=sse`. Google's current docs (moved to aistudio.google.com) did not confirm `alt=sse` for that endpoint (their text-generation guide shows the Interactions endpoint instead), and no test hit the real API. Make one live streaming call with a Gemini key before relying on it.
-- The plugins' `stream` has no first-token or stall limit of its own; only `ctx.deadline` and httpx's 23 s per-read timeout. S08's `ModelSession` adds the explain budgets.
+- The plugins' `stream` has no first-token or stall limit of its own; only `ctx.deadline` and httpx's 23 s per-read timeout. `ModelSession.stream` (S08) enforces the explain budgets around it.
+- S09 must give explain requests their own `BudgetHandle`. `context()` in `api/arie_api/runtime/base.py` gives 12,000 tokens, and its `max_wall_sec` is the request seconds, so a real pack fails with `request_budget`. Size it to `context_tokens` and at least 90 s.
+- The pack (and so the explain prompt) keeps chunks that strict mode drops with `is_untrusted_instruction`. The shared header tells the model to follow no instructions in the paper; nothing filters them.
+- `api/tests/test_answer_models.py::test_a_shared_pool_runs_both_real_models_in_one_process` fails when run straight after the core suite (`make check`: the first `entailment.scores` call at line 193 hits `TimeoutError` in `SupervisedPool.submit`), and passes alone in about 4 s. It fails the same way on the S07 commit with S08 stashed, so it predates S08. It is a cold-load race in a spawned worker; the fix is a longer first-call timeout in the test or a warm-up.
 - The pack text escapes literal markers (`[c12]` becomes `[\c12]`) and has no inverse. S10's quote check must compare against the raw chunk found by id and offsets, never against pack text.
 - The pack keeps every chunk that is not credits, a contents listing, references or acknowledgements, so equations and captions stay. The strict path's prose check (`_usable` in `research.py`) was not reused for that reason. `paper_eval.py` still has its own third copy of the section rules.
 - Gaps in `eligible`, which the pack inherits (found in the S06 review, not fixed because widening it also changes strict retrieval and needs an `arie-eval` run): a section headed "Bibliography", "Literature Cited" or "Reference" is kept; author, affiliation and e-mail blocks are kept unless they contain "equal contribution", "listing order is random" or "work performed while"; a chunk containing one of those phrases is dropped whole, body text included. Revisit after the pack-size measurement above shows real papers with these headings.
@@ -132,3 +135,13 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 - Checks: make check ✓ (275 core, 23 api, 55 contract) · make web-check n/a (no web, route or response-model change)
 - Open: see Open issues (Gemini `alt=sse` unconfirmed and untested live, no stream-level timeouts yet, paged pack rarely used at the new windows). No eval run: nothing calls `stream` yet.
 - Next: S08 (plan first).
+
+### S08: Explain harness core (2026-11-04)
+- Done: `prompts/explain.v1.yaml` (`shared_header`, `writer_rules`, `depth_words` brief 150 / standard 350 / detailed 800). `core/arie_core/harness/explain.py`: `load_explain_prompts`, `build_prompt` (pure; pack, rules, last 6 turns with markers stripped, then question and length line), `paged_pack`, `explain_answer` (async generator: `str` deltas, then `ExplainResult`). `ModelSession.stream` with `StreamBudget`/`EXPLAIN_BUDGET` (10 s first text, 15 s stall, 90 s total) and `StreamStopped(reason)`. SPEC §8.9 added; §1 I2/I3 and §4 updated.
+- Decisions: `paged_pack` takes `paper_id` first (I1). After abstract, introduction, conclusion and the `retrieve`-ranked sections, the rest fill in page order. It uses an upper bound per section, so it never exceeds `limit`. Depth goes in a length line after the question, so the prefix stays stable. History answers are capped at 4,000 characters. Modes: `explain`, `explain_partial`, `explain_failed`, `abstention`. The stall clock counts only provider time. Output with no reported usage is estimated from bytes.
+- Decisions: the `LLM.stream` protocol is now a plain `def` (the plugins are async generators; `async def` typed a call as a coroutine). Annotation only; no runtime or slot-version change, so no ADR. `ScriptedModel` moved to `core/tests/conftest.py` with real streaming. pyright gets an execution environment rooted at `core/tests` so `from conftest import` resolves.
+- Files: prompts/explain.v1.yaml, core/arie_core/harness/{explain,session}.py, core/arie_core/pipeline/pack.py (`pack_chunks`, `render_blocks`, `pack_header`, `pack_limit`; same bytes), core/arie_core/plugin_api/__init__.py, core/tests/{conftest,test_explain,test_pack,test_search_and_source_truth}.py, pyproject.toml, README.md, docs/SPEC.md
+- Checks: ruff ✓ · boundaries ✓ · pyright ✓ · core 291 ✓ · contracts 55 ✓ · api 22/23 under `make check` (the pre-existing real-model timeout in Open issues; 23/23 when the API suite runs alone) · make web-check n/a
+- Numbers: +16 core tests (15 explain, 1 pack header). No eval run; nothing calls `explain_answer` yet.
+- Open: see Open issues (S09 budget handle, untrusted-instruction chunks in the pack, the real-model test timeout).
+- Next: S09.

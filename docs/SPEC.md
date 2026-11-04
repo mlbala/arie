@@ -33,8 +33,8 @@ from that paper. Five invariants hold for all code, plugins included:
 | ID | Invariant | Where it is enforced |
 | --- | --- | --- |
 | I1 | **Paper isolation.** No other paper's text can reach an answer. | `paper_id` is bound in Python and never appears in model input or tool schemas. Every row from chunks, vectors, the reranker pool and history is filtered by `paper_id` again (`research.py`, `rerank.py`, `answer.py`, `vectors.semantic_search`). |
-| I2 | **No unverified claims.** Strict mode: every shown claim cites a quote that passes the verifier, or the answer abstains or falls back to exact excerpts. Explain mode ([ADR 0010](adr/0010-explain-mode-paper-in-the-prompt.md)) amends this: every sentence is cited or marked background, and every citation is checked. An unsupported sentence is flagged, not hidden. | Strict: `compose_answer` in `core/arie_core/harness/answer.py`. Explain: not built yet; the paper pack it reads is (`core/arie_core/pipeline/pack.py`). |
-| I3 | **Bounded execution.** Per question in strict mode: 3 reading steps, 3 model calls, 12,000 input tokens, 700 output tokens, 25 s. Explain mode has its own budgets (ADR 0010): one streaming call, 90 s, 600, 1,200 or 2,500 output tokens. | `BudgetHandle`, `ModelSession`, the route's `asyncio.timeout(25.0)` |
+| I2 | **No unverified claims.** Strict mode: every shown claim cites a quote that passes the verifier, or the answer abstains or falls back to exact excerpts. Explain mode ([ADR 0010](adr/0010-explain-mode-paper-in-the-prompt.md)) amends this: every sentence is cited or marked background, and every citation is checked. An unsupported sentence is flagged, not hidden. | Strict: `compose_answer` in `core/arie_core/harness/answer.py`. Explain: `explain_answer` in `core/arie_core/harness/explain.py` maps `[cN]` markers to chunks (no route yet, and the citation checks come in S10). |
+| I3 | **Bounded execution.** Per question in strict mode: 3 reading steps, 3 model calls, 12,000 input tokens, 700 output tokens, 25 s. Explain mode has its own budgets (ADR 0010): one streaming call, first text within 10 s, at most 15 s between texts, 90 s in all, 600, 1,200 or 2,500 output tokens (8.9). | `BudgetHandle`, `ModelSession` (`call`, and `stream` for explain mode), the route's `asyncio.timeout(25.0)` |
 | I4 | **Clean ingestion.** Source records are validated, downloads go only to declared hosts, PDFs are size- and type-checked, and writes are atomic. | `normalize_scraper_output`, `IngestionPipeline.download_pdf` |
 | I5 | **No vendor code in the core.** `arie_core` imports no SDK or plugin; plugins import only `arie_core.plugin_api` and `arie_core.contracts`. | `lint-imports` in `make check` |
 
@@ -144,7 +144,9 @@ Every call takes a `Ctx` first (`deadline` as a `time.monotonic()` value, `trace
 (`ARIE_ENTAILMENT_WORKER`, `ARIE_RERANK_WORKER`, `ARIE_EMBED_WORKER`, `ARIE_PDF_WORKER`)
 that only the worker function sets.
 
-**LLM streams end with usage.** `stream` yields `LLMDelta`s with the text as it arrives,
+**LLM streams end with usage.** `stream` is an async generator: calling it returns the
+iterator, not a coroutine, and the `LLM` protocol types it as a plain `def`. It yields
+`LLMDelta`s with the text as it arrives,
 then one final delta with `finish=True`, no text and `usage` (a `TokenUsage`). `usage` is
 `None` when the provider sent none (for example a compatible server that ignores
 `stream_options`). `complete` returns the same `TokenUsage` on its `LLMResponse`. The three
@@ -404,6 +406,64 @@ report it through the `EntailmentCheck` and `RerankCheck` callbacks).
 A Tier 3 fallback logs one WARNING line, `Tier 3 <reason> trace=<id> ...`, for
 `entailment_timeout`, `entailment_unavailable` (with the traceback) and
 `entailment_rejected` (with the claim count, best score and floor).
+
+### 8.9 Explain mode
+
+Explain mode ([ADR 0010](adr/0010-explain-mode-paper-in-the-prompt.md)) is built in core,
+with no route or UI yet. `explain_answer` in
+[core/arie_core/harness/explain.py](../core/arie_core/harness/explain.py) is an async
+generator. It yields text deltas (`str`), then one `ExplainResult`:
+
+1. **Guard.** `inspect_question` runs first. A blocked question yields only an `abstention`
+   result, with the guard's code and message and no model call.
+2. **Plan.** The depth comes from `plan_answer`; there is no LLM planner call. Earlier turns
+   whose question fails the guard are dropped.
+3. **Pack.** The whole stored pack is used when `pack_fits` (estimated tokens at most
+   `pack_share` of `context_tokens`). Otherwise `paged_pack` keeps the header (title,
+   abstract, full outline) and adds whole sections up to `pack_limit`: abstract,
+   introduction and conclusion first, then the sections of strict mode's `retrieve` hits in
+   rank order, then the rest in page order. A section that doesn't fit whole is skipped. A
+   paged pack depends on the question, so its prefix is not reused across turns.
+4. **Prompt.** `build_prompt` is pure:
+   - `system_prompt` is `shared_header` from `prompts/explain.v1.yaml`.
+   - `prompt` is the pack, then `writer_rules`, then up to 6 earlier turns (questions capped
+     at 700 characters, answers at 4,000, with `[cN]` stripped), then `Question:` and a length
+     line from `depth_words` (brief 150, standard 350, detailed 800 words).
+   - Two questions on one paper share every byte up to the turns. `paper_id` never enters
+     the prompt.
+5. **Stream.** `ModelSession.stream` makes the one call:
+   - **Output limit:** 600, 1,200 or 2,500 tokens by depth.
+   - **Input limit:** `context_tokens` minus the output limit.
+   - **Timing** (`EXPLAIN_BUDGET`): first text within 10 s, then at most 15 s of provider
+     time between texts (time the caller takes between pulls doesn't count), 90 s in all,
+     capped by `ctx.deadline`. Deltas without text don't count as progress.
+   - **Tokens** come from the final delta's `usage` (prompt, completion, cache hit and
+     miss). Without one, input stays at its estimate and output is estimated from the text.
+6. **Result.**
+   - `[cN]` markers that name a chunk in the pack the model saw become
+     `ExplainCitation(N, "<paper_id>:N")`, unique, in order of first use. Any other marker is
+     listed in `unknown_markers`.
+   - The trace records stages `plan`, `read` (paged pack only) and `write` (the stream, as
+     wall time), with `prompt_version` `explain.v1`.
+
+| `mode` | Meaning |
+| --- | --- |
+| `explain` | The stream finished. |
+| `explain_partial` | Text arrived, then the call stopped. The text so far is kept. |
+| `explain_failed` | The call stopped before any text. |
+| `abstention` | The guard blocked the question. |
+
+`fallback_reason` on a stop:
+
+| Reason | When |
+| --- | --- |
+| `first_token_timeout`, `stall_timeout`, `total_timeout` | The timing budget above ran out. |
+| `input_budget` | The estimated input is over the limit. No call is made. |
+| `output_budget` | More than 8 bytes per output token were streamed, or the reported completion is over the limit. |
+| `request_budget` | `ctx.budget` refused the tokens. |
+| `model_unavailable`, `call_budget` | No model is set, or this session already streamed. |
+| `unexpected_tools` | A delta carried tool calls. |
+| A `failure_reason` | A provider error, for example `provider_http_429`. |
 
 ## 9. Worker pools
 
