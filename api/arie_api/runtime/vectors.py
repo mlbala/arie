@@ -31,10 +31,10 @@ from arie_api.runtime.base import (
     context,
     logger,
 )
-from arie_api.runtime.library import LibraryStore
+from arie_api.runtime.packs import PaperPacks
 
 
-class VectorIndex(LibraryStore):
+class VectorIndex(PaperPacks):
     """The vector index: embedder choice, background indexing and semantic search."""
 
     def __init__(self, root: Path, config: ArieConfig | None = None) -> None:

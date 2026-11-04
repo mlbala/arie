@@ -32,6 +32,7 @@ from arie_api.providers import (
 from arie_api.runtime.base import (
     Document,
     context,
+    logger,
 )
 from arie_api.runtime.vectors import VectorIndex
 
@@ -505,6 +506,13 @@ class SyncJobs(VectorIndex):
                 status_reason="PDF extracted and indexed",
             )
             await self.save_paper(document)
+            try:
+                await self.ensure_pack(document)
+            except Exception:
+                # The paper is indexed; the pack is built on first use instead.
+                logger.warning(
+                    "Could not build the paper pack for %s", paper.paper_id, exc_info=True
+                )
             self.vector_wakeup.set()
             job["indexed"] += 1
         except Exception as exc:

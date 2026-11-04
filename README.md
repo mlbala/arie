@@ -483,8 +483,9 @@ evidence, unless it passes the verifier.
 | Section | Purpose |
 | --- | --- |
 | `plugins` | Which plugin fills each slot, plus constructor keys. |
-| `llm_providers` | Default model, key variable and optional `base_url` per LLM plugin. |
+| `llm_providers` | Default model, key variable, optional `base_url` and optional `context_tokens` (the context window explain mode plans for; defaults are 64,000 for DeepSeek and 128,000 for OpenAI and Gemini) per LLM plugin. |
 | `embedding_providers` | Default model, similarity floor and key variable per embedder. |
+| `explain` | `max_pack_share` (default 0.6): the whole paper goes in the prompt only if its estimated tokens are at most this share of the model's `context_tokens` ([ADR 0010](docs/adr/0010-explain-mode-paper-in-the-prompt.md)). Explain mode itself is not built yet. |
 | `sync` | Default sync window and limits (see [Sync](#sync)). |
 | `runtime_qos` | `utility_worker_processes` (PDF workers, capped to the CPUs), `slow_callback_threshold_ms` (event-loop lag warning) and `shared_model_worker` (default `true`: the claim checker and reranker share one process; `false` gives each its own). Older files may still carry `use_uvloop`, `user_initiated_override_concurrency`, `background_pdf_stream_concurrency` and `arxiv_rate_limit_delay_sec`; they are ignored and logged as deprecated. uvloop is chosen by the uvicorn `--loop` flag and arXiv spacing is fixed at 3 s. |
 
