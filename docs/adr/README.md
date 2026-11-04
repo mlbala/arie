@@ -14,6 +14,7 @@ superseded instead of rewriting it.
 | [0006](0006-background-cpu-priority.md) | Background workers run at lower CPU priority | Accepted |
 | [0007](0007-cross-encoder-reranker.md) | A local cross-encoder reranker picks each answer's passages | Accepted, amended by 0009 |
 | [0008](0008-model-led-planning-and-conditional-review.md) | The planner decides the question type, and review runs when it adds a check | Accepted, amended by 0010 |
-| [0009](0009-one-model-pool-shared-answer-worker.md) | One generic model pool, with the answer models in one worker | Accepted |
+| [0009](0009-one-model-pool-shared-answer-worker.md) | One generic model pool, with the answer models in one worker | Accepted, amended by 0012 |
 | [0010](0010-explain-mode-paper-in-the-prompt.md) | Explain mode puts the whole paper in the prompt and checks citations after streaming | Accepted, amended by 0011 |
 | [0011](0011-no-local-grounding-model.md) | Explain mode adds no local grounding model; the LLM judge checks every cited sentence | Accepted |
+| [0012](0012-foreground-gate-and-answer-worker-defaults.md) | Questions go first: a foreground gate, split answer workers on small hosts, and no reranking behind an abandoned call | Accepted |

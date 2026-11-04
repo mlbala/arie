@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,51 @@ def config(shared: bool = True, **plugins: object) -> ArieConfig:
     return ArieConfig(
         runtime_qos=RuntimeQoSConfig(shared_model_worker=shared), plugins=dict(plugins)
     )
+
+
+def test_an_unset_worker_choice_splits_the_slots_on_a_host_with_two_cpus_or_fewer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugins: dict[str, object] = {"entailment": ENTAIL, "reranker": RERANK}
+    unset = ArieConfig(plugins=plugins)  # shared_model_worker not set
+    assert unset.runtime_qos.shared_model_worker is None
+    cpus = {"count": 2}
+    monkeypatch.setattr("arie_core.registry.manager.os.process_cpu_count", lambda: cpus["count"])
+    small = AnswerModels(ROOT, unset)
+    cpus["count"] = 4
+    large = AnswerModels(ROOT, unset)
+    forced = AnswerModels(
+        ROOT, ArieConfig(runtime_qos=RuntimeQoSConfig(shared_model_worker=True), plugins=plugins)
+    )
+    cpus["count"] = 2
+    forced_small = AnswerModels(
+        ROOT, ArieConfig(runtime_qos=RuntimeQoSConfig(shared_model_worker=True), plugins=plugins)
+    )
+    try:
+        assert len(small.pools) == 2 and len(large.pools) == 1
+        assert len(forced.pools) == 1 and len(forced_small.pools) == 1  # an explicit true wins
+    finally:
+        for models in (small, large, forced, forced_small):
+            models.close()
+
+
+@pytest.mark.asyncio
+async def test_a_model_is_busy_while_its_worker_still_runs_an_abandoned_call() -> None:
+    models = AnswerModels(ROOT, config(reranker=RERANK))
+    reranker = models.get("reranker")
+    assert reranker is not None
+    try:
+        await reranker.model.pool.submit(30.0, os.getpid)  # start the worker first
+        assert not reranker.busy
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.2):
+                await reranker.model.pool.submit(30.0, time.sleep, 0.8)
+        assert reranker.busy  # the caller left; the worker has not finished
+        await reranker.model.pool.submit(30.0, os.getpid)  # queues behind it, so it has ended
+        await asyncio.sleep(0.05)
+        assert not reranker.busy
+    finally:
+        models.close()
 
 
 def test_slots_share_one_worker_by_default_and_split_when_configured() -> None:

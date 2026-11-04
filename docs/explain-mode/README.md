@@ -36,7 +36,7 @@ Size: S fits easily in one sitting, M is a normal session, L may need a second s
 | S13 | LLM judge, eval metrics, default switch, gate 2 | S12, S05 | M | | done |
 | S14 | Paper guide and section summaries, gate 3 | S10 | L | API + web | done |
 | S15 | Feedback loop, gate 4 | S13 | M | API + web | done |
-| S16 | Foreground lane and answer workers | S03 | M | Optional | todo |
+| S16 | Foreground lane and answer workers | S03 | M | Optional; eval check open, needs the 2-vCPU host (PROGRESS) | done |
 | S17 | Prompt optimization with GEPA | S15 | M | Optional | todo |
 
 Sessions whose Needs are done can run in any order. S02, S03 and S07 are good picks

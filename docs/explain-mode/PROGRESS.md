@@ -5,8 +5,9 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 
 ## Current state
 
-- Last done: S15 (2026-11-04): reasons on thumbs-down, implicit negatives, feedback key-fact form, judge agreement; gate 4 not yet read (needs 30 rated answers)
-- Next: see `docs/explain-mode/README.md` (S16 and S17 are optional)
+- Last done: S16 (2026-11-04): foreground gate, split answer workers on hosts with 2 CPUs or fewer, rerank skipped behind an abandoned call (ADR 0012). The "fewer `entailment_timeout`" check is not shown: 0 before and 0 after on an 8-CPU Mac, so it needs the 2-vCPU host.
+- Before that: S15 (2026-11-04): reasons on thumbs-down, implicit negatives, feedback key-fact form, judge agreement; gate 4 not yet read (needs 30 rated answers)
+- Next: see `docs/explain-mode/README.md` (S17 is optional)
 - Default answer mode: strict
 - Baseline (strict, before changes): paper 2610.40325, arie.yaml llm = deepseek, one run, 11 cases per variant.
   configured (reranker on): passed 9/11 (0.818), fact recall 0.688, evidence hit 0.625, grounded 1.0, median 6.18 s.
@@ -22,6 +23,8 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 
 ## Open issues
 
+- S16's Done-when check (fewer `entailment_timeout` fallbacks with `--compare-reranker` than S00) is open. S00 recorded no fallback reasons (traces came in S01), and on this 8-CPU Mac the pre-S16 and S16 code both had 0 `entailment_timeout`, rerank at 1.6-1.7 s mean (budget 3 s) and `rerank_skipped_busy` false on all 22 cases. The effect needs the Docker host with 2 vCPUs: run `make eval-paper PAPER=2610.40325 ARGS="--compare-reranker"` there before and after, or set `runtime_qos.shared_model_worker: true` there to get the old behaviour for the baseline.
+- The foreground gate has no timeout, so a run of back-to-back questions (an evaluation) holds back sync parsing, embedding and guide builds until it ends. `rerank_skipped_busy` is in the trace and the saved turn but the `EvaluationPanel` does not show it, and the summary has no count of it. `os.process_cpu_count()` sees CPU affinity, not a Docker `--cpus` quota (ADR 0012).
 - Judge agreement covers only explain answers: the judge's verdict is the saved `judge` event, and strict answers have none. While `answer.default_mode` is `strict`, most ratings are unjudged (the block says how many), and "per task" is nearly one row, since every explain answer has task `explain`. Reading gate 4 may need either explain as the default or a judge call on a rated strict answer (needs its own decision; the support judge reads a paper pack, so it does not fit a strict answer as it is).
 - "Judge approves" is defined as no `unsupported` cited sentence in a `complete` judgement (`partial` counts as support). The session file did not say; a stricter rule (no `partial` either) would lower agreement. Revisit once there are ratings to compare.
 - The implicit-negative rules (`implicit_negative`) were tested on about 30 phrasings and never on real chats. `asked_again` only matches at the start of a question and `said_wrong` skips questions that open with a question word. False-positive rate unmeasured; read the panel's "questioned" list for a while before trusting it.
@@ -248,3 +251,11 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 - Numbers: none; gate 4 needs 30 rated answers (see Current state).
 - Next: per README.
 
+### S16: Foreground lane and answer workers (2026-11-04)
+- Done: `ForegroundGate` (`arie_core.sched`, held as `RuntimeBase.foreground`) replaces S14's `answering()` counters. Every answer and explain stream holds it; PDF parse (`SyncJobs.parse_pdf`), each embedding batch, the embedder warm-up, the removal of old vectors and each guide build wait on it before starting. `semantic_search` never waits. `SupervisedPool.abandoned_calls` counts calls a caller gave up on; `AnswerModel.busy` reads it; `answer_question(rerank_busy=...)` skips reranking while it is above 0 and `AnswerTrace.rerank_skipped_busy` records it. `runtime_qos.shared_model_worker` is `bool | None`: unset means one worker above 2 CPUs, one per model at 2 or fewer.
+- Decisions: the gate waits without a timeout (questions are bounded at 95 s); an explicit `shared_model_worker` always wins; "busy" means an abandoned call only, not a call another question is still waiting on, as the session file said. ADR 0012 amends 0009.
+- Files: core/arie_core/{sched/__init__,registry/manager,harness/{trace,session,orchestrator}}.py, worker/arie_worker/pool.py, api/arie_api/{models,runtime/{base,chat,guides,sync,vectors}}.py, tests (core test_foreground_gate new, test_worker_pool, test_rerank_and_review, test_pack_storage, test_vector_search; api test_answer_models), docs/adr/{0012,README}, docs/SPEC.md (§3, §8.5, §8.8, §8.10, §9, §13.4), README.md, .claude/skills/arie-session/reference.md
+- Checks: make check ✓ (core 431, api 55, contracts 58) · make web-check n/a (`generate:api` ran, no diff)
+- Numbers: `make eval-paper PAPER=2610.40325 ARGS="--compare-reranker"`, deepseek, one run each, same day, 8-CPU Mac, shared worker. Before (HEAD, S15): configured passed 9/11, fallbacks {question_not_answered: 1}, median 4.71 s; no_reranker 11/11, no fallbacks, median 3.88 s. After (S16): configured 9/11, {question_not_answered: 1}, median 6.11 s; no_reranker 10/11, no fallbacks, median 2.89 s. `entailment_timeout`: 0 before, 0 after. S00 baseline: configured 9/11, no_reranker 11/11, no reasons recorded.
+- Open: the eval check above needs the 2-vCPU host; gate has no timeout; panel does not show `rerank_skipped_busy` (see Open issues).
+- Next: S17 (optional).

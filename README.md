@@ -490,7 +490,7 @@ evidence, unless it passes the verifier.
 | `judge` | `chat` (`all`, the default, or `off`): whether each explain answer's cited sentences are judged in the chat with one extra model call on the writer's provider. Evaluations always judge. |
 | `eval` | `judge_provider` (an `llm_providers` name): the provider that compares explain with strict in evaluations. Unset, it is another provider whose key is set, else the writer's. |
 | `sync` | Default sync window and limits (see [Sync](#sync)). |
-| `runtime_qos` | `utility_worker_processes` (PDF workers, capped to the CPUs), `slow_callback_threshold_ms` (event-loop lag warning) and `shared_model_worker` (default `true`: the claim checker and reranker share one process; `false` gives each its own). Older files may still carry `use_uvloop`, `user_initiated_override_concurrency`, `background_pdf_stream_concurrency` and `arxiv_rate_limit_delay_sec`; they are ignored and logged as deprecated. uvloop is chosen by the uvicorn `--loop` flag and arXiv spacing is fixed at 3 s. |
+| `runtime_qos` | `utility_worker_processes` (PDF workers, capped to the CPUs), `slow_callback_threshold_ms` (event-loop lag warning) and `shared_model_worker` (unset: the claim checker and reranker share one process on a host with more than 2 CPUs and get one each at 2 or fewer; `true` or `false` overrides, [ADR 0012](docs/adr/0012-foreground-gate-and-answer-worker-defaults.md)). Older files may still carry `use_uvloop`, `user_initiated_override_concurrency`, `background_pdf_stream_concurrency` and `arxiv_rate_limit_delay_sec`; they are ignored and logged as deprecated. uvloop is chosen by the uvicorn `--loop` flag and arXiv spacing is fixed at 3 s. |
 
 Keys for the local-model plugins:
 
@@ -540,8 +540,9 @@ To make ARIE lighter:
   embedding model.
 - Keep `threads: 1` on local models so one question uses about one core.
 - Lower `runtime_qos.utility_worker_processes` to run fewer PDF workers at once.
-- Keep `runtime_qos.shared_model_worker: true` (the default) and leave `memory_arena`
-  off on the ONNX plugins ([ADR 0009](docs/adr/0009-one-model-pool-shared-answer-worker.md)).
+- Leave `runtime_qos.shared_model_worker` unset (one worker above 2 CPUs, which saves
+  about 10% memory; two at 2 CPUs or fewer, so a slow reranker cannot delay the claim
+  check) and leave `memory_arena` off on the ONNX plugins ([ADR 0009](docs/adr/0009-one-model-pool-shared-answer-worker.md)).
 - Set `reranker: {use: none}` to drop the reranker; answers then use keyword and
   vector order.
 - Set `entailment: {use: none}` only on very small machines: claims then rest on quote

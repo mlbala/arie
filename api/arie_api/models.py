@@ -2,9 +2,11 @@
 
 Each slot in ``ANSWER_SLOTS`` is read from ``plugins.<slot>`` in arie.yaml, warmed at
 startup, retried while it fails to load, and reported in the storage and health pane.
-By default every slot shares one worker process (``runtime_qos.shared_model_worker``),
-so the Python and ONNX Runtime overhead is paid once. Adding a local model slot is one
-``AnswerSlot`` entry here plus the harness hook that consumes its scores.
+On a host with more than 2 CPUs every slot shares one worker process by default
+(``runtime_qos.shared_model_worker``), so the Python and ONNX Runtime overhead is paid once;
+on a smaller host each slot gets its own, so a slow reranker never queues the claim check.
+Adding a local model slot is one ``AnswerSlot`` entry here plus the harness hook that
+consumes its scores.
 """
 
 from __future__ import annotations
@@ -115,6 +117,14 @@ class AnswerModel:
         self._record(started, "")
         return result
 
+    @property
+    def busy(self) -> bool:
+        """Whether the model's worker still runs or queues a call its caller gave up on.
+
+        A new call would queue behind it and spend its own timeout waiting (SPEC section 13.2).
+        """
+        return self.model.pool.abandoned_calls > 0
+
     def _record(self, started: float, error: str) -> None:
         """Note one call's latency and outcome; an empty ``error`` means it succeeded."""
         self.last_latency = time.monotonic() - started
@@ -152,7 +162,7 @@ class AnswerModels:
     """Every configured answer-path model, sharing one worker unless configured apart."""
 
     def __init__(self, root: Path, config: ArieConfig) -> None:
-        shared = config.runtime_qos.shared_model_worker
+        shared = config.runtime_qos.shares_model_worker()
         shared_pool = ModelPool(root, "Answer models") if shared else None
         self.pools: list[ModelPool] = [shared_pool] if shared_pool else []
         self.models: dict[str, AnswerModel] = {}

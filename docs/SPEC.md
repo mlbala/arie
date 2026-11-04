@@ -111,7 +111,7 @@ deprecation warning per file that still has them.
 | `judge` | `JudgeConfig`, `explain_events` | `chat` (`all` or `off`, default `all`): `all` judges every cited sentence of each explain answer in the chat with one extra call (8.9); `off` makes no judge call and sends no `judge` events. It is a chat switch only: evaluations always judge. YAML reads an unquoted `off` as false and `on` as true; both are accepted as `off` and `all`. |
 | `eval` | `EvalConfig`, `RuntimeBase.eval_judge_provider` | `judge_provider` (a key of `llm_providers`; default none): the LLM provider that judges explain against strict in evaluations (10). Unset, it is the first configured provider other than the writer's whose key is set, and the writer's own provider when there is none. |
 | `sync` | `SyncConfig` | Default window (`relative`, `year`, `month`, `since`, `range`), `batch_size`, `max_papers`. |
-| `runtime_qos` | `RuntimeBase`, `AnswerModels`, `routes.py` | `utility_worker_processes`, `slow_callback_threshold_ms` and `shared_model_worker`. arXiv spacing is fixed at 3 s in `wait_for_source_host`, and uvloop is chosen by the uvicorn `--loop` flag (section 12). |
+| `runtime_qos` | `RuntimeBase`, `AnswerModels`, `routes.py` | `utility_worker_processes`, `slow_callback_threshold_ms` and `shared_model_worker` (unset: one shared answer worker above 2 CPUs, one per model at 2 or fewer; `true` or `false` always wins, 9). arXiv spacing is fixed at 3 s in `wait_for_source_host`, and uvloop is chosen by the uvicorn `--loop` flag (section 12). |
 
 Settings saved from the UI (sync defaults, LLM provider, embedder) rewrite `arie.yaml`
 atomically: write a temporary file, validate the whole candidate, `fsync`, then
@@ -355,7 +355,10 @@ headings.
 Scores `(question; planner queries)` against every candidate's text, sorts by score
 (earlier-cited passages last on a follow-up), and reruns `select_rows`. It is not a tool
 call, so the 3-step limit is unaffected. With no reranker, or on any failure, the
-keyword/vector rows stand.
+keyword/vector rows stand. While the reranker's worker still runs a call its caller
+abandoned (`AnswerModel.busy`), reranking is skipped, because it would queue behind that
+call and take the claim check's time (S16, ADR 0012); the trace records
+`rerank_skipped_busy` and the `rerank` stage stays 0.0.
 
 ### 8.6 Write
 
@@ -410,6 +413,7 @@ the chat turn. Saved answers are never used as evidence later.
 | `prompt_version` | `name` and `version` of the prompt file, for example `qa.v1`; empty when no prompt was sent. |
 | `model` | The LLM plugin's configured model name. |
 | `mode`, `fallback_reason` | Copied from the result. |
+| `rerank_skipped_busy` | `true` when reranking was skipped because the answer worker was busy with an abandoned call (8.5). `false` otherwise, and in traces saved before S16. |
 
 The trace is the `evaluation.trace` object of the SSE `answer` event, so it is also in
 the saved chat turn. It is the `trace` of each per-paper evaluation result and of each
@@ -623,9 +627,9 @@ The stored `PaperGuide` adds `markers` (chunk numbers its items cite), `dropped`
 **Building** (`PaperGuides` in
 [api/arie_api/runtime/guides.py](../api/arie_api/runtime/guides.py)). Sync queues a paper
 when it reaches `INDEXED` and wakes the guide builder. The builder takes queued papers one at
-a time and, before each, waits until no strict or explain answer is in flight
-(`answering()` wraps `answer_paper_question` and the explain stream, chat and evaluation
-alike). A failed guide is not stored and the paper stays queued; the builder retries it on
+a time and, before each, waits for the foreground gate: until no strict or explain answer
+is in flight (`ForegroundGate.hold()` wraps `answer_paper_question` and the explain stream,
+chat and evaluation alike; section 9). A failed guide is not stored and the paper stays queued; the builder retries it on
 its next wake-up, which is the next indexed paper or 5 minutes later. With no LLM key it
 builds nothing and retries the same way. The queue is in memory, so papers indexed before
 guides, or queued when the server stopped, get theirs from `make guides`
@@ -645,7 +649,7 @@ All CPU-heavy work runs in spawn-started processes managed by `SupervisedPool`
 | --- | --- | --- | --- | --- | --- |
 | PDF | `ExtractionPool` | `min(utility_worker_processes, CPUs)`, default 4 | nice 10 | 60 s per paper, 1.5 GB, recycle after 20 (parser may raise these) | kill pool |
 | Embedding | `ModelPool("Embedding")` | 1 | nice 10 | `kill_after` 60 s (indexing) or 6 s (query); 1.5 GB | keep running |
-| Answer models | `ModelPool("Answer models")` | 1, shared by entailment and reranker (`shared_model_worker: false` gives each its own) | nice 0 | `kill_after` 10 s per call (600 s for warm-up); 1.5 GB | keep running |
+| Answer models | `ModelPool("Answer models")` | 1, shared by entailment and reranker above 2 CPUs; one per model at 2 CPUs or fewer (`shared_model_worker` overrides either way) | nice 0 | `kill_after` 10 s per call (600 s for warm-up); 1.5 GB | keep running |
 
 `SupervisedPool.submit(kill_after, func, *args)`:
 
@@ -659,6 +663,19 @@ All CPU-heavy work runs in spawn-started processes managed by `SupervisedPool`
   the executor, and its own timeout covers that wait.
 - A `ModelPool` has one process, so calls are serialized. With the shared answer worker,
   an unfinished reranker call delays the next claim check, and the reverse.
+- `abandoned_calls` counts the calls a caller gave up on that the worker has not finished.
+  `AnswerModel.busy` reads it, and the answer path skips reranking while it is above 0
+  (8.5).
+
+**Foreground gate** (`ForegroundGate` in
+[core/arie_core/sched/__init__.py](../core/arie_core/sched/__init__.py), held in
+`RuntimeBase.foreground`; ADR 0012). Every answer or explain stream holds it for as long as
+it runs (`hold()`). Background submitters call `wait_quiet()` before they start new work:
+PDF parsing (`SyncJobs.parse_pdf`), each embedding batch, the embedder warm-up and the
+removal of a paper's old vectors (`VectorIndex.index_paper_vectors`, `run_vector_index`),
+and each guide build (`guide_pass`). Work already running is not interrupted, and a
+question's own query embedding (`semantic_search`) never waits. The gate has no timeout:
+background work resumes when no question is in flight.
 
 `AnswerModels` ([api/arie_api/models.py](../api/arie_api/models.py)) builds one
 `AnswerModel` per entry in `ANSWER_SLOTS`. `warm()` runs the slot's warm-up input until
@@ -1035,6 +1052,10 @@ Not implemented. In recommended order:
    `shared_model_worker` to `false` on small hosts (about 10% more memory per ADR 0009),
    or skip reranking when the answer worker is still busy with an abandoned call.
    Tier 3 matters more than reranking: without Tier 3 there is no written answer.
+   *Done (S16, ADR 0012, see 8.5 and 9): `shared_model_worker` defaults to separate
+   workers at 2 CPUs or fewer, reranking is skipped while the worker is busy with an
+   abandoned call (`rerank_skipped_busy`), and the foreground gate holds back PDF
+   parsing, embedding and guide builds while a question runs.*
 3. **Make reranking fit 3 s on 2 vCPUs.** Offer fewer candidates (`POOL_SIZE` 24 → 12),
    or a shorter `reranker.max_length` (512 → 256 tokens). Check the effect with
    **Also answer without the reranker**.

@@ -8,12 +8,14 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from arie_api.models import ANSWER_SLOTS, AnswerModel
 from arie_api.runtime import ResearchRuntime, context
 from arie_api.runtime import packs as packs_module
 from arie_core.pipeline.pack import PaperPack, escape_markers, marker_numbers
 from arie_core.plugin_api import ScrapedPaperInput
 from arie_core.registry.manager import ArieConfig
 from arie_core.registry.sync import SyncConfig
+from arie_worker.models import LocalModel
 from conftest import ScriptedModel
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -302,7 +304,7 @@ async def test_the_guide_builder_waits_while_an_answer_is_in_flight(
     try:
         await runtime.save_paper(document("first"))
         runtime.queue_guide("first")
-        with runtime.answering():
+        with runtime.foreground.hold():
             builder = asyncio.create_task(runtime.guide_pass())
             await asyncio.sleep(0.05)
             assert not builder.done() and model.requests == []  # skipped while answering
@@ -368,5 +370,69 @@ async def test_without_a_key_the_builder_waits_and_sync_queues_indexed_papers(
         await runtime.guide_pass()
         assert runtime.guide_pending == {"resumed": None}
         assert runtime.guide_errors == {"*": "model_unavailable"}
+    finally:
+        runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_pdf_parsing_waits_for_a_question_in_flight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = runtime_at(tmp_path)
+    parsed: list[str] = []
+
+    async def parse(file_path: str) -> Any:
+        parsed.append(file_path)
+        return "parsed"
+
+    monkeypatch.setattr(runtime.pool, "parse", parse)
+    try:
+        assert await asyncio.wait_for(runtime.parse_pdf("idle.pdf"), 1.0) == "parsed"
+        with runtime.foreground.hold():
+            task = asyncio.create_task(runtime.parse_pdf("busy.pdf"))
+            await asyncio.sleep(0.05)
+            assert parsed == ["idle.pdf"] and not task.done()  # held back, not killed
+        assert await asyncio.wait_for(task, 1.0) == "parsed"
+        assert parsed == ["idle.pdf", "busy.pdf"]
+    finally:
+        runtime.close()
+
+
+class BusyWorker:
+    """Stands in for a model pool whose worker still runs ``abandoned_calls`` abandoned calls."""
+
+    def __init__(self, abandoned_calls: int) -> None:
+        self.abandoned_calls = abandoned_calls
+
+    async def call(self, *args: object, **kwargs: object) -> object:
+        del args, kwargs
+        return [0.5, 0.4, 0.3]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("abandoned", [1, 0])
+async def test_a_question_skips_reranking_only_while_the_reranker_worker_is_busy(
+    tmp_path: Path, abandoned: int
+) -> None:
+    runtime = runtime_at(tmp_path)
+    await runtime.initialize()
+    try:
+        reranker = AnswerModel(
+            ANSWER_SLOTS[1], LocalModel(BusyWorker(abandoned), "reranker", "fake", {}), {}  # pyright: ignore[reportArgumentType]
+        )
+        reranker.ready = True
+        runtime.models.models["reranker"] = reranker
+        paper = document("first")
+        answer = await runtime.answer_paper_question(
+            context("chat:first", 10.0), paper, "How does the method improve accuracy?"
+        )
+        assert answer.answer.trace.rerank_skipped_busy is bool(abandoned)
+        if abandoned:
+            assert not answer.reading.reranked
+        skipped = await runtime.answer_paper_question(
+            context("chat:first", 10.0), paper, "How does the method improve accuracy?",
+            rerank=False,
+        )
+        assert not skipped.answer.trace.rerank_skipped_busy  # asked not to rerank: not "busy"
     finally:
         runtime.close()

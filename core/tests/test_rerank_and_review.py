@@ -138,6 +138,31 @@ async def test_orchestrator_reranks_before_writing() -> None:
     assert all(item.chunk_id != "c7" for item in run.answer.excerpts)
 
 
+@pytest.mark.asyncio
+async def test_orchestrator_skips_reranking_while_the_answer_worker_is_busy() -> None:
+    calls: list[str] = []
+
+    async def rerank(query: str, passages: Sequence[str]) -> list[float]:
+        calls.append(query)
+        return [0.5] * len(passages)
+
+    busy = await answer_question(
+        context("busy"), "paper", "What is this paper about?", rows(),
+        rerank=rerank, rerank_busy=lambda: True,
+    )
+    assert calls == [] and not busy.reading.reranked
+    assert busy.answer.trace.rerank_skipped_busy
+    assert busy.answer.trace.seconds.rerank == 0.0
+    assert busy.answer.excerpts  # the keyword and vector choice still answers
+
+    free = await answer_question(
+        context("free"), "paper", "What is this paper about?", rows(),
+        rerank=rerank, rerank_busy=lambda: False,
+    )
+    assert len(calls) == 1 and free.reading.reranked
+    assert not free.answer.trace.rerank_skipped_busy
+
+
 class Writer:
     """Draft claims citing passages by substring, then approve everything as the reviewer."""
 

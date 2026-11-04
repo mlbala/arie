@@ -1,17 +1,16 @@
 """Paper guides (S14): one cited reading guide per indexed paper, built in the background.
 
 Sync queues a paper when it reaches INDEXED. ``run_guides`` builds the queued guides one at a
-time, waits while any answer is in flight, and keeps a paper that failed queued, so it is
-retried on the next wake-up (the next indexed paper, or five minutes after a failure). Papers
-indexed before guides, or queued before a restart, get theirs from ``make guides``.
+time, waits for the foreground gate (no answer in flight) before each, and keeps a paper that
+failed queued, so it is retried on the next wake-up (the next indexed paper, or five minutes
+after a failure). Papers indexed before guides, or queued before a restart, get theirs from
+``make guides``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Generator
-from contextlib import contextmanager
 from typing import cast
 
 import msgspec
@@ -37,22 +36,6 @@ class PaperGuides(SyncJobs):
         """The LLM plugin for ``provider`` (default: the writer's), or ``None`` without a key."""
         llm = cast(LLM, self.instance("llm", provider))
         return llm if getattr(llm, "api_key", None) else None
-
-    @contextmanager
-    def answering(self) -> Generator[None]:
-        """Mark one answer in flight; the guide builder waits until none is."""
-        self.answers_active += 1
-        self.answers_quiet.clear()
-        try:
-            yield
-        finally:
-            self.answers_active -= 1
-            if not self.answers_active:
-                self.answers_quiet.set()
-
-    async def wait_until_quiet(self) -> None:
-        while self.answers_active:
-            await self.answers_quiet.wait()
 
     def queue_guide(self, paper_id: str) -> None:
         self.guide_pending[paper_id] = None
@@ -180,7 +163,7 @@ class PaperGuides(SyncJobs):
             return
         self.guide_errors.pop("*", None)
         for paper_id in list(self.guide_pending):
-            await self.wait_until_quiet()
+            await self.foreground.wait_quiet()
             try:
                 result = await self.build_guide(paper_id)
             except Exception as exc:
