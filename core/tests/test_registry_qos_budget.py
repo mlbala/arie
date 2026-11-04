@@ -235,8 +235,10 @@ def test_repo_arie_yaml_states_the_context_windows_and_pack_share() -> None:
     root = Path(__file__).resolve().parents[2]
     config = ArieConfig.from_yaml(root / "arie.yaml")
     assert {name: p.context_tokens for name, p in config.llm_providers.items()} == {
-        "deepseek": 64_000,
-        "openai": 128_000,
-        "gemini": 128_000,
+        # The windows the providers' docs state for deepseek-flash, gpt-5.4-mini and
+        # gemini-3.5-flash-lite (sources in docs/explain-mode/PROGRESS.md).
+        "deepseek": 1_000_000,
+        "openai": 400_000,
+        "gemini": 1_048_576,
     }
     assert config.explain.max_pack_share == 0.6

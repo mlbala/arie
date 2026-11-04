@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import time
@@ -18,6 +19,25 @@ from arie_core.plugin_api import (
     configured_api_key,
     plugin,
 )
+
+
+def _token_usage(usage: dict[str, Any]) -> TokenUsage:
+    """Chat Completions usage; the Responses API names its fields differently and is not used."""
+    prompt = int(usage.get("prompt_tokens", 0))
+    completion = int(usage.get("completion_tokens", 0))
+    raw_details = usage.get("prompt_tokens_details")
+    details: dict[str, Any] = (
+        cast(dict[str, Any], raw_details) if isinstance(raw_details, dict) else {}
+    )
+    cached = details.get("cached_tokens")
+    if cached is None:
+        # The server reports no cache numbers (some compatible servers do not), so a miss
+        # count would be a guess. Leave both at 0.
+        return TokenUsage(prompt=prompt, completion=completion)
+    hit = int(cached)
+    return TokenUsage(
+        prompt=prompt, completion=completion, cache_hit=hit, cache_miss=max(0, prompt - hit)
+    )
 
 
 @plugin(slot="llm", name="openai-compatible")
@@ -47,14 +67,9 @@ class OpenAICompatibleLLM:
     def supports_tool_calls(self) -> bool:
         return False
 
-    async def complete(self, ctx: Ctx, request: LLMRequest) -> LLMResponse:
-        if not self.api_key:
-            raise ValueError("OPENAI_API_KEY is not configured")
+    def _payload(self, request: LLMRequest, *, stream: bool) -> dict[str, Any]:
         if request.tools:
             raise ValueError("This adapter only supports bounded text requests without tools")
-        remaining = ctx.deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError("OpenAI request deadline has expired")
         messages = [{"role": "user", "content": request.prompt}]
         if request.system_prompt:
             messages.insert(0, {"role": "system", "content": request.system_prompt})
@@ -67,6 +82,26 @@ class OpenAICompatibleLLM:
             if official and re.match(r"(?:gpt-[5-9]|o\d)", self.model)
             else {"temperature": 0}
         )
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            token_field: min(700, request.max_output_tokens),
+            "response_format": {"type": "json_object"},
+            **sampling,
+        }
+        if stream:
+            payload["stream"] = True
+            # Without this the stream carries no usage at all.
+            payload["stream_options"] = {"include_usage": True}
+        return payload
+
+    async def complete(self, ctx: Ctx, request: LLMRequest) -> LLMResponse:
+        if not self.api_key:
+            raise ValueError("OPENAI_API_KEY is not configured")
+        payload = self._payload(request, stream=False)
+        remaining = ctx.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("OpenAI request deadline has expired")
         async with asyncio.timeout(remaining):
             async with httpx.AsyncClient(
                 timeout=min(23.0, remaining), follow_redirects=False
@@ -74,32 +109,56 @@ class OpenAICompatibleLLM:
                 response = await client.post(
                     self.base_url + "/chat/completions",
                     headers={"Authorization": f"Bearer {self.api_key}"},
-                    json={
-                        "model": self.model,
-                        "messages": messages,
-                        token_field: min(700, request.max_output_tokens),
-                        "response_format": {"type": "json_object"},
-                        **sampling,
-                    },
+                    json=payload,
                 )
                 response.raise_for_status()
                 body = cast(dict[str, Any], response.json())
         text = body["choices"][0]["message"]["content"]
         if not isinstance(text, str) or not text.strip():
             raise ValueError("OpenAI returned no text")
-        usage = body["usage"]
-        return LLMResponse(
-            text,
-            TokenUsage(
-                prompt=int(usage["prompt_tokens"]),
-                completion=int(usage["completion_tokens"]),
-                cache_hit=int(usage.get("prompt_tokens_details", {}).get("cached_tokens", 0)),
-            ),
-        )
+        return LLMResponse(text, _token_usage(body["usage"]))
 
     async def stream(self, ctx: Ctx, request: LLMRequest) -> AsyncIterator[LLMDelta]:
-        response = await self.complete(ctx, request)
-        yield LLMDelta(text=response.text, finish=True)
+        """Yield text deltas, then one final delta with the usage (None if none was sent)."""
+        if not self.api_key:
+            raise ValueError("OPENAI_API_KEY is not configured")
+        payload = self._payload(request, stream=True)
+        remaining = ctx.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("OpenAI request deadline has expired")
+        usage: TokenUsage | None = None
+        emitted = False
+        async with asyncio.timeout(remaining):
+            async with (
+                httpx.AsyncClient(timeout=min(23.0, remaining), follow_redirects=False) as client,
+                client.stream(
+                    "POST",
+                    self.base_url + "/chat/completions",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json=payload,
+                ) as response,
+            ):
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    chunk = cast(dict[str, Any], json.loads(data))
+                    # The usage arrives on its own chunk with an empty `choices`; every
+                    # other chunk has `"usage": null`.
+                    if isinstance(chunk.get("usage"), dict):
+                        usage = _token_usage(chunk["usage"])
+                    for choice in cast(list[dict[str, Any]], chunk.get("choices") or []):
+                        delta: dict[str, Any] = choice.get("delta") or {}
+                        text = delta.get("content")
+                        if isinstance(text, str) and text:
+                            emitted = True
+                            yield LLMDelta(text=text)
+        if not emitted:
+            raise ValueError("OpenAI returned no text")
+        yield LLMDelta(finish=True, usage=usage)
 
 
 @plugin(slot="llm", name="openai")

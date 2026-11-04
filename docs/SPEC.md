@@ -103,7 +103,7 @@ deprecation warning per file that still has them.
 | Section | Read by | Notes |
 | --- | --- | --- |
 | `plugins.<slot>` | `RuntimeBase.instance`, `AnswerModels`, `ExtractionPool`, `VectorIndex` | `use` names the plugin. Other keys go to its constructor, except the keys ARIE reads itself: `parser.timeout_sec/max_rss_mb/tasks_per_worker` (`ExtractionLimits`) and `entailment.min_score`. `path` and `root` are resolved against the project root. |
-| `llm_providers` | `LLMProviders` | Model, key variable and `base_url` per LLM plugin, and `context_tokens` (the window explain mode plans for; at least 4,096). Without it, `ArieConfig.context_tokens_for` uses deepseek 64,000, openai 128,000, gemini 128,000 and 32,000 for any other plugin, or for a provider that sets `base_url` (the endpoint may serve any model). The defaults are conservative guesses, not checked against provider documentation. |
+| `llm_providers` | `LLMProviders` | Model, key variable and `base_url` per LLM plugin, and `context_tokens` (the window explain mode plans for; at least 4,096). Without it, `ArieConfig.context_tokens_for` uses deepseek 64,000, openai 128,000, gemini 128,000 and 32,000 for any other plugin, or for a provider that sets `base_url` (the endpoint may serve any model). The defaults are conservative guesses, not checked against provider documentation. The repo's `arie.yaml` sets the windows the providers' docs state for its models: deepseek-flash 1,000,000, gpt-5.4-mini 400,000, gemini-3.5-flash-lite 1,048,576. |
 | `embedding_providers` | `resolve_embedder` | Model, cosine floor `min_score` and key variable per embedder. `embedder.use: auto` follows the LLM provider if it offers embeddings and its key is set, and otherwise uses `fastembed`. |
 | `explain` | `ExplainConfig`, `pack_fits` | `max_pack_share` (default 0.6, above 0 and at most 1): the whole paper pack is used when its estimated tokens are at most this share of `context_tokens` (ADR 0010). Nothing reads it yet. |
 | `sync` | `SyncConfig` | Default window (`relative`, `year`, `month`, `since`, `range`), `batch_size`, `max_papers`. |
@@ -143,6 +143,19 @@ Every call takes a `Ctx` first (`deadline` as a `time.monotonic()` value, `trace
 `budget`). Model plugins refuse to run outside a worker: each checks an environment flag
 (`ARIE_ENTAILMENT_WORKER`, `ARIE_RERANK_WORKER`, `ARIE_EMBED_WORKER`, `ARIE_PDF_WORKER`)
 that only the worker function sets.
+
+**LLM streams end with usage.** `stream` yields `LLMDelta`s with the text as it arrives,
+then one final delta with `finish=True`, no text and `usage` (a `TokenUsage`). `usage` is
+`None` when the provider sent none (for example a compatible server that ignores
+`stream_options`). `complete` returns the same `TokenUsage` on its `LLMResponse`. The three
+bundled providers fill `cache_hit` and `cache_miss` from their own fields, and leave both at
+0 when the provider reports no cache numbers:
+
+| Plugin | Streaming request | Cache fields |
+| --- | --- | --- |
+| `deepseek` | `stream: true`, `stream_options.include_usage` | `prompt_cache_hit_tokens`, `prompt_cache_miss_tokens` |
+| `openai`, `openai-compatible` (Chat Completions) | same | `prompt_tokens_details.cached_tokens` is the hit; the miss is `prompt_tokens` minus it, and both stay 0 if the server omits the field |
+| `gemini` | `:streamGenerateContent?alt=sse` | `usageMetadata.cachedContentTokenCount` is the hit; the miss is `promptTokenCount` (which includes the cached part) minus it |
 
 Only `llm` and `embedder` can be switched at runtime (`PUT /v1/plugins/{slot}`). Other
 slots need an `arie.yaml` edit and a restart.

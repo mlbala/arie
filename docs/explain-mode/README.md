@@ -27,7 +27,7 @@ Size: S fits easily in one sitting, M is a normal session, L may need a second s
 | S04 | Answer-level eval metrics | S01 | M | | done |
 | S05 | Qasper slice and strict baseline | S04 | M | Needs network and an LLM key | done |
 | S06 | ADR 0010, paper pack, context limits | S04 | M | **plan first** | done |
-| S07 | Streaming usage and cache stats in LLM plugins | S01 | M | | todo |
+| S07 | Streaming usage and cache stats in LLM plugins | S01 | M | | done |
 | S08 | Explain harness core | S06, S07 | L | **plan first** | todo |
 | S09 | Explain route, SSE events, eval variant | S08 | M | | todo |
 | S10 | Deterministic citation checks | S09 | M | | todo |
