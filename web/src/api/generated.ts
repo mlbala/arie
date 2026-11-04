@@ -258,6 +258,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/papers/{paper_id}/guide": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Guide
+         * @description The paper's cited guide, with a citation per marker, or its build status.
+         *
+         *     ``status`` is ``ready`` (``guide`` and ``citations`` set), ``pending`` (queued, or
+         *     failed and waiting for a retry; ``error`` names the last failure) or ``missing``.
+         */
+        get: operations["get_guide_v1_papers__paper_id__guide_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/papers/{paper_id}/override": {
         parameters: {
             query?: never;
@@ -1111,6 +1134,39 @@ export interface operations {
             path: {
                 paper_id: string;
                 run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_guide_v1_papers__paper_id__guide_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                paper_id: string;
             };
             cookie?: never;
         };

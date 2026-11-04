@@ -55,6 +55,11 @@ EXPLAIN_SECONDS = EXPLAIN_BUDGET.total + 5.0
 JUDGE_BUDGET = StreamBudget(first_token=15.0, stall=15.0, total=45.0)
 JUDGE_SECONDS = JUDGE_BUDGET.total + 5.0
 
+# The paper guide's one call per paper (S14): up to 2,500 output tokens, built in the
+# background, so it may take longer than an answer but never runs while one streams.
+GUIDE_BUDGET = StreamBudget(first_token=30.0, stall=20.0, total=150.0)
+GUIDE_SECONDS = GUIDE_BUDGET.total + 5.0
+
 
 class StreamStopped(Exception):
     """A streaming call stopped by its budget; ``reason`` is the fallback reason to record."""

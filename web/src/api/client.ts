@@ -298,6 +298,38 @@ export async function getChat(paperId: string, signal?: AbortSignal): Promise<{ 
   return requestJson(`/v1/papers/${encodeURIComponent(paperId)}/chat`, signal ? { signal } : {});
 }
 
+/** A term or an equation's symbol with its cited meaning. */
+export interface GuideTerm {
+  term: string;
+  meaning: string;
+}
+
+/** The paper's reading guide (S14). Every text but questions, terms and equations has markers. */
+export interface PaperGuide {
+  tldr: string;
+  problem: string;
+  method_steps: string[];
+  key_equations: { equation: string; meaning: string; symbols: GuideTerm[] }[];
+  results: string[];
+  limitations: string[];
+  glossary: GuideTerm[];
+  section_summaries: { section: string; summary: string }[];
+  suggested_questions: string[];
+}
+
+/** `ready` carries the guide and one citation per marker; `pending` is still being written. */
+export interface PaperGuideView {
+  paper_id: string;
+  status: "ready" | "pending" | "missing";
+  error?: string;
+  guide?: PaperGuide;
+  citations?: unknown[];
+}
+
+export async function getGuide(paperId: string, signal?: AbortSignal): Promise<PaperGuideView> {
+  return requestJson(`/v1/papers/${encodeURIComponent(paperId)}/guide`, signal ? { signal } : {});
+}
+
 export async function getSkippedPapers(): Promise<{ items: SkippedPaper[] }> {
   return requestJson(ROUTES.skips);
 }

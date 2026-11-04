@@ -5,8 +5,8 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 
 ## Current state
 
-- Last done: S13 (2026-11-04): LLM judge, `citation_support`, `win_rate`; gate 2 failed, default stays strict
-- Next: S14 (needs S10, done)
+- Last done: S14 (2026-11-04): paper guide, section summaries for the strict planner, guide as the chat's opening message; gate 3 recorded
+- Next: see `docs/explain-mode/README.md` (S14 was the last listed gate)
 - Default answer mode: strict
 - Baseline (strict, before changes): paper 2610.40325, arie.yaml llm = deepseek, one run, 11 cases per variant.
   configured (reranker on): passed 9/11 (0.818), fact recall 0.688, evidence hit 0.625, grounded 1.0, median 6.18 s.
@@ -16,9 +16,13 @@ Keep entries to 12 lines. Put numbers here, not in chat.
   fallbacks 9: entailment_rejected 5, incomplete_coverage 2, question_not_answered 2. Embedder was fastembed, not Gemini, so compare later runs only with the same embedder.
 - Gate 2 (S13, failed): citation support must be ≥ 90%. Explain, deepseek-flash, one run each: paper 2610.40325 0.859 (6 of 11 cases judged; 3 timed out at the first token, 2 were refusals), Qasper 30 0.881 (49 of 49 judged). The judge lowered it in 0 of 6 paper cases and 2 of 49 Qasper cases, so support is almost the deterministic valid rate (0.859, 0.885). Win rate against strict: 0.80 on 5 paper cases, 0.576 on 46 Qasper cases. Judge failures 0 of 55. Default stays `strict`.
 - Latest gate numbers: gate 1 (S11) passed on both sets, with first token measured on a Mac, not the 2-vCPU host. Explain vs strict, prose fact recall: paper 2610.40325 0.625 vs 0.562 (strict rerun in S11; 11 cases each); Qasper 30 0.391 vs 0.297 (S05). Explain fallbacks 0/11 and 0/49. Median first token 2.75 s and 1.20 s. Cache hit from the second question of each paper on: 0.998 and 0.974.
+- Gate 3 (S14): the judge prefers the new overview answers more than half the time. Strict overview answers with vs without guide section summaries, `judge_pairwise` both ways, abstract sentences as key facts, deepseek, one run: paper 2610.40325 win rate 1.0 (4 of 4 wins); Qasper first 6 papers 0.521 (24 cases: 6 wins, 13 ties, 5 losses); all 28: 0.589, 10 outright wins. Passes on win rate, not on outright wins.
 
 ## Open issues
 
+- Gate 3 is read two ways: win rate (ties 0.5) passes (0.589 overall, 0.521 on Qasper), outright wins (10 of 28) do not. One run, 7 papers, and 13 of 24 Qasper cases tie. Decide which reading the gate means before relying on it.
+- The guide queue is in memory: a paper queued when the server stops, or indexed before S14, has no guide until `make guides`. The guide's budget (`GUIDE_BUDGET`, 150 s, 2,500 tokens) has no ADR, following S13's judge; SPEC §1 I3 lists it.
+- The first guide of 2610.40325 hit the 2,500-token cap and was cut off mid-JSON; `guide.v1` now asks for at most 900 words, and a cut-off reply keeps its finished items (`truncated` in `dropped`). The rebuilt guide used 2,065 tokens and dropped 6 items.
 - Queue wait is not split from compute in the trace (`tier3` and `rerank` are totals). `SupervisedPool.submit` holds its lock for the whole call and a call queued behind an abandoned one waits inside the executor, so a split needs worker-side start times and a new way to report them through the `EntailmentCheck` and `RerankCheck` callbacks. Do it in S03 or later if the totals are not enough.
 - Baseline is one LLM run on 11 cases. The configured variant failed 2 fact cases (`question_not_answered`, `entailment_rejected`) that no_reranker passed, and one no_reranker case fell back with `TimeoutError` yet passed. Rerun before drawing conclusions about the reranker.
 - `IngestionPipeline.discover`, its `queue` and `max_queue_size` have no caller since S02 removed `run` (`sync.py` only uses `gate`, `download_pdf` and `parse_document`). Left in place because the session file did not list them; `test_research_runtime.py` uses a different `queue` (the sync job queue). Remove in a later cleanup.
@@ -219,3 +223,12 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 - Gate 2: FAIL (0.859 and 0.881 against 0.90). `answer.default_mode` and `DEFAULT_MODE` in the web stay `strict`.
 - Open: see Open issues (gate 2 and the judge's leniency, first-token timeouts, judge provider unrecorded, no judge display in the web, pairwise without the paper).
 - Next: S14.
+
+### S14: Paper guide, section summaries, gate 3 (2026-11-04)
+- Done: `prompts/guide.v1.yaml`, `harness/guide.py` (`write_guide`: one streamed call after the pack, shared header, 2,500-token cap; `validate_guide` keeps items that cite the pack and pass the S10 checks, drops the rest into `dropped`; a cut-off reply keeps its finished items). Table `arie_paper_guides(paper_id, revision, prompt_version, json)`; `PaperGuides` (`runtime/guides.py`): sync queues at INDEXED, `run_guides` builds one at a time after `answering()` clears, a failure stays queued (retry on next wake-up or 5 min). `make guides` (`build_guides.py`). `GET /v1/papers/{id}/guide`. Strict planner gets `{"section","summary"}` outline entries when a guide exists. Web: `PaperGuideMessage` opens the chat with page chips and suggested-question buttons; generic start while pending.
+- Decisions: the server builds guides only for papers it indexes (old papers use `make guides`); key order puts `suggested_questions` and `section_summaries` early so a cut-off loses the least useful parts; gate 3 runs strict with vs without guides (`eval_guides.py`), since the guide only changes the strict planner.
+- Files: prompts/guide.v1.yaml, core/arie_core/harness/{guide (new),planner,orchestrator,session}.py, api/arie_api/{build_guides,eval_guides (new),routes}.py, api/arie_api/runtime/{guides (new),__init__,base,chat,library,packs,sync}.py, Makefile, tests (core test_guide new, test_pack_storage, test_research_orchestration; api test_eval_guides new; web ChatWorkspace.test), web/src/{api/client.ts,api/generated.ts,guide.ts (new),components/{PaperGuide (new),ChatWorkspace}.tsx}, docs/SPEC.md (§1, §2, §5, §8.3, §8.10 new, §11), README.md
+- Checks: make check ✓ (core 378, api 47, contracts 58) · make web-check ✓ (58 vitest, +2) · `generate:api` run
+- Numbers: guide for 2610.40325 2,065 output tokens, 11.3 s, cache hit 138,752 of 139,389 prompt tokens; 6 Qasper guides all complete. Gate 3 under Current state.
+- Next: per README.
+

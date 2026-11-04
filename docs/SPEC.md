@@ -34,7 +34,7 @@ from that paper. Five invariants hold for all code, plugins included:
 | --- | --- | --- |
 | I1 | **Paper isolation.** No other paper's text can reach an answer. | `paper_id` is bound in Python and never appears in model input or tool schemas. Every row from chunks, vectors, the reranker pool and history is filtered by `paper_id` again (`research.py`, `rerank.py`, `answer.py`, `vectors.semantic_search`). |
 | I2 | **No unverified claims.** Strict mode: every shown claim cites a quote that passes the verifier, or the answer abstains or falls back to exact excerpts. Explain mode ([ADR 0010](adr/0010-explain-mode-paper-in-the-prompt.md)) amends this: every sentence is cited or marked background, and every citation is checked. An unsupported sentence is flagged, not hidden. | Strict: `compose_answer` in `core/arie_core/harness/answer.py`. Explain: `explain_answer` in `core/arie_core/harness/explain.py` maps `[cN]` markers to chunks; `check_answer` in `core/arie_core/harness/citations.py` judges every sentence (8.9), and the route reports each citation with `checked` true only if no sentence that cites it is flagged. |
-| I3 | **Bounded execution.** Per question in strict mode: 3 reading steps, 3 model calls, 12,000 input tokens, 700 output tokens, 25 s. Explain mode has its own budgets (ADR 0010): one streaming call, first text within 10 s, at most 15 s between texts, 90 s in all, 600, 1,200 or 2,500 output tokens (8.9). The judge (S13) is a second, separate request with its own context: one streaming call, first text within 15 s, at most 15 s between texts, 45 s in all, at most 3,000 output tokens (8.9). | `BudgetHandle`, `ModelSession` (`call`, and `stream` for explain mode and the judge), the route's `asyncio.timeout(25.0)`; explain requests use `explain_context` and `EXPLAIN_SECONDS`, the judge `JUDGE_BUDGET` and `JUDGE_SECONDS` (8.9) |
+| I3 | **Bounded execution.** Per question in strict mode: 3 reading steps, 3 model calls, 12,000 input tokens, 700 output tokens, 25 s. Explain mode has its own budgets (ADR 0010): one streaming call, first text within 10 s, at most 15 s between texts, 90 s in all, 600, 1,200 or 2,500 output tokens (8.9). The judge (S13) is a second, separate request with its own context: one streaming call, first text within 15 s, at most 15 s between texts, 45 s in all, at most 3,000 output tokens (8.9). The paper guide (S14) is one background call per paper with its own context: first text within 30 s, at most 20 s between texts, 150 s in all, 2,500 output tokens, and never while an answer is in flight (8.10). | `BudgetHandle`, `ModelSession` (`call`, and `stream` for explain mode and the judge), the route's `asyncio.timeout(25.0)`; explain requests use `explain_context` and `EXPLAIN_SECONDS`, the judge `JUDGE_BUDGET` and `JUDGE_SECONDS` (8.9), the guide `GUIDE_BUDGET` and `GUIDE_SECONDS` (8.10) |
 | I4 | **Clean ingestion.** Source records are validated, downloads go only to declared hosts, PDFs are size- and type-checked, and writes are atomic. | `normalize_scraper_output`, `IngestionPipeline.download_pdf` |
 | I5 | **No vendor code in the core.** `arie_core` imports no SDK or plugin; plugins import only `arie_core.plugin_api` and `arie_core.contracts`. | `lint-imports` in `make check` |
 
@@ -73,6 +73,7 @@ flowchart LR
 | Sync loop | `SyncJobs.run` | Takes sync job IDs from a queue (max 4) and runs one job at a time. |
 | Import loops (2) | `SyncJobs.run_imports` | Two concurrent loops, each importing one paper from a URL. |
 | Vector indexer | `VectorIndex.run_vector_index` | Embeds papers whose vectors are missing or stale. |
+| Guide builder | `PaperGuides.run_guides` | Writes the guide of each paper sync indexed, one at a time, waiting while an answer is in flight (8.10). |
 | Model warm-up | `AnswerModels.warm` | Loads the claim checker and reranker, retrying every 5 minutes on failure. |
 | Evaluation queue | `PaperEvaluations.serve` | Runs queued evaluations one at a time. |
 | Lag monitor | `EventLoopLagMonitor.run` | Logs a warning when the event loop is late by more than `slow_callback_threshold_ms`. |
@@ -180,6 +181,7 @@ these tables:
 | `arie_vector_index` | Per paper: which embedder model and paper revision its vectors were built with. |
 | `arie_chat_turns` | Saved answers exactly as streamed. Last 10 turns per paper, 10 most recent papers. |
 | `arie_paper_packs` | One row per indexed paper: `revision` (`<dedup_hash>:<chunk_count>:p1`), `text` (the paper pack, section 6.2) and `tokens` (its estimate). Built when the paper reaches `INDEXED`, or on first use for papers indexed earlier (`PaperPacks.get_pack`), rebuilt when the revision changes, deleted with the paper. |
+| `arie_paper_guides` | One row per paper with a guide: `revision` (the pack revision it was written from), `prompt_version` (`guide.v1`) and `json` (the validated `PaperGuide`, 8.10). A row whose revision or prompt version is not current is ignored (`PaperGuides.get_guide`) and replaced on the next build. Written by the guide builder or `make guides`, never on first use; deleted with the paper. |
 | `arie_sync_runs` | Sync and import job payloads, so a restart can offer resume. |
 | `arie_eval_cases`, `arie_eval_runs`, `arie_feedback`, `arie_feedback_facts` | Evaluation questions, the last 10 runs per paper, answer ratings, and the key facts attached to answers rated down. |
 
@@ -313,6 +315,10 @@ section names (all top-level sections first). It returns a `PlannerDraft`: `task
 `follow_up`. Extra fields or an unknown task are rejected. Over-long lists are trimmed,
 and section names not in the outline are dropped. The model's task label wins over
 keyword rules unless the label is broad (`answer`, `overview`, `synthesis`).
+When the paper has a current guide (8.10), each outline entry that the guide summarizes is
+sent as `{"section", "summary"}` (summary without markers, cut to 240 characters) in place of
+its bare name; the section names, and the rule that planned sections must be outline names,
+are unchanged (`plan_research(section_summaries=...)`).
 Explanatory tasks and overviews become `detailed` unless the user asked for a length.
 Without an LLM, `plan_answer` and keyword routes produce the plan
 (`planner_status: deterministic`).
@@ -583,6 +589,52 @@ cancel an answer that was already sent. The saved turn holds `delta`, `answer`, 
 stream. `done` comes after the judge, so the chat shows "Checking the citations" for a few
 seconds after the text is complete. Strict mode's events are unchanged.
 
+### 8.10 Paper guide
+
+A cited reading guide per paper (S14), the chat's opening message. `write_guide` in
+[core/arie_core/harness/guide.py](../core/arie_core/harness/guide.py) sends one streamed call:
+the explain shared header as system prompt, then the stored pack (a paged pack chosen for an
+overview question if the whole pack does not fit), then `guide_rules` from
+`prompts/guide.v1.yaml`, so the pack prefix is the writer's and the judge's and is served from
+the provider's cache. Output cap 2,500 tokens (`GUIDE_OUTPUT_TOKENS`), budget `GUIDE_BUDGET`.
+
+The reply is one JSON object: `tldr`, `suggested_questions` (5), `problem`,
+`section_summaries` (top-level outline heading → one sentence), `method_steps`, `results`,
+`key_equations` (`{equation, meaning, symbols: [{term, meaning}]}`), `limitations`,
+`glossary` (`{term, meaning}`). Words or a code fence around the object are ignored. A reply
+cut off by the output cap is cut back to its last complete value and closed, and `dropped`
+ends with `truncated`. Validation (`validate_guide`):
+
+- Every text but questions, terms and equations must cite a chunk of the pack the model saw
+  and pass the citation checks of 8.9 with no flagged sentence; an item that fails is
+  dropped and named in `dropped` (`results[1]`, `section_summaries[Appendix]`). An equation
+  is dropped if its meaning or any symbol's meaning fails.
+- Section summaries keep only headings in the pack's outline, in outline order.
+- Suggested questions pass the question guard, lose any markers, are de-duplicated and cut
+  to five.
+- A reply that is not JSON fails the guide (`malformed_output`); one with no cited item left
+  fails it too (`guide_empty`). A provider error or budget stop fails it with its reason.
+  `write_guide` never raises on a model failure.
+
+The stored `PaperGuide` adds `markers` (chunk numbers its items cite), `dropped`,
+`prompt_version` and `revision`.
+
+**Building** (`PaperGuides` in
+[api/arie_api/runtime/guides.py](../api/arie_api/runtime/guides.py)). Sync queues a paper
+when it reaches `INDEXED` and wakes the guide builder. The builder takes queued papers one at
+a time and, before each, waits until no strict or explain answer is in flight
+(`answering()` wraps `answer_paper_question` and the explain stream, chat and evaluation
+alike). A failed guide is not stored and the paper stays queued; the builder retries it on
+its next wake-up, which is the next indexed paper or 5 minutes later. With no LLM key it
+builds nothing and retries the same way. The queue is in memory, so papers indexed before
+guides, or queued when the server stopped, get theirs from `make guides`
+(`arie_api.build_guides`; `ARGS="<id> ..."` rebuilds named papers).
+
+**Gate 3** (`arie_api.eval_guides <id> ...`): each of four overview questions is answered in
+strict mode with and without the guide's section summaries (`guides=False`), and
+`judge_pairwise` compares the two, both ways round, with the abstract's first six sentences as
+key facts. `win_rate` is the guided answer's mean score (win 1, tie 0.5, loss 0).
+
 ## 9. Worker pools
 
 All CPU-heavy work runs in spawn-started processes managed by `SupervisedPool`
@@ -765,7 +817,12 @@ synthetic cases (`api/arie_api/eval_answers.py`).
 `answer.default_mode`); explain mode's events are in 8.9. Additional routes: `GET /v1/skips`
 (skipped, failed and quarantined papers), `PUT /v1/sync/settings`,
 `GET /v1/imports/{job}`, and `POST /v1/papers/{id}/override`, which ignores its body and
-starts a sync of the paper's source.
+starts a sync of the paper's source. `GET /v1/papers/{id}/guide` returns the paper's guide
+(8.10): `status` `ready` with `guide` and `citations` (one `{marker, chunk_id, page,
+char_start, char_end, checked: true}` per marker, as in 8.9), `pending` (queued, or waiting
+for a retry; `error` names the last failure) or `missing`. The web shows a ready guide as the
+chat's opening message, with page chips and its suggested questions as buttons, and keeps the
+generic suggestions otherwise.
 
 **Health**: `GET /v1/health` checks only that the database answers. `GET /v1/storage`
 (cached 15 s) reports database size and paper/chunk counts, PDF size and free disk,

@@ -14,7 +14,7 @@ import {
   ThumbsUp,
   X,
 } from "lucide-react";
-import { apiUrl, getChat, rateAnswer, type AnswerRating, type CitationRange, type PaperSummary } from "../api/client";
+import { apiUrl, getChat, getGuide, rateAnswer, type AnswerRating, type CitationRange, type PaperGuideView, type PaperSummary } from "../api/client";
 import {
   mergeSentences,
   normalizeCitations,
@@ -25,6 +25,7 @@ import {
 } from "../explanation";
 import { DEFAULT_MODE, type AnswerMode } from "../paperSessions";
 import { EvaluationPanel } from "./EvaluationPanel";
+import { PaperGuideMessage } from "./PaperGuide";
 
 export interface ChatProgress {
   stage: string;
@@ -232,6 +233,15 @@ function ChatPanel({
     }).catch(() => { /* Without saved history the chat simply starts empty. */ });
     return () => controller.abort();
   }, [paper.id]);
+  // The paper's reading guide opens the chat once it is written (built after indexing).
+  const [guide, setGuide] = useState<PaperGuideView | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    getGuide(paper.id, controller.signal).then(setGuide)
+      .catch(() => { /* Without a guide the chat opens with the generic suggestions. */ });
+    return () => controller.abort();
+  }, [paper.id, paper.status]);
+  const readyGuide = guide?.status === "ready" && guide.paper_id === paper.id ? guide.guide : undefined;
   const ready = paper.status === "INDEXED";
   const [showEvaluation, setShowEvaluation] = useState(false);
   const rate = (entry: ChatEntry, rating: AnswerRating, note = "") => {
@@ -390,7 +400,16 @@ function ChatPanel({
           aria-live="polite"
           aria-busy={isLoading}
         >
-          {!entries.length ? (
+          {readyGuide && (
+            <PaperGuideMessage
+              guide={readyGuide}
+              citations={normalizeCitations(guide?.citations)}
+              disabled={!ready || isLoading}
+              onAsk={(prompt) => void submitQuestion(prompt)}
+              onCitation={onCitation}
+            />
+          )}
+          {!entries.length && !readyGuide ? (
             <div className="conversation-start">
               <div className="assistant-avatar">
                 <Sparkles size={18} />
@@ -416,6 +435,9 @@ function ChatPanel({
                   </button>
                 ))}
               </div>
+              {guide?.status === "pending" && (
+                <p className="scope-note">The reading guide for this paper is being written.</p>
+              )}
               <span className="scope-note">
                 <ShieldCheck size={12} /> This conversation stays within one
                 paper.

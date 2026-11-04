@@ -1197,6 +1197,48 @@
         "summary": "Paper Evaluation Run"
       }
     },
+    "/v1/papers/{paper_id}/guide": {
+      "get": {
+        "description": "The paper's cited guide, with a citation per marker, or its build status.\n\n``status`` is ``ready`` (``guide`` and ``citations`` set), ``pending`` (queued, or\nfailed and waiting for a retry; ``error`` names the last failure) or ``missing``.",
+        "operationId": "get_guide_v1_papers__paper_id__guide_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "paper_id",
+            "required": true,
+            "schema": {
+              "title": "Paper Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Guide V1 Papers  Paper Id  Guide Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Guide"
+      }
+    },
     "/v1/papers/{paper_id}/override": {
       "post": {
         "operationId": "override_paper_v1_papers__paper_id__override_post",

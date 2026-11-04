@@ -2,13 +2,14 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { useReducer } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { ChatWorkspace } from "./ChatWorkspace";
-import { getChat, type CitationRange, type PaperSummary } from "../api/client";
+import { getChat, getGuide, type CitationRange, type PaperSummary } from "../api/client";
 import { EMPTY_SESSIONS, paperSessionsReducer } from "../paperSessions";
 
 // Saved history is fetched separately from the answer stream these tests script.
 vi.mock("../api/client", async (importOriginal) => ({
   ...await importOriginal<typeof import("../api/client")>(),
   getChat: vi.fn(async () => ({ turns: [] })),
+  getGuide: vi.fn(async () => ({ paper_id: "paper-1", status: "missing" })),
 }));
 
 const papers: PaperSummary[] = [
@@ -462,5 +463,56 @@ describe("explain answers", () => {
     render(<Chat onCitation={vi.fn()} />);
     expect(await screen.findByText("This explanation stopped before it finished.")).toBeInTheDocument();
     expect(screen.getByText(/Part of an answer/)).toBeInTheDocument();
+  });
+});
+
+describe("paper guide", () => {
+  const guide = {
+    tldr: "Cedar gates memory writes [c2].",
+    problem: "",
+    method_steps: ["Score each write [c4].", "Keep the best ones [c4]."],
+    key_equations: [{ equation: "s = W x", meaning: "The write score [c4].", symbols: [{ term: "W", meaning: "A weight matrix [c4]." }] }],
+    results: ["Accuracy rose to 68% [c2]."],
+    limitations: [],
+    glossary: [{ term: "write", meaning: "Storing an item [c2]." }],
+    section_summaries: [{ section: "Results", summary: "Cedar beats the baseline [c2]." }],
+    suggested_questions: ["How is the score trained?"],
+  };
+  const citations = [
+    { marker: 2, chunk_id: "paper-1:2", page: 3, char_start: 5, char_end: 60, checked: true },
+    { marker: 4, chunk_id: "paper-1:4", page: 4, char_start: 0, char_end: 40, checked: true },
+  ];
+
+  it("opens the chat with the cited guide and asks a suggested question", async () => {
+    vi.mocked(getGuide).mockResolvedValueOnce({ paper_id: "paper-1", status: "ready", guide, citations });
+    const fetcher = vi.fn().mockResolvedValue(new Response(""));
+    vi.stubGlobal("fetch", fetcher);
+    const onCitation = vi.fn();
+    render(<ChatWorkspace papers={papers} activePaperId="paper-1" onSelectPaper={vi.fn()}
+      onClosePaper={vi.fn()} onCitation={onCitation} />);
+
+    const opening = await screen.findByRole("article", { name: "Reading guide" });
+    expect(within(opening).getByText(/Cedar gates memory writes/)).toBeInTheDocument();
+    expect(within(opening).getByRole("heading", { name: "How it works" })).toBeInTheDocument();
+    expect(within(opening).getByText("s = W x")).toBeInTheDocument();
+    expect(within(opening).getByText("Results", { selector: "li strong" })).toBeInTheDocument();
+    // Other papers' panes stay mounted (hidden), so look only in this paper's log.
+    const log = opening.closest(".conversation-log") as HTMLElement;
+    expect(within(log).queryByText("What would you like to understand?")).not.toBeInTheDocument();
+
+    fireEvent.click(within(opening).getAllByRole("button", { name: "Source c4, page 4" })[0]!);
+    expect(onCitation).toHaveBeenCalledWith({ page_start: 4, char_start: 0, char_end: 40, chunk_id: "paper-1:4" });
+
+    fireEvent.click(within(opening).getByRole("button", { name: /How is the score trained\?/ }));
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(String(fetcher.mock.calls[0]![1].body))).toMatchObject({ question: "How is the score trained?" });
+  });
+
+  it("keeps the generic start while the guide is still being written", async () => {
+    vi.mocked(getGuide).mockResolvedValueOnce({ paper_id: "paper-1", status: "pending" });
+    render(<ChatWorkspace papers={papers} activePaperId="paper-1" onSelectPaper={vi.fn()}
+      onClosePaper={vi.fn()} onCitation={vi.fn()} />);
+    expect(await screen.findByText("The reading guide for this paper is being written.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /What is this paper about\?/ })).toBeInTheDocument();
   });
 });

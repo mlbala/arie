@@ -673,6 +673,7 @@ downloaded once into `data/eval/qasper/`. Needs network and an LLM key.
 | `GET /v1/papers`, `GET /v1/papers/{id}` | Library and one paper |
 | `POST /v1/papers/{id}/questions` | Ask a question; answers stream as server-sent events (`progress`, `answer`, `claim`, `abstention`, `done`, `error`). Body `mode` is `strict` (default) or `explain`, which streams `delta` text, then `citations`, `checks` (a verdict per sentence) and `judge` (the model's verdict per cited sentence, unless `judge.chat` is `off`) instead of `claim`s |
 | `GET /v1/papers/{id}/pdf`, `.../pages/{n}`, `.../chat` | Original PDF, extracted page, chat history |
+| `GET /v1/papers/{id}/guide` | The paper's cited reading guide (`ready`, `pending` or `missing`), shown as the chat's opening message |
 | `PUT /v1/papers/{id}/chat/{turn_id}/feedback` | Rate a saved answer `up`, `down` or `null`, with an optional note |
 | `PUT /v1/papers/{id}/chat/{turn_id}/feedback/facts` | Attach 1-3 key facts (and the paper sentence that holds them) to an answer rated down, so its question is scored in evaluations |
 | `GET /v1/papers/{id}/eval`, `POST .../eval/runs`, `GET .../eval/runs/{run}` | A paper's evaluation questions, runs and feedback; start a run (`mode` is `strict` or `explain`) |
@@ -692,6 +693,7 @@ downloaded once into `data/eval/qasper/`. Needs network and an LLM key.
 | `make eval-llm` | Source-grounding evaluation against the configured LLM |
 | `make eval-paper PAPER=<id>` | Evaluate answers on one ingested paper (see [Evaluate answers on one paper](#evaluate-answers-on-one-paper)) |
 | `make eval-qasper N=<papers>` | Import the first N Qasper dev papers and score strict answers to their questions |
+| `make guides` | Build missing paper guides one at a time (`ARGS="<id> ..."` rebuilds those papers); the server builds them only for papers it indexes |
 
 `make check` covers typo search, exact source offsets, cross-paper isolation,
 fabricated quotes, changed numbers, missing negation, unsupported paraphrases and
