@@ -57,12 +57,19 @@ async def answer_question(
     ``rerank`` is the cross-encoder that picks the final passages from the keyword and
     vector candidates; its failure or timeout keeps the keyword/vector choice.
     """
+    started = time.monotonic()
+    session = ModelSession(ctx, llm)
     guard = inspect_question(question)
     if not guard.allowed:
         return ResearchAnswer(
             plan_answer(question[:2000]),
             ReadingResult((), ()),
-            AnswerResult([], "abstention", fallback_reason=guard.code),
+            AnswerResult(
+                [],
+                "abstention",
+                fallback_reason=guard.code,
+                trace=session.trace("abstention", guard.code, time.monotonic() - started),
+            ),
             guard,
         )
     scoped = [
@@ -76,14 +83,17 @@ async def answer_question(
         for turn in history[-4:]
         if (decision := inspect_question(turn.question)).allowed
     )
-    session = ModelSession(ctx, llm)
-    plan, planner_status = await plan_research(
-        guard.question, safe_history, scoped, session, project_root
-    )
-    ranked = await _semantic_ranking(ctx, semantic, (plan.question, *plan.queries))
-    reading = read_for_answer(ctx, paper_id, plan, scoped, ranked)
+    with session.stage("plan"):
+        plan, planner_status = await plan_research(
+            guard.question, safe_history, scoped, session, project_root
+        )
+    with session.stage("vector"):
+        ranked = await _semantic_ranking(ctx, semantic, (plan.question, *plan.queries))
+    with session.stage("read"):
+        reading = read_for_answer(ctx, paper_id, plan, scoped, ranked)
     if rerank is not None:
-        reading = await rerank_reading(ctx, paper_id, plan, reading, rerank)
+        with session.stage("rerank"):
+            reading = await rerank_reading(ctx, paper_id, plan, reading, rerank)
     answer = await compose_answer(
         ctx,
         paper_id,
@@ -95,7 +105,11 @@ async def answer_question(
         entail=entail,
         entail_floor=entail_floor,
     )
-    return ResearchAnswer(plan, reading, answer, guard, planner_status)
+    # compose_answer traced the stages it ran; this trace adds the earlier ones and the total.
+    trace = session.trace(answer.mode, answer.fallback_reason, time.monotonic() - started)
+    return ResearchAnswer(
+        plan, reading, msgspec.structs.replace(answer, trace=trace), guard, planner_status
+    )
 
 
 async def _semantic_ranking(

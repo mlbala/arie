@@ -19,6 +19,7 @@ from arie_core.harness.paper_eval import (
     summarize,
 )
 from arie_core.harness.reader import EvidenceChunk, Excerpt
+from arie_core.harness.trace import AnswerTrace, StageSeconds
 from arie_core.plugin_api import LLM, Ctx
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -131,6 +132,15 @@ def fact_case() -> PaperEvalCase:
         char_end=row.char_end,
         key_facts=["62%", "68%"],
     )
+
+
+def test_a_scored_result_keeps_the_answer_trace() -> None:
+    row = ROWS[2]
+    trace = AnswerTrace(
+        seconds=StageSeconds(write=1.5, total=2.0), mode="reviewed_answer", model="m"
+    )
+    answer = AnswerResult([excerpt(row, 0, len(row.text))], "reviewed_answer", trace=trace)
+    assert score_case(fact_case(), ROWS, answer, seconds=2.0).trace == trace
 
 
 def test_scoring_checks_offsets_evidence_and_key_facts() -> None:

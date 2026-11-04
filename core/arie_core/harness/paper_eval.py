@@ -31,6 +31,7 @@ from arie_core.harness.reader import (
     prose_sentences,
 )
 from arie_core.harness.session import ModelSession
+from arie_core.harness.trace import AnswerTrace
 from arie_core.plugin_api import LLM, Ctx
 
 # Sentences offered to the generator, and the most cases it may return.
@@ -83,6 +84,7 @@ class PaperEvalResult(msgspec.Struct, frozen=True, kw_only=True):
     answer: str = ""
     cited_pages: list[int] = []
     error: str = ""
+    trace: AnswerTrace = AnswerTrace()
 
 
 def _normalize(text: str) -> str:
@@ -300,6 +302,7 @@ def score_case(
         fallback_reason=answer.fallback_reason,
         answer=" ".join(item.text for item in answer.excerpts)[:1200],
         cited_pages=sorted({item.page_start for item in answer.excerpts}),
+        trace=answer.trace,
     )
 
 

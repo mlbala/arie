@@ -102,6 +102,7 @@ async def plan_research(
     outline = tuple(section[:100] for section in sections if section in keep)[:18]
     try:
         playbook = await asyncio.to_thread(load_playbook, project_root)
+        session.prompt_version = playbook["version"]
         raw = await session.call(
             playbook["plan_system"],
             {

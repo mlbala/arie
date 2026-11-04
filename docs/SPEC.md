@@ -253,7 +253,7 @@ every step below sizes its own timeout from what remains.
 | 5 | Rerank | `rerank.rerank_reading` | `min(3, remaining − 14)`, skipped if ≤0.3 s | ≤24 candidates | Keep the keyword/vector reading. Logs `Reranker unavailable` with a trace. |
 | 6 | Write (LLM call 2) | `answer.compose_answer` | 13 s | 440 output tokens (600 if the planner made no call) | Exact excerpts (`invalid_draft`, `no_supported_draft`, a provider reason) or abstain (`not_in_paper`). |
 | 7 | Tier 1-2 and anchor checks | `locate_quote`, `preserves_anchors` | in-process | | Claim dropped. |
-| 8 | Tier 3 claim check | `EvidenceVerifier.tier_3_scores` | `min(4, remaining − 3)`, skipped if ≤0.2 s | | Exact excerpts with `entailment_timeout`, `entailment_unavailable` or `entailment_rejected`. **Not logged.** |
+| 8 | Tier 3 claim check | `EvidenceVerifier.tier_3_scores` | `min(4, remaining − 3)`, skipped if ≤0.2 s | | Exact excerpts with `entailment_timeout`, `entailment_unavailable` or `entailment_rejected`. Each is logged at WARNING with the trace id (8.8). |
 | 9 | Review (LLM call 3) | `answer.compose_answer` | 7 s | 100 output tokens | Exact excerpts with `invalid_review`, `question_not_answered`, `insufficient_detail`, `review_rejected`, `invalid_coverage` or `incomplete_coverage`. |
 
 Every LLM call goes through `ModelSession.call`, which admits a call only if the
@@ -353,10 +353,32 @@ duplicate, and its source supports at most 3 claims.
 | `abstention` | No claims: guard block, or writer returned none (`not_in_paper`). | 0-2 |
 
 The SSE stream sends `progress`, then `answer` (mode, heading, and an `evaluation`
-block with task, planner status, reading steps, `reranked`, model calls, claim counts and
-`fallback_reason`), one `claim` per excerpt (quote, citation offsets, `tier_checks`),
-`abstention` if empty, and `done` with token counts. The streamed events are saved as
+block with task, planner status, reading steps, `reranked`, model calls, claim counts,
+`fallback_reason` and the `trace`), one `claim` per excerpt (quote, citation offsets,
+`tier_checks`), `abstention` if empty, and `done` with token counts. The streamed events are saved as
 the chat turn. Saved answers are never used as evidence later.
+
+**Answer trace.** Every `AnswerResult` has a `trace` (`AnswerTrace` in
+[core/arie_core/harness/trace.py](../core/arie_core/harness/trace.py)), filled by
+`ModelSession.trace` along the path above and completed by `answer_question`:
+
+| Field | Content |
+| --- | --- |
+| `seconds` | `plan`, `vector`, `read`, `rerank`, `write` (writer call), `tier3` (claim check), `review` (reviewer call) and `total`. A stage that did not run is 0.0. `total` is the whole answer, so it is at least the sum of the stages. |
+| `tokens` | Provider-reported `prompt`, `completion`, `cache_hit`, `cache_miss`, summed over the answer's model calls. |
+| `prompt_version` | `name` and `version` of the prompt file, for example `qa.v1`; empty when no prompt was sent. |
+| `model` | The LLM plugin's configured model name. |
+| `mode`, `fallback_reason` | Copied from the result. |
+
+The trace is the `evaluation.trace` object of the SSE `answer` event, so it is also in
+the saved chat turn. It is the `trace` of each per-paper evaluation result and of each
+fixed-case score. `tier3` and `rerank` are totals: time spent queued behind another call
+on the model worker is not split from compute (`SupervisedPool.submit` would have to
+report it through the `EntailmentCheck` and `RerankCheck` callbacks).
+
+A Tier 3 fallback logs one WARNING line, `Tier 3 <reason> trace=<id> ...`, for
+`entailment_timeout`, `entailment_unavailable` (with the traceback) and
+`entailment_rejected` (with the claim count, best score and floor).
 
 ## 9. Worker pools
 
@@ -567,10 +589,12 @@ Run these against the Docker stack before changing code:
 
 Not implemented. In recommended order:
 
-1. **Make the failure visible (do this regardless).** Log Tier 3 timeouts and errors.
-   Record per-stage timings in `AnswerResult`, including rerank time, Tier 3 queue
-   wait vs. compute, and writer time. Show `mode` and `fallback_reason` per case in
-   `EvaluationPanel`. Mark an answer model `degraded` after repeated consecutive timeouts.
+1. **Make the failure visible (do this regardless).** Log Tier 3 timeouts and errors,
+   and record per-stage timings, including rerank time, Tier 3 queue wait vs. compute,
+   and writer time. Show `mode` and `fallback_reason` per case in `EvaluationPanel`. Mark
+   an answer model `degraded` after repeated consecutive timeouts. *Done (S01, see 8.8):
+   the Tier 3 log lines and the per-answer trace, except the queue-wait split. Still open:
+   the queue-wait split, the `EvaluationPanel` columns and `degraded`.*
 2. **Stop the reranker from blocking the claim check.** Either default
    `shared_model_worker` to `false` on small hosts (about 10% more memory per ADR 0009),
    or skip reranking when the answer worker is still busy with an abandoned call.
