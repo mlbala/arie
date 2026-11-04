@@ -4,17 +4,17 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 from arie_core.budget import BudgetHandle
-from arie_core.registry.manager import PluginDefinition, RegistryManager
-from arie_core.sched import (
-    EventLoopLagMonitor,
-    QoS_Background,
-    QoS_UserInitiated,
-    QoSPriorityGate,
-    supervised,
+from arie_core.registry.manager import (
+    DEPRECATED_RUNTIME_QOS_KEYS,
+    ArieConfig,
+    PluginDefinition,
+    RegistryManager,
 )
+from arie_core.sched import EventLoopLagMonitor, supervised
 
 
 @dataclass
@@ -107,20 +107,6 @@ async def test_registry_hot_switch_keeps_inflight_requests() -> None:
 
 
 @pytest.mark.asyncio
-async def test_qos_priority_gate_orders_user_initiated_before_background() -> None:
-    gate = QoSPriorityGate(max_llm_concurrency=2)
-    background_task = asyncio.create_task(gate.acquire(QoS_Background))
-    await asyncio.sleep(0.05)
-    user_task = asyncio.create_task(gate.acquire(QoS_UserInitiated))
-    await asyncio.sleep(0.05)
-    assert gate.priority_for(QoS_UserInitiated) < gate.priority_for(QoS_Background)
-    assert gate._in_use.get(QoS_UserInitiated, 0) >= 1 or gate._in_use.get(QoS_Background, 0) >= 1  # pyright: ignore[reportPrivateUsage]
-    gate.release(QoS_Background)
-    await user_task
-    await background_task
-
-
-@pytest.mark.asyncio
 async def test_lag_monitor_runs_under_a_task_group_and_reports_blocking(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -148,3 +134,39 @@ async def test_lag_monitor_runs_under_a_task_group_and_reports_blocking(
             pass
     assert tasks[0].cancelled()
     assert any("Event loop lag" in record.message for record in caplog.records)
+
+
+def test_arie_yaml_with_retired_runtime_qos_keys_loads_and_warns_once(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    path = tmp_path / "arie.yaml"
+    path.write_text(
+        "runtime_qos:\n"
+        "  use_uvloop: true\n"
+        "  user_initiated_override_concurrency: 2\n"
+        "  background_pdf_stream_concurrency: 4\n"
+        "  arxiv_rate_limit_delay_sec: 3.0\n"
+        "  utility_worker_processes: 2\n",
+        encoding="utf-8",
+    )
+    with caplog.at_level(logging.WARNING, logger="arie_core.registry.manager"):
+        config = ArieConfig.from_yaml(path)
+    assert config.runtime_qos.utility_worker_processes == 2
+    warnings = [r.getMessage() for r in caplog.records if "deprecated" in r.getMessage()]
+    assert len(warnings) == 1
+    assert all(key in warnings[0] for key in DEPRECATED_RUNTIME_QOS_KEYS)
+    assert not hasattr(config.runtime_qos, "use_uvloop")
+
+
+def test_unknown_runtime_qos_key_is_still_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "arie.yaml"
+    path.write_text("runtime_qos:\n  worker_count: 2\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="worker_count"):
+        ArieConfig.from_yaml(path)
+
+
+def test_repo_arie_yaml_has_no_retired_runtime_qos_keys(caplog: pytest.LogCaptureFixture) -> None:
+    root = Path(__file__).resolve().parents[2]
+    with caplog.at_level(logging.WARNING, logger="arie_core.registry.manager"):
+        ArieConfig.from_yaml(root / "arie.yaml")
+    assert not [r for r in caplog.records if "deprecated" in r.getMessage()]

@@ -23,7 +23,7 @@ from typing import Protocol, TypeVar, cast
 import yaml
 from dotenv import load_dotenv
 from opentelemetry import metrics, trace
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from arie_core.budget import BudgetHandle
 from arie_core.events import EventBus
@@ -49,19 +49,35 @@ class PluginDefinition:
     factory: Callable[..., object] | None = None
 
 
+# Keys that were validated but never read. They are still accepted so existing arie.yaml
+# copies load; ``ArieConfig.from_yaml`` warns when a file has them.
+DEPRECATED_RUNTIME_QOS_KEYS = (
+    "use_uvloop",
+    "user_initiated_override_concurrency",
+    "background_pdf_stream_concurrency",
+    "arxiv_rate_limit_delay_sec",
+)
+
+
 class RuntimeQoSConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    use_uvloop: bool = True
     slow_callback_threshold_ms: float = 15.0
-    user_initiated_override_concurrency: int = 2
     utility_worker_processes: int = 4
-    background_pdf_stream_concurrency: int = 4
-    arxiv_rate_limit_delay_sec: float = 3.0
     # Entailment and reranker models share one worker process; false gives each its own.
     shared_model_worker: bool = True
 
-    @field_validator("slow_callback_threshold_ms", "arxiv_rate_limit_delay_sec")
+    @model_validator(mode="before")
+    @classmethod
+    def drop_deprecated_keys(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        known = cast(dict[str, object], data)
+        return {
+            key: value for key, value in known.items() if key not in DEPRECATED_RUNTIME_QOS_KEYS
+        }
+
+    @field_validator("slow_callback_threshold_ms")
     @classmethod
     def ensure_non_negative(cls, value: float) -> float:
         if value < 0:
@@ -133,6 +149,19 @@ class ArieConfig(BaseModel):
     def from_yaml(cls, path: str | Path) -> ArieConfig:
         with Path(path).open("r", encoding="utf-8") as handle:
             loaded = cast(dict[str, object], yaml.safe_load(handle) or {})
+        runtime_qos = loaded.get("runtime_qos")
+        if isinstance(runtime_qos, dict):
+            present = [
+                key
+                for key in DEPRECATED_RUNTIME_QOS_KEYS
+                if key in cast(dict[str, object], runtime_qos)
+            ]
+            if present:
+                logger.warning(
+                    "%s: runtime_qos keys %s are deprecated and ignored; remove them",
+                    path,
+                    ", ".join(present),
+                )
         return cls.model_validate(loaded)
 
 

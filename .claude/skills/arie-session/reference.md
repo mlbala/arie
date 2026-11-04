@@ -32,10 +32,10 @@ drift; grep the symbol, then read a range.
 
 - Sync and import jobs: `SyncJobs._run_job`, `_supervised_paper` in `api/arie_api/runtime/sync.py`
 - Chunking: `chunk_spans` in `core/arie_core/pipeline/chunker.py`
-- Download and unused pipeline parts: `IngestionPipeline.download_pdf`, `StartupReconciler` in `core/arie_core/pipeline/pipeline.py`
+- Download and parse: `IngestionPipeline.download_pdf`, `parse_document` in `core/arie_core/pipeline/pipeline.py` (the unused indexing parts were removed in S02)
 - Paper store (`arie_library.document_json`): `api/arie_api/runtime/library.py`
 - Vectors: `VectorIndex.semantic_search` in `api/arie_api/runtime/vectors.py`
-- Unused scheduler: `QoSPriorityGate`, `HostRateLimiter` in `core/arie_core/sched/__init__.py`
+- Event-loop lag monitor and `supervised`: `core/arie_core/sched/__init__.py` (the unused priority gate and rate limiter were removed in S02)
 
 ## Models and worker pools
 

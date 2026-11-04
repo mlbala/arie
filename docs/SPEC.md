@@ -95,7 +95,10 @@ RuntimeBase (base.py)      config, registry, database, file storage, PDF pool, L
 
 `arie.yaml` (or the path in `ARIE_CONFIG`) is validated by `ArieConfig` in
 [core/arie_core/registry/manager.py](../core/arie_core/registry/manager.py). Unknown
-top-level and `runtime_qos` keys are rejected.
+top-level and `runtime_qos` keys are rejected, except four retired `runtime_qos` keys
+(`use_uvloop`, `user_initiated_override_concurrency`, `background_pdf_stream_concurrency`,
+`arxiv_rate_limit_delay_sec`). They are dropped on load, and `ArieConfig.from_yaml` logs one
+deprecation warning per file that still has them.
 
 | Section | Read by | Notes |
 | --- | --- | --- |
@@ -103,7 +106,7 @@ top-level and `runtime_qos` keys are rejected.
 | `llm_providers` | `LLMProviders` | Model, key variable and `base_url` per LLM plugin. |
 | `embedding_providers` | `resolve_embedder` | Model, cosine floor `min_score` and key variable per embedder. `embedder.use: auto` follows the LLM provider if it offers embeddings and its key is set, and otherwise uses `fastembed`. |
 | `sync` | `SyncConfig` | Default window (`relative`, `year`, `month`, `since`, `range`), `batch_size`, `max_papers`. |
-| `runtime_qos` | see below | Only `utility_worker_processes`, `slow_callback_threshold_ms` and `shared_model_worker` change behaviour (section 12). |
+| `runtime_qos` | `RuntimeBase`, `AnswerModels`, `routes.py` | `utility_worker_processes`, `slow_callback_threshold_ms` and `shared_model_worker`. arXiv spacing is fixed at 3 s in `wait_for_source_host`, and uvloop is chosen by the uvicorn `--loop` flag (section 12). |
 
 Settings saved from the UI (sync defaults, LLM provider, embedder) rewrite `arie.yaml`
 atomically: write a temporary file, validate the whole candidate, `fsync`, then
@@ -479,17 +482,17 @@ image builds.
 
 ## 12. Where the docs and the code differ
 
-Found while writing this spec. The README now describes the code as it is (search,
-process model, `runtime_qos` keys, health status). Each row still needs a decision:
-wire the feature in, or remove the unused code and the stale ADR wording.
+Found while writing this spec. The README describes the code as it is (search, process
+model, `runtime_qos` keys, health status). Dead code was removed in S02; each row says
+what was removed, what was kept and why, and what still differs.
 
 | Documented | In the code |
 | --- | --- |
-| README, Process model: "work is routed through four priority lanes: interactive chat, manual overrides (2 at a time), the worker pool, and scheduled syncs (4 downloads at a time)". | `QoSPriorityGate` and `HostRateLimiter` in `arie_core.sched` are never used. A sync downloads and parses one paper at a time, and imports run in two loops. CPU priority comes only from worker `nice` values. |
-| `runtime_qos.user_initiated_override_concurrency`, `background_pdf_stream_concurrency`, `arxiv_rate_limit_delay_sec`, `use_uvloop` | Validated, never read. arXiv spacing is hard-coded to 3 s in `wait_for_source_host`, and uvloop is chosen by the uvicorn `--loop` flag. |
-| README Features: "Keyword search (SQLite FTS5)". | The answer path ranks chunks in Python by term overlap (`reader.retrieve`) over the chunks stored in `arie_library.document_json`. The SQLite plugin's `chunks_fts` table and `search_bm25` are never called by the runtime. |
-| ADR 0002 lists a `get_table` tool. | The reading steps are `search_paper`, `read_section`, `get_page`. Tables are read as chunk text. |
-| Migrations create `papers`, `jobs`, `chunks`, `outbox`. | The runtime uses its own `arie_*` tables. `StartupReconciler`, `IngestionPipeline.index_document`, `chunk_text`, `run` and `process_next` are unused. |
+| Old README text: "work is routed through four priority lanes". | **Removed (S02).** `QoSPriorityGate`, `HostRateLimiter`, `TokenBucket` and the `QoS_*` lane names in `arie_core.sched` were never used; only `EventLoopLagMonitor` and `supervised` remain. A sync downloads and parses one paper at a time, and imports run in two loops. CPU priority comes only from worker `nice` values. ADR 0006's context still says the lanes were "enforced with asyncio semaphores"; they never were, and the decision itself is unaffected. |
+| `runtime_qos.user_initiated_override_concurrency`, `background_pdf_stream_concurrency`, `arxiv_rate_limit_delay_sec`, `use_uvloop` | **Removed (S02)** from `RuntimeQoSConfig`, `arie.yaml` and the README. Files that still have them load, with one deprecation warning from `ArieConfig.from_yaml` (section 3). arXiv spacing is hard-coded to 3 s in `wait_for_source_host`, and uvloop is chosen by the uvicorn `--loop` flag. |
+| Old README Features: "Keyword search (SQLite FTS5)". | The README no longer says it. The answer path ranks chunks in Python by term overlap (`reader.retrieve`) over the chunks stored in `arie_library.document_json`. **Kept for paged retrieval:** the SQLite plugin's `chunks_fts` table, `search_bm25` and the migrations. The runtime does not call them yet. |
+| ADR 0002 lists a `get_table` tool. | The reading steps are `search_paper`, `read_section`, `get_page`. Tables are read as chunk text. ADR 0002 is not rewritten. |
+| Migrations create `papers`, `jobs`, `chunks`, `outbox`. | **Kept** (see the row above). The runtime uses its own `arie_*` tables. `StartupReconciler`, `IngestionPipeline.index_document`, `chunk_text`, `run` and `process_next` were unused and are **removed (S02)**. `IngestionPipeline.discover` and its `queue` are now also unused (see PROGRESS, Open issues). |
 | The health pane shows each answer model's status. | It shows load status only. A model that times out on every answer still reads `healthy` (section 9). |
 
 ## 13. Open issue: evaluation answers fall back to excerpts

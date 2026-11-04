@@ -239,8 +239,7 @@ more processes than there are CPUs ([ADR 0006](docs/adr/0006-background-cpu-prio
 Inside the API, a sync job runs one at a time and processes one paper at a time. Up to
 two single-paper imports run beside it, and evaluations run one at a time. Chat is not
 queued behind any of these: it has priority only through the workers' CPU priority. arXiv
-requests are spaced 3 seconds apart. `arie_core.sched` also defines priority lanes
-(`QoSPriorityGate`) and a per-host limiter, but the runtime does not use them yet.
+requests are spaced 3 seconds apart.
 
 The claim checker and reranker share one worker that runs one call at a time. A call that
 passes its caller's budget keeps running, so the loaded models stay in memory, and the
@@ -487,7 +486,7 @@ evidence, unless it passes the verifier.
 | `llm_providers` | Default model, key variable and optional `base_url` per LLM plugin. |
 | `embedding_providers` | Default model, similarity floor and key variable per embedder. |
 | `sync` | Default sync window and limits (see [Sync](#sync)). |
-| `runtime_qos` | `utility_worker_processes` (PDF workers, capped to the CPUs), `slow_callback_threshold_ms` (event-loop lag warning) and `shared_model_worker` (default `true`: the claim checker and reranker share one process; `false` gives each its own). `use_uvloop`, `user_initiated_override_concurrency`, `background_pdf_stream_concurrency` and `arxiv_rate_limit_delay_sec` are accepted but not read yet: uvloop is chosen by the uvicorn `--loop` flag and arXiv spacing is fixed at 3 s. |
+| `runtime_qos` | `utility_worker_processes` (PDF workers, capped to the CPUs), `slow_callback_threshold_ms` (event-loop lag warning) and `shared_model_worker` (default `true`: the claim checker and reranker share one process; `false` gives each its own). Older files may still carry `use_uvloop`, `user_initiated_override_concurrency`, `background_pdf_stream_concurrency` and `arxiv_rate_limit_delay_sec`; they are ignored and logged as deprecated. uvloop is chosen by the uvicorn `--loop` flag and arXiv spacing is fixed at 3 s. |
 
 Keys for the local-model plugins:
 

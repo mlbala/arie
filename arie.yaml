@@ -7,12 +7,8 @@ sync:
   batch_size: 20
   max_papers: 100
 runtime_qos:
-  use_uvloop: true
   slow_callback_threshold_ms: 15.0
-  user_initiated_override_concurrency: 2
   utility_worker_processes: 4  # PDF workers; capped to the CPUs Docker or the OS allows
-  background_pdf_stream_concurrency: 4
-  arxiv_rate_limit_delay_sec: 3.0
 # Select a provider in Settings or change plugins.llm.use below.
 # API keys stay on the server in .env; the UI displays presence and connection checks.
 llm_providers:
