@@ -8,12 +8,12 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, BinaryIO, Protocol, cast
+from typing import BinaryIO, cast
 from urllib.parse import urlparse
 
 import httpx
 
-from arie_core.contracts import ChunkRow, ParsedDoc
+from arie_core.contracts import ParsedDoc
 from arie_core.plugin_api import Ctx, FileStorage, ScrapedPaperInput
 
 ALLOWED_CATEGORIES = (
@@ -48,79 +48,6 @@ class IngestionStage(StrEnum):
 
 def _utc_now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-
-
-class _DatabaseLike(Protocol):
-    async def fetch(
-        self,
-        ctx: object | None,
-        query: str,
-        params: tuple[object, ...] = (),
-    ) -> list[dict[str, Any]]: ...
-
-    async def execute(
-        self,
-        ctx: object | None,
-        query: str,
-        params: tuple[object, ...] = (),
-    ) -> int: ...
-
-
-class StartupReconciler:
-    """Reclaims stale leases and cleans orphaned partial-file downloads."""
-
-    def __init__(
-        self,
-        *,
-        db: _DatabaseLike | None = None,
-        storage_root: str | Path = "data/papers",
-    ) -> None:
-        self.db: _DatabaseLike | None = db
-        self.storage_root = Path(storage_root)
-        self.storage_root.mkdir(parents=True, exist_ok=True)
-
-    async def reconcile(self) -> dict[str, int]:
-        stats = {"expired_jobs": 0, "orphaned_parts": 0, "replayed_outbox": 0}
-        if self.db is None:
-            return stats
-        db = self.db
-        now = _utc_now()
-        expired = await db.fetch(
-            None,
-            "SELECT job_id FROM jobs WHERE status = ? AND lease_until IS NOT NULL "
-            "AND lease_until <= ?",
-            ("leased", now),
-        )
-        for row in expired:
-            await db.execute(
-                None,
-                (
-                    "UPDATE jobs SET status = ?, lease_until = NULL, claim_token = NULL, "
-                    "updated_at = ? WHERE job_id = ?"
-                ),
-                ("queued", now, row["job_id"]),
-            )
-            stats["expired_jobs"] += 1
-
-        pending = await db.fetch(
-            None,
-            "SELECT id, payload_json FROM outbox WHERE status = ? ORDER BY id ASC",
-            ("pending",),
-        )
-        for row in pending:
-            await db.execute(
-                None,
-                "UPDATE outbox SET status = ?, leased_until = NULL, "
-                "lease_token = NULL WHERE id = ?",
-                ("done", row["id"]),
-            )
-            stats["replayed_outbox"] += 1
-
-        for partial in sorted(self.storage_root.rglob("*.part")):
-            if partial.is_file():
-                partial.unlink(missing_ok=True)
-                stats["orphaned_parts"] += 1
-        return stats
 
 
 class IngestionPipeline:
@@ -332,73 +259,10 @@ class IngestionPipeline:
     def stage_for(self, paper_id: str) -> IngestionStage:
         return self._paper_states.get(paper_id, IngestionStage.NORMALIZED)
 
-    def chunk_text(
-        self,
-        text: str,
-        *,
-        min_tokens: int = 400,
-        max_tokens: int = 600,
-    ) -> list[str]:
-        paragraphs = [segment.strip() for segment in re.split(r"\n\s*\n+", text) if segment.strip()]
-        chunks: list[str] = []
-        buffer: list[str] = []
-        for paragraph in paragraphs:
-            buffer.append(paragraph)
-            word_count = sum(len(part.split()) for part in buffer)
-            if word_count >= min_tokens or len(" ".join(buffer).split()) >= max_tokens:
-                candidate = "\n\n".join(buffer)
-                chunks.append(candidate)
-                buffer = []
-        if buffer:
-            chunks.append("\n\n".join(buffer))
-        if not chunks:
-            chunks = [text.strip() or "empty document"]
-        return chunks
-
-    async def index_document(self, parsed: ParsedDoc) -> list[ChunkRow]:
-        rows: list[ChunkRow] = []
-        sections = parsed.sections or ["body"]
-        for index, section in enumerate(sections):
-            for chunk_index, chunk in enumerate(self.chunk_text(section)):
-                rows.append(
-                    ChunkRow(
-                        chunk_id=f"{parsed.paper_id}:{index}:{chunk_index}",
-                        paper_id=parsed.paper_id,
-                        section=section if section else "body",
-                        text=chunk,
-                        order=chunk_index,
-                        token_count=max(1, len(chunk.split())),
-                    )
-                )
-        self._paper_states[parsed.paper_id] = IngestionStage.INDEXED
-        return rows
-
-    async def run(
-        self,
-        raw_items: Iterable[ScrapedPaperInput | Mapping[str, object]],
-    ) -> list[ScrapedPaperInput]:
-        accepted: list[ScrapedPaperInput] = []
-        for item in self.discover(raw_items):
-            if self.gate(item):
-                accepted.append(item)
-                await self.queue.put(item)
-        return accepted
-
-    async def process_next(self) -> ScrapedPaperInput:
-        paper = await self.queue.get()
-        try:
-            file_path = await self.download_pdf(paper)
-            parsed = await self.parse_document(paper.paper_id, file_path)
-            await self.index_document(parsed)
-            return paper
-        finally:
-            self.queue.task_done()
-
 
 __all__ = [
     "ALLOWED_CATEGORIES",
     "R_AI",
     "IngestionPipeline",
     "IngestionStage",
-    "StartupReconciler",
 ]
