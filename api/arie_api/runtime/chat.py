@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import aclosing
@@ -10,6 +11,7 @@ from datetime import UTC, datetime
 from typing import cast
 
 from arie_core.harness.explain import HISTORY_TURNS, ExplainResult, ExplainTurn, explain_answer
+from arie_core.harness.feedback import implicit_negative
 from arie_core.harness.intent import DialogueTurn
 from arie_core.harness.judge import (
     PairwiseJudgement,
@@ -34,6 +36,8 @@ from arie_api.runtime.base import (
     explain_context,
 )
 from arie_api.runtime.guides import PaperGuides
+
+logger = logging.getLogger(__name__)
 
 
 def saved_answer_text(events: Sequence[Document]) -> str:
@@ -66,6 +70,11 @@ class ChatHistory(PaperGuides):
         evidence for later answers (I2).
         """
         ctx = context(f"chat:{paper_id}", 5.0)
+        try:
+            await self._note_follow_up(paper_id, question)
+        except Exception:
+            # A missed signal must not lose the turn.
+            logger.warning("Could not read the follow-up signal for %s", paper_id, exc_info=True)
         await self.db.execute(
             ctx,
             """INSERT INTO arie_chat_turns (turn_id, paper_id, question, events_json, created_at)
@@ -91,6 +100,38 @@ class ChatHistory(PaperGuides):
             SELECT paper_id FROM arie_chat_turns GROUP BY paper_id
             ORDER BY MAX(created_at) DESC LIMIT ?)""",
             (CHAT_PAPERS,),
+        )
+
+    async def _note_follow_up(self, paper_id: str, question: str) -> None:
+        """Mark the paper's latest turn ``implicit negative`` if ``question`` reads as one.
+
+        Called before the new turn is saved, so the latest saved turn is the one the reader is
+        reacting to. The signal is kept even if the turn is rated later; readers of it leave out
+        turns with an explicit rating (S15, SPEC 10).
+        """
+        ctx = context(f"chat:{paper_id}", 5.0)
+        rows = await self.db.fetch(
+            ctx,
+            """SELECT turn_id, question FROM arie_chat_turns WHERE paper_id = ?
+            ORDER BY created_at DESC, rowid DESC LIMIT 1""",
+            (paper_id,),
+        )
+        signal = implicit_negative(str(rows[0]["question"]), question) if rows else None
+        if signal is None:
+            return
+        await self.db.execute(
+            ctx,
+            """INSERT INTO arie_implicit_feedback VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(turn_id) DO UPDATE SET signal = excluded.signal,
+            follow_up = excluded.follow_up, created_at = excluded.created_at""",
+            (
+                str(rows[0]["turn_id"]),
+                paper_id,
+                str(rows[0]["question"])[:2000],
+                signal,
+                question[:500],
+                datetime.now(UTC).isoformat(),
+            ),
         )
 
     async def chat_history(self, paper_id: str) -> list[Document]:

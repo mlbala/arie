@@ -9,17 +9,18 @@ import time
 from collections.abc import AsyncIterator, Iterator, Sequence
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Protocol, cast
+from typing import Any, Protocol, cast, get_args
 
 import httpx
 import pytest
 from arie_api import eval_paper
 from arie_api.export_openapi import export_openapi
 from arie_api.mcp_server import create_scope_handle, verify_scope_handle
-from arie_api.routes import create_app
+from arie_api.routes import Reason, create_app
 from arie_api.runtime import ResearchRuntime
 from arie_api.runtime.base import RuntimeBase
 from arie_core.contracts import LLMDelta, LLMRequest, LLMResponse, TokenUsage
+from arie_core.harness.feedback import REASONS
 from arie_core.harness.trace import STAGES
 from arie_core.plugin_api import Ctx
 from arie_core.registry.manager import AnswerConfig, ArieConfig, EvalConfig, JudgeConfig
@@ -360,6 +361,153 @@ def test_answers_can_be_rated_and_the_rating_is_restored(client: _APIClient) -> 
     assert client.put(url, json={"rating": "meh"}).status_code == 422
     missing = client.put("/v1/papers/paper-1/chat/nope/feedback", json={"rating": "up"})
     assert missing.status_code == 404
+
+
+def _turn_url(turn_id: str) -> str:
+    return f"/v1/papers/paper-1/chat/{turn_id}/feedback"
+
+
+def _ask(client: _APIClient, question: str) -> str:
+    """Ask in strict mode and return the saved turn's id."""
+    streamed = client.post("/v1/papers/paper-1/questions", json={"question": question})
+    return str(_events(streamed.text, "done")[0]["turn_id"])
+
+
+def test_a_down_rating_keeps_its_reasons_and_what_the_answer_recorded(client: _APIClient) -> None:
+    streamed = client.post("/v1/papers/paper-1/questions", json={"question": "What is Cedar?"})
+    [answer] = _events(streamed.text, "answer")
+    turn_id = str(_events(streamed.text, "done")[0]["turn_id"])
+    assert answer["trace_id"]
+    # The same trace id is on the saved answer event, which is what a rating reads it from.
+    [turn] = client.get("/v1/papers/paper-1/chat").json()["turns"]
+    [saved] = [event for event in turn["events"] if event["event"] == "answer"]
+    assert saved["data"]["trace_id"] == answer["trace_id"]
+
+    rated = client.put(
+        _turn_url(turn_id),
+        json={"rating": "down", "reasons": ["wrong", "too_long", "wrong"], "note": "Too much"},
+    )
+    assert rated.status_code == 200
+    # Repeats are dropped; mode, prompt version and trace id come from the saved answer.
+    assert rated.json()["reasons"] == ["wrong", "too_long"]
+    trace = answer["evaluation"]["trace"]
+    assert rated.json()["mode"] == "strict" and rated.json()["trace_id"] == answer["trace_id"]
+    assert rated.json()["prompt_version"] == trace["prompt_version"]
+    [feedback] = client.get("/v1/papers/paper-1/eval").json()["feedback"]
+    assert feedback["reasons"] == ["wrong", "too_long"] and feedback["note"] == "Too much"
+    assert feedback["mode"] == "strict" and feedback["task"] == answer["evaluation"]["task"]
+    assert feedback["trace_id"] == answer["trace_id"]
+    assert feedback["prompt_version"] == trace["prompt_version"]
+
+    # Rating again replaces the reasons instead of adding a second row.
+    assert client.put(_turn_url(turn_id), json={"rating": "down"}).json()["reasons"] == []
+    [again] = client.get("/v1/papers/paper-1/eval").json()["feedback"]
+    assert again["reasons"] == [] and again["trace_id"] == answer["trace_id"]
+
+    unknown = client.put(_turn_url(turn_id), json={"rating": "down", "reasons": ["bad"]})
+    assert unknown.status_code == 422
+    # Reasons explain a down rating; an up rating with one is a mistake, not a rating.
+    with_up = client.put(_turn_url(turn_id), json={"rating": "up", "reasons": ["wrong"]})
+    assert with_up.status_code == 400
+    assert get_args(Reason) == REASONS
+
+
+def test_an_explain_rating_records_the_explain_prompt_and_trace(
+    client: _APIClient, llm: list[object]
+) -> None:
+    llm.append(_StreamingLLM(ANSWER, JUDGE))
+    streamed = _explain(client).text
+    [answer] = _events(streamed, "answer")
+    turn_id = str(_events(streamed, "done")[0]["turn_id"])
+    rated = client.put(_turn_url(turn_id), json={"rating": "down", "reasons": ["not_in_paper"]})
+    body = rated.json()
+    assert body["mode"] == "explain" and body["prompt_version"] == "explain.v1"
+    assert body["trace_id"] == answer["trace_id"] and body["trace_id"].startswith("explain:")
+
+
+@pytest.fixture
+def old_feedback(tmp_path: Path) -> None:
+    """A database written before S15: a rating row with none of the new columns."""
+    answer = {"event": "answer", "data": {"evaluation": {"task": "fact"}}}
+    db = sqlite3.connect(tmp_path / "arie.db")
+    try:
+        db.execute(
+            """CREATE TABLE arie_feedback (
+            turn_id TEXT PRIMARY KEY, paper_id TEXT NOT NULL, question TEXT NOT NULL,
+            rating TEXT NOT NULL, note TEXT NOT NULL, answer_json TEXT NOT NULL,
+            created_at TEXT NOT NULL)"""
+        )
+        db.execute(
+            "INSERT INTO arie_feedback VALUES ('old', 'paper-1', 'What was it?', 'down', 'meh', ?, "
+            "'2026-01-01')",
+            (json.dumps([answer]),),
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_feedback_saved_before_s15_gets_the_new_columns_and_still_counts(
+    old_feedback: None, client: _APIClient
+) -> None:
+    [feedback] = client.get("/v1/papers/paper-1/eval").json()["feedback"]
+    assert feedback["turn_id"] == "old" and feedback["note"] == "meh"
+    assert feedback["reasons"] == [] and feedback["mode"] == "" and feedback["trace_id"] == ""
+    # The task is read from the saved answer, since the column is empty.
+    result = client.get("/v1/feedback/agreement").json()
+    assert (result["rated"], result["judged"]) == (1, 0)
+    assert [row["task"] for row in result["by_task"]] == ["fact"]
+
+
+def test_a_follow_up_that_says_wrong_marks_the_turn_before_it_implicit_negative(
+    client: _APIClient,
+) -> None:
+    first = _ask(client, "What is Cedar?")
+    _ask(client, "That's wrong")
+    [implicit] = client.get("/v1/papers/paper-1/eval").json()["implicit_feedback"]
+    assert (implicit["turn_id"], implicit["signal"]) == (first, "said_wrong")
+    assert implicit["question"] == "What is Cedar?" and implicit["follow_up"] == "That's wrong"
+    assert client.get("/v1/feedback/agreement").json()["implicit"] == 1
+    # An explicit rating wins over the guess: the turn leaves the implicit list and the count.
+    client.put(_turn_url(first), json={"rating": "up"})
+    assert client.get("/v1/papers/paper-1/eval").json()["implicit_feedback"] == []
+    assert client.get("/v1/feedback/agreement").json()["implicit"] == 0
+
+
+def test_asking_the_same_question_again_marks_only_the_first_turn(client: _APIClient) -> None:
+    first = _ask(client, "What is Cedar?")
+    _ask(client, "What is Cedar?")
+    _ask(client, "How is the method evaluated on new data?")
+    [implicit] = client.get("/v1/papers/paper-1/eval").json()["implicit_feedback"]
+    assert (implicit["turn_id"], implicit["signal"]) == (first, "repeated_question")
+    # No UI and no case: an implicit negative never becomes an evaluation case by itself.
+    assert client.get("/v1/papers/paper-1/eval").json()["feedback"] == []
+
+
+def test_judge_agreement_compares_the_judge_with_each_explicit_rating(
+    client: _APIClient, llm: list[object]
+) -> None:
+    strict = _ask(client, "What is Cedar?")
+    supported = ["1 | supported | Stated.\n", "2 | partial | Part of it.\n"]
+    llm.append(_StreamingLLM(ANSWER, JUDGE, ANSWER, supported, ANSWER, JUDGE))
+    questions = ("How does it work?", "Why use it?", "Where is it tested?")
+    texts = [_explain(client, question).text for question in questions]
+    explained = [str(_events(text, "done")[0]["turn_id"]) for text in texts]
+    # The judge found an unsupported sentence in the first and third and none in the second.
+    for turn_id, rating in zip([strict, *explained], ["up", "down", "down", "up"], strict=True):
+        client.put(_turn_url(turn_id), json={"rating": rating})
+    result = client.get("/v1/feedback/agreement").json()
+    assert (result["rated"], result["judged"], result["agreed"]) == (4, 3, 1)
+    assert result["rate"] == 0.333 and result["ready"] is False and result["implicit"] == 0
+    by_task = {row["task"]: row for row in result["by_task"]}
+    assert (by_task["explain"]["judged"], by_task["explain"]["agreed"]) == (3, 1)
+    [other] = [row for task, row in by_task.items() if task != "explain"]
+    assert (other["rated"], other["judged"], other["rate"]) == (1, 0, None)
+    # The paper's evaluation view carries the same library-wide numbers.
+    assert client.get("/v1/papers/paper-1/eval").json()["agreement"] == result
+    # Clearing a rating takes it out of the agreement.
+    client.put(_turn_url(strict), json={"rating": None})
+    assert client.get("/v1/feedback/agreement").json()["rated"] == 3
 
 
 def _seed_fact_case(tmp_path: Path) -> None:

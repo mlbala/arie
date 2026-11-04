@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import msgspec
 from arie_core.harness.explain import ExplainResult
+from arie_core.harness.feedback import REASONS, Rated, agreement, answer_facts, judge_opinion
 from arie_core.harness.judge import (
     FAILED,
     NO_ANSWER,
@@ -58,6 +59,14 @@ Document = dict[str, Any]
 RUNS_KEPT = 10
 ANSWER_SECONDS = 25.0
 RATINGS = {"up", "down"}
+# Columns added to ``arie_feedback`` after its first version, with their defaults.
+FEEDBACK_COLUMNS = (
+    ("reasons_json", "[]"),
+    ("mode", ""),
+    ("task", ""),
+    ("prompt_version", ""),
+    ("trace_id", ""),
+)
 MODES = ("strict", "explain")
 
 
@@ -106,6 +115,16 @@ class PaperEvaluations:
             turn_id TEXT PRIMARY KEY, paper_id TEXT NOT NULL, key_facts_json TEXT NOT NULL,
             source_sentence TEXT NOT NULL, created_at TEXT NOT NULL)""",
         )
+        # S15 added what an answer recorded about itself and why it was rated down.
+        for column, default in FEEDBACK_COLUMNS:
+            try:
+                await db.fetch(ctx, f"SELECT {column} FROM arie_feedback LIMIT 1")
+            except Exception:
+                await db.execute(
+                    ctx,
+                    f"ALTER TABLE arie_feedback ADD COLUMN {column} TEXT NOT NULL DEFAULT "
+                    f"'{default}'",
+                )
         # A run cut short by a restart is reported as interrupted, not left running.
         rows = await db.fetch(ctx, "SELECT run_id, payload_json FROM arie_eval_runs")
         for row in rows:
@@ -132,7 +151,8 @@ class PaperEvaluations:
         ctx = self._ctx(f"feedback:{paper_id}")
         rows = await self.runtime.db.fetch(
             ctx,
-            """SELECT turn_id, question, rating, note, created_at FROM arie_feedback
+            """SELECT turn_id, question, rating, note, created_at, reasons_json, mode, task,
+            prompt_version, trace_id FROM arie_feedback
             WHERE paper_id = ? ORDER BY created_at DESC""",
             (paper_id,),
         )
@@ -145,7 +165,8 @@ class PaperEvaluations:
         attached = {str(row["turn_id"]): row for row in facts}
         return [
             {
-                **dict(row),
+                **{key: value for key, value in dict(row).items() if key != "reasons_json"},
+                "reasons": cast(list[str], json.loads(str(row["reasons_json"]))),
                 "key_facts": cast(list[str], json.loads(str(found["key_facts_json"])))
                 if (found := attached.get(str(row["turn_id"])))
                 else [],
@@ -153,6 +174,44 @@ class PaperEvaluations:
             }
             for row in rows
         ]
+
+    async def implicit_feedback(self, paper_id: str) -> list[Document]:
+        """Answers whose follow-up read as a negative rating, newest first (S15).
+
+        Turns the reader rated explicitly are left out: the rating wins over the guess.
+        """
+        rows = await self.runtime.db.fetch(
+            self._ctx(f"implicit-feedback:{paper_id}"),
+            """SELECT turn_id, question, signal, follow_up, created_at
+            FROM arie_implicit_feedback WHERE paper_id = ? AND turn_id NOT IN
+            (SELECT turn_id FROM arie_feedback WHERE paper_id = ?) ORDER BY created_at DESC""",
+            (paper_id, paper_id),
+        )
+        return [dict(row) for row in rows]
+
+    async def agreement(self) -> Document:
+        """How often the judge's verdict matched the reader's rating, over every rated answer.
+
+        Only explicit ratings count; the judge has a verdict only on explain answers it judged
+        (``judge_opinion``). ``implicit`` is the number of unrated answers a follow-up
+        questioned, shown beside the agreement and never part of it.
+        """
+        ctx = self._ctx("feedback-agreement")
+        rows = await self.runtime.db.fetch(
+            ctx, "SELECT rating, task, answer_json FROM arie_feedback ORDER BY created_at"
+        )
+        rated: list[Rated] = []
+        for row in rows:
+            events = cast(list[Document], json.loads(str(row["answer_json"])))
+            # Ratings saved before S15 have no task column; the saved events still say it.
+            task = str(row["task"]) or answer_facts(events).task
+            rated.append(Rated(str(row["rating"]), task, judge_opinion(events)))
+        implicit = await self.runtime.db.fetch(
+            ctx,
+            """SELECT COUNT(*) AS n FROM arie_implicit_feedback WHERE turn_id NOT IN
+            (SELECT turn_id FROM arie_feedback)""",
+        )
+        return {**msgspec.to_builtins(agreement(rated)), "implicit": cast(int, implicit[0]["n"])}
 
     async def overview(self, paper_id: str) -> Document:
         """Saved cases, recent run summaries (newest first) and feedback for one paper."""
@@ -171,6 +230,9 @@ class PaperEvaluations:
             ],
             "latest": runs[0] if runs else None,
             "feedback": await self.feedback(paper_id),
+            "implicit_feedback": await self.implicit_feedback(paper_id),
+            # Library-wide, not this paper's: gate 4 counts every rated answer.
+            "agreement": await self.agreement(),
         }
 
     async def get_run(self, paper_id: str, run_id: str) -> Document | None:
@@ -469,12 +531,21 @@ class PaperEvaluations:
         )
 
     async def save_feedback(
-        self, paper_id: str, turn_id: str, rating: str | None, note: str = ""
+        self,
+        paper_id: str,
+        turn_id: str,
+        rating: str | None,
+        note: str = "",
+        reasons: Sequence[str] = (),
     ) -> Document:
         """Rate a saved answer ``up`` or ``down``, or clear the rating with ``None``.
 
         The question and streamed answer are copied, so the rating survives when old
-        chat turns are pruned. Raises ``LookupError`` for an unknown turn.
+        chat turns are pruned. ``reasons`` (from ``REASONS``, in the order given, repeats
+        dropped) and ``note`` (the comment) explain a ``down`` rating. The answer's mode, task,
+        prompt version and trace id are read from its saved events and stored beside the
+        rating. Raises ``LookupError`` for an unknown turn and ``ValueError`` for a reason
+        that is not listed or a reason given with an ``up`` rating.
         """
         ctx = self._ctx(f"feedback:{turn_id}")
         if rating is None:
@@ -491,6 +562,12 @@ class PaperEvaluations:
             return {"turn_id": turn_id, "rating": None}
         if rating not in RATINGS:
             raise ValueError("rating must be up, down or null")
+        unknown = [reason for reason in reasons if reason not in REASONS]
+        if unknown:
+            raise ValueError(f"Unknown reason: {unknown[0]}")
+        if reasons and rating != "down":
+            raise ValueError("Reasons go with a down rating")
+        kept = list(dict.fromkeys(reasons))
         rows = await self.runtime.db.fetch(
             ctx,
             "SELECT question, events_json FROM arie_chat_turns WHERE turn_id = ? AND paper_id = ?",
@@ -498,11 +575,16 @@ class PaperEvaluations:
         )
         if not rows:
             raise LookupError("Chat turn not found")
+        facts = answer_facts(cast(list[Document], json.loads(str(rows[0]["events_json"]))))
         await self.runtime.db.execute(
             ctx,
-            """INSERT INTO arie_feedback VALUES (?, ?, ?, ?, ?, ?, ?)
+            """INSERT INTO arie_feedback (turn_id, paper_id, question, rating, note, answer_json,
+            created_at, reasons_json, mode, task, prompt_version, trace_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(turn_id) DO UPDATE SET rating = excluded.rating,
-            note = excluded.note, created_at = excluded.created_at""",
+            note = excluded.note, created_at = excluded.created_at,
+            reasons_json = excluded.reasons_json, mode = excluded.mode, task = excluded.task,
+            prompt_version = excluded.prompt_version, trace_id = excluded.trace_id""",
             (
                 turn_id,
                 paper_id,
@@ -511,9 +593,22 @@ class PaperEvaluations:
                 note[:500],
                 str(rows[0]["events_json"]),
                 _now(),
+                json.dumps(kept),
+                facts.mode,
+                facts.task,
+                facts.prompt_version,
+                facts.trace_id,
             ),
         )
-        return {"turn_id": turn_id, "rating": rating, "note": note[:500]}
+        return {
+            "turn_id": turn_id,
+            "rating": rating,
+            "note": note[:500],
+            "reasons": kept,
+            "mode": facts.mode,
+            "prompt_version": facts.prompt_version,
+            "trace_id": facts.trace_id,
+        }
 
     async def save_feedback_facts(
         self, paper_id: str, turn_id: str, key_facts: Sequence[str], source_sentence: str = ""
@@ -551,7 +646,13 @@ class PaperEvaluations:
     async def forget(self, paper_id: str) -> None:
         """Delete a removed paper's cases, runs and feedback."""
         ctx = self._ctx(f"eval-forget:{paper_id}")
-        for table in ("arie_eval_cases", "arie_eval_runs", "arie_feedback", "arie_feedback_facts"):
+        for table in (
+            "arie_eval_cases",
+            "arie_eval_runs",
+            "arie_feedback",
+            "arie_feedback_facts",
+            "arie_implicit_feedback",
+        ):
             await self.runtime.db.execute(
                 ctx, f"DELETE FROM {table} WHERE paper_id = ?", (paper_id,)
             )

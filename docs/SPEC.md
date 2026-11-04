@@ -183,7 +183,8 @@ these tables:
 | `arie_paper_packs` | One row per indexed paper: `revision` (`<dedup_hash>:<chunk_count>:p1`), `text` (the paper pack, section 6.2) and `tokens` (its estimate). Built when the paper reaches `INDEXED`, or on first use for papers indexed earlier (`PaperPacks.get_pack`), rebuilt when the revision changes, deleted with the paper. |
 | `arie_paper_guides` | One row per paper with a guide: `revision` (the pack revision it was written from), `prompt_version` (`guide.v1`) and `json` (the validated `PaperGuide`, 8.10). A row whose revision or prompt version is not current is ignored (`PaperGuides.get_guide`) and replaced on the next build. Written by the guide builder or `make guides`, never on first use; deleted with the paper. |
 | `arie_sync_runs` | Sync and import job payloads, so a restart can offer resume. |
-| `arie_eval_cases`, `arie_eval_runs`, `arie_feedback`, `arie_feedback_facts` | Evaluation questions, the last 10 runs per paper, answer ratings, and the key facts attached to answers rated down. |
+| `arie_eval_cases`, `arie_eval_runs`, `arie_feedback`, `arie_feedback_facts` | Evaluation questions, the last 10 runs per paper, answer ratings, and the key facts attached to answers rated down. `arie_feedback` also holds `reasons_json`, `mode`, `task`, `prompt_version` and `trace_id` (S15; added with `ALTER TABLE` at startup if missing, empty for older ratings). |
+| `arie_implicit_feedback` | One row per turn whose follow-up read as a negative rating (10, item 3): the turn's `question`, the `signal` and the `follow_up` text. Written when the next turn is saved; deleted with the paper. |
 
 The SQLite plugin also applies `core/arie_core/persistence/migrations/*.sql`, which
 create `papers`, `jobs`, `chunks`, `chunks_fts` and others. The runtime does not read or
@@ -574,7 +575,7 @@ because the trace is complete only when the stream has ended:
 | --- | --- |
 | `progress` | `status: "reading"`, `message`. Not saved. |
 | `delta` | `text`: one piece of the answer, as the provider sent it. Saved as one `delta` holding all the text. |
-| `answer` | `mode`: `explained_answer`, or `abstention` when no text arrived. `heading`, `prompt_version` (`explain.v1`) and `evaluation`: `task: "explain"`, `depth`, `paged`, `guardrail`, `complete` (false for a partial answer), `fallback_reason`, `unknown_markers`, `first_token_seconds` and the `trace` (8.8). |
+| `answer` | `mode`: `explained_answer`, or `abstention` when no text arrived. `heading`, `prompt_version` (`explain.v1`), `trace_id` (`explain:<id>`, the id of the request's log lines; strict mode's `answer` event carries one too) and `evaluation`: `task: "explain"`, `depth`, `paged`, `guardrail`, `complete` (false for a partial answer), `fallback_reason`, `unknown_markers`, `first_token_seconds` and the `trace` (8.8). |
 | `citations` | Only if text arrived. `citations`: one `{marker, chunk_id, page, char_start, char_end, checked}` per marker that names a chunk of this paper, in order of first use. `page` and the offsets are the whole chunk's (the answer cites chunks, not quotes). `checked` is `true` when at least one sentence cites the marker and none of them is flagged. |
 | `checks` | Only if text arrived, after `citations`. `sentences`: one `{start, end, text, status, markers, reasons}` per sentence (`start` and `end` are character offsets into the joined `delta` text), plus `cited_ok`, `flagged`, `background`, `cited`, `valid_rate` and `background_share` (the citation checks above). |
 | `progress` | `status: "judging"`, `message`. Only when `judge.chat` is `all` and a sentence is cited, just before `judge`. Not saved. |
@@ -699,11 +700,49 @@ reranker 2), `inter_op_num_threads` = 1, and the CPU memory arena off.
 2. **Feedback cases.** Answers rated thumbs-down are re-asked as `feedback` cases and
    shown for review, not scored, until a person attaches 1-3 key facts and optionally
    the paper sentence that holds them (`PUT /v1/papers/{id}/chat/{turn_id}/feedback/facts`,
-   `save_feedback_facts`; no UI yet). The sentence must be in one chunk of the paper and
-   contain every key fact, the rule generated cases follow; it is stored as the paper's
-   own text. With key facts the case runs as a `fact` case (`case_id` stays
+   `save_feedback_facts`; the evaluation panel has the form, S15). The sentence must be in
+   one chunk of the paper and contain every key fact, the rule generated cases follow; it is
+   stored as the paper's own text (the form takes it pasted, there is no passage picker).
+   With key facts the case runs as a `fact` case (`case_id` stays
    `feedback-<turn_id>`), anchored to the sentence for `evidence_hit` when one was given.
    Facts live in `arie_feedback_facts` and are dropped when the rating is cleared.
+   Ratings find failures; they are not a quality score, so nothing here averages them.
+3. **Ratings, reasons and implicit negatives** (S15; pure parts in
+   [core/arie_core/harness/feedback.py](../core/arie_core/harness/feedback.py)).
+   - **Reasons.** `PUT .../feedback` takes `rating` (`up`, `down` or `null`), `note` (the
+     comment, 500 characters) and `reasons`: any of `wrong`, `not_in_paper`, `too_shallow`,
+     `too_long`, `missing_citation`, `did_not_answer`. An unknown reason is a 422; reasons with
+     an `up` rating are a 400. Repeats are dropped. The web saves a thumbs-down at once, then
+     sends it again with the chips the reader picked and the note, so a reader who stops after
+     the thumb still counts.
+   - **What an answer records.** The rating row stores the answer's `mode` (`strict` or
+     `explain`), `task` (the planner's task, or `explain`), `prompt_version` and `trace_id`,
+     read from the saved `answer` event (`answer_facts`). Both modes now put `trace_id` on
+     that event (the id the request's logs carry); turns saved before S15 have none, and
+     their ratings store empty fields. The response and `GET /v1/papers/{id}/eval`
+     (`feedback`) return them with `reasons`.
+   - **Implicit negatives.** When a turn is saved, the paper's previous turn is marked
+     `implicit negative` if the new question (`implicit_negative`) says the answer was wrong or
+     did not answer (`said_wrong`: "No, that's wrong", "That doesn't answer my question"),
+     asks for it again (`asked_again`: "Try again", "Can you explain that again?", only at
+     the start of the question) or repeats the previous question (`repeated_question`: word
+     overlap of 0.7 or more over the union, both questions with 3 or more words). A question
+     that opens with a question word ("Why is the baseline wrong?") is never `said_wrong`. The
+     rules are narrow on purpose. There is no UI in chat. `GET .../eval` lists them as
+     `implicit_feedback`, leaving out turns the reader rated explicitly (the rating wins), and
+     the panel shows them. An implicit negative is not a rating: it is never a case and never
+     counts in the agreement below.
+   - **Judge agreement.** `PaperEvaluations.agreement` compares the judge's verdict with each
+     explicit rating over the whole library. The verdict (`judge_opinion`) is the saved `judge`
+     event of the answer (8.9): `down` when the judgement is `complete` and any cited sentence
+     is `unsupported`, `up` when none is (`partial` counts as support, as in
+     `citation_support`), no verdict otherwise. Only explain answers have one, so a strict
+     answer is rated but never judged. The result: `rated`, `judged` (rated with a verdict),
+     `agreed`, `rate` (`agreed / judged`, `null` with none judged), `ready` (30 or more rated,
+     gate 4), `by_task` (the same counts per `task`; a rating saved before S15 takes its task
+     from the saved events) and `implicit` (questioned answers with no rating). `GET
+     /v1/feedback/agreement` returns it and `GET /v1/papers/{id}/eval` carries it as
+     `agreement`, still library-wide. The panel shows it above the answers rated down.
 3. **Running.** One run at a time across the library. Cases run **sequentially** through
    `answer_paper_question`, each with its own 25 s context. **Also answer without the
    reranker** repeats every case with `rerank=False`. Results are saved after every
@@ -822,7 +861,11 @@ starts a sync of the paper's source. `GET /v1/papers/{id}/guide` returns the pap
 char_start, char_end, checked: true}` per marker, as in 8.9), `pending` (queued, or waiting
 for a retry; `error` names the last failure) or `missing`. The web shows a ready guide as the
 chat's opening message, with page chips and its suggested questions as buttons, and keeps the
-generic suggestions otherwise.
+generic suggestions otherwise. `GET /v1/feedback/agreement` returns the judge's agreement with
+the reader's ratings (10, item 3). Under an answer, a thumbs-down opens six reason chips and a
+comment box; the evaluation panel lists the answers rated down with their reasons and a form
+for 1-3 key facts and the paper's sentence, shows the answers a follow-up questioned, and shows
+the judge agreement overall and per task.
 
 **Health**: `GET /v1/health` checks only that the database answers. `GET /v1/storage`
 (cached 15 s) reports database size and paper/chunk counts, PDF size and free disk,

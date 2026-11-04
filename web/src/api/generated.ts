@@ -55,6 +55,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/feedback/agreement": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Feedback Agreement
+         * @description How often the judge's verdict matched the reader's ratings, overall and per task.
+         */
+        get: operations["feedback_agreement_v1_feedback_agreement_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/health": {
         parameters: {
             query?: never;
@@ -545,6 +565,11 @@ export interface components {
             note: string;
             /** Rating */
             rating: ("up" | "down") | null;
+            /**
+             * Reasons
+             * @default []
+             */
+            reasons: ("wrong" | "not_in_paper" | "too_shallow" | "too_long" | "missing_citation" | "did_not_answer")[];
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -747,6 +772,28 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    feedback_agreement_v1_feedback_agreement_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };

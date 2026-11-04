@@ -115,3 +115,27 @@ it("shows no judge metrics for a strict run", async () => {
   expect(await screen.findByLabelText("As configured summary")).not.toHaveTextContent("Citation support");
   expect(screen.queryByText(/than strict|with strict/)).not.toBeInTheDocument();
 });
+
+it("lists the answers rated down and reloads the evaluation after key facts are saved", async () => {
+  const item = {
+    turn_id: "turn-1", question: "How is Cedar evaluated?", rating: "down", note: "", created_at: "2026-11-04T10:00:00Z",
+    reasons: ["did_not_answer"], key_facts: [] as string[], source_sentence: "",
+  };
+  let saved = false;
+  const fetcher = vi.fn(async (_url: string, init?: RequestInit) => {
+    if (init?.method === "PUT") {
+      saved = true;
+      return new Response(JSON.stringify({ turn_id: "turn-1", key_facts: ["92%"], source_sentence: "" }));
+    }
+    const feedback = [{ ...item, key_facts: saved ? ["92%"] : [] }];
+    return new Response(JSON.stringify({ paper_id: "paper-1", cases: [{ case_id: "c1" }], runs: [], latest: run, feedback }));
+  });
+  vi.stubGlobal("fetch", fetcher);
+  render(<EvaluationPanel paperId="paper-1" ready />);
+  expect(await screen.findByText("Answers you rated down (1)")).toBeInTheDocument();
+  expect(screen.getByText("Did not answer")).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("Key fact 1"), { target: { value: "92%" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save key facts" }));
+  expect(await screen.findByText("Scored case: 92%")).toBeInTheDocument();
+  expect(String(fetcher.mock.calls[1]![0])).toContain("/chat/turn-1/feedback/facts");
+});

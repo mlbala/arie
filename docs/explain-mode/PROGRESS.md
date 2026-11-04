@@ -5,8 +5,8 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 
 ## Current state
 
-- Last done: S14 (2026-11-04): paper guide, section summaries for the strict planner, guide as the chat's opening message; gate 3 recorded
-- Next: see `docs/explain-mode/README.md` (S14 was the last listed gate)
+- Last done: S15 (2026-11-04): reasons on thumbs-down, implicit negatives, feedback key-fact form, judge agreement; gate 4 not yet read (needs 30 rated answers)
+- Next: see `docs/explain-mode/README.md` (S16 and S17 are optional)
 - Default answer mode: strict
 - Baseline (strict, before changes): paper 2610.40325, arie.yaml llm = deepseek, one run, 11 cases per variant.
   configured (reranker on): passed 9/11 (0.818), fact recall 0.688, evidence hit 0.625, grounded 1.0, median 6.18 s.
@@ -18,7 +18,15 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 - Latest gate numbers: gate 1 (S11) passed on both sets, with first token measured on a Mac, not the 2-vCPU host. Explain vs strict, prose fact recall: paper 2610.40325 0.625 vs 0.562 (strict rerun in S11; 11 cases each); Qasper 30 0.391 vs 0.297 (S05). Explain fallbacks 0/11 and 0/49. Median first token 2.75 s and 1.20 s. Cache hit from the second question of each paper on: 0.998 and 0.974.
 - Gate 3 (S14): the judge prefers the new overview answers more than half the time. Strict overview answers with vs without guide section summaries, `judge_pairwise` both ways, abstract sentences as key facts, deepseek, one run: paper 2610.40325 win rate 1.0 (4 of 4 wins); Qasper first 6 papers 0.521 (24 cases: 6 wins, 13 ties, 5 losses); all 28: 0.589, 10 outright wins. Passes on win rate, not on outright wins.
 
+- Gate 4 (S15): not read. It needs 30 or more rated answers and the library has none that this session could count (ratings come from the reader). Read it with `GET /v1/feedback/agreement` or the panel's "Judge agreement" block (`ready` turns true at 30) and record `agreed of judged` here.
+
 ## Open issues
+
+- Judge agreement covers only explain answers: the judge's verdict is the saved `judge` event, and strict answers have none. While `answer.default_mode` is `strict`, most ratings are unjudged (the block says how many), and "per task" is nearly one row, since every explain answer has task `explain`. Reading gate 4 may need either explain as the default or a judge call on a rated strict answer (needs its own decision; the support judge reads a paper pack, so it does not fit a strict answer as it is).
+- "Judge approves" is defined as no `unsupported` cited sentence in a `complete` judgement (`partial` counts as support). The session file did not say; a stricter rule (no `partial` either) would lower agreement. Revisit once there are ratings to compare.
+- The implicit-negative rules (`implicit_negative`) were tested on about 30 phrasings and never on real chats. `asked_again` only matches at the start of a question and `said_wrong` skips questions that open with a question word. False-positive rate unmeasured; read the panel's "questioned" list for a while before trusting it.
+- Reasons and the note are not restored in chat after a reload (the chips show only right after a thumbs-down); they are stored and shown in the panel. The source passage in the key-fact form is pasted text, not a picker over the PDF.
+- Ratings saved before S15 have empty `mode`, `prompt_version` and `trace_id`, and no backfill; their `task` is read from the saved events for the agreement only.
 
 - Gate 3 is read two ways: win rate (ties 0.5) passes (0.589 overall, 0.521 on Qasper), outright wins (10 of 28) do not. One run, 7 papers, and 13 of 24 Qasper cases tie. Decide which reading the gate means before relying on it.
 - The guide queue is in memory: a paper queued when the server stops, or indexed before S14, has no guide until `make guides`. The guide's budget (`GUIDE_BUDGET`, 150 s, 2,500 tokens) has no ADR, following S13's judge; SPEC §1 I3 lists it.
@@ -230,5 +238,13 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 - Files: prompts/guide.v1.yaml, core/arie_core/harness/{guide (new),planner,orchestrator,session}.py, api/arie_api/{build_guides,eval_guides (new),routes}.py, api/arie_api/runtime/{guides (new),__init__,base,chat,library,packs,sync}.py, Makefile, tests (core test_guide new, test_pack_storage, test_research_orchestration; api test_eval_guides new; web ChatWorkspace.test), web/src/{api/client.ts,api/generated.ts,guide.ts (new),components/{PaperGuide (new),ChatWorkspace}.tsx}, docs/SPEC.md (§1, §2, §5, §8.3, §8.10 new, §11), README.md
 - Checks: make check ✓ (core 378, api 47, contracts 58) · make web-check ✓ (58 vitest, +2) · `generate:api` run
 - Numbers: guide for 2610.40325 2,065 output tokens, 11.3 s, cache hit 138,752 of 139,389 prompt tokens; 6 Qasper guides all complete. Gate 3 under Current state.
+- Next: per README.
+
+### S15: Feedback loop, gate 4 (2026-11-04)
+- Done: `harness/feedback.py` (pure: `REASONS`, `implicit_negative`, `answer_facts`, `judge_opinion`, `agreement`). `arie_feedback` gained `reasons_json`, `mode`, `task`, `prompt_version`, `trace_id` (added at startup if missing); `PUT .../feedback` takes `reasons` (422 unknown, 400 with `up`). Both modes put `trace_id` on the `answer` event. `save_chat_turn` marks the previous turn in `arie_implicit_feedback`. `GET /v1/feedback/agreement`; `GET .../eval` returns `implicit_feedback` and `agreement`. Web: six reason chips under a thumbs-down, `FeedbackPanel` (reasons, key-fact and sentence form, questioned answers, agreement).
+- Decisions: implicit negatives are a separate table, not a rating value, never a case and never in the agreement; the judge's verdict is the `judge` event (explain only); the agreement is library-wide and rides in the `/eval` overview so the panel makes no extra request.
+- Files: core/arie_core/harness/feedback.py (new), api/arie_api/{paper_eval,routes,explain_stream}.py, api/arie_api/runtime/{__init__,chat}.py, tests (core test_feedback new; api test_api_and_mcp; web FeedbackPanel.test new, ChatWorkspace.test, EvaluationPanel.test), web/src/{api/client.ts,api/generated.ts,components/{FeedbackPanel (new),EvaluationPanel,ChatWorkspace}.tsx,index.css}, web/openapi.json, docs/SPEC.md (§5, §8.9, §10, §11), README.md
+- Checks: make check ✓ (core 412, api 53, contracts 58) · make web-check ✓ (67 vitest) · `generate:api` run
+- Numbers: none; gate 4 needs 30 rated answers (see Current state).
 - Next: per README.
 

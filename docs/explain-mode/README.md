@@ -35,7 +35,7 @@ Size: S fits easily in one sitting, M is a normal session, L may need a second s
 | S12 | Background grounding checker | S10 | L | Measure first | done |
 | S13 | LLM judge, eval metrics, default switch, gate 2 | S12, S05 | M | | done |
 | S14 | Paper guide and section summaries, gate 3 | S10 | L | API + web | done |
-| S15 | Feedback loop, gate 4 | S13 | M | API + web | todo |
+| S15 | Feedback loop, gate 4 | S13 | M | API + web | done |
 | S16 | Foreground lane and answer workers | S03 | M | Optional | todo |
 | S17 | Prompt optimization with GEPA | S15 | M | Optional | todo |
 
