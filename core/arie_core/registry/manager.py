@@ -95,9 +95,11 @@ class PluginConfigEntry(BaseModel):
     inline: str | None = None
 
 
-# Context windows in tokens, deliberately below what the providers advertise. A provider that
-# sets ``context_tokens`` in ``llm_providers`` overrides these; an unknown plugin gets the
-# fallback. Explain mode sizes the paper pack against this number (ADR 0010).
+# Context windows in tokens, chosen to be conservative but not checked against the providers'
+# documented limits. A provider that sets ``context_tokens`` in ``llm_providers`` overrides
+# these; an unknown plugin, or a provider with a ``base_url`` and no ``context_tokens`` (the
+# endpoint may serve any model), gets the fallback. Explain mode sizes the paper pack against
+# this number (ADR 0010).
 DEFAULT_CONTEXT_TOKENS = {"deepseek": 64_000, "openai": 128_000, "gemini": 128_000}
 FALLBACK_CONTEXT_TOKENS = 32_000
 
@@ -169,6 +171,8 @@ class ArieConfig(BaseModel):
         profile = self.llm_providers.get(provider)
         if profile is not None and profile.context_tokens is not None:
             return profile.context_tokens
+        if profile is not None and profile.base_url:
+            return FALLBACK_CONTEXT_TOKENS
         return DEFAULT_CONTEXT_TOKENS.get(provider, FALLBACK_CONTEXT_TOKENS)
 
     @classmethod

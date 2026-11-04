@@ -194,6 +194,22 @@ def test_context_tokens_default_per_plugin_and_explicit_override(tmp_path: Path)
     assert loaded.explain.max_pack_share == 0.4
 
 
+def test_a_custom_endpoint_without_a_window_gets_the_fallback(tmp_path: Path) -> None:
+    path = tmp_path / "arie.yaml"
+    path.write_text(
+        "llm_providers:\n"
+        "  openai: {model: m, api_key_env: OPENAI_API_KEY, base_url: 'http://localhost:11434/v1'}\n"
+        "  gemini: {model: m, api_key_env: GEMINI_API_KEY, base_url: 'http://proxy/v1',"
+        " context_tokens: 200000}\n"
+        "  deepseek: {model: m, api_key_env: DEEPSEEK_API_KEY}\n",
+        encoding="utf-8",
+    )
+    loaded = ArieConfig.from_yaml(path)
+    assert loaded.context_tokens_for("openai") == 32_000  # the endpoint may serve any model
+    assert loaded.context_tokens_for("gemini") == 200_000  # an explicit window always wins
+    assert loaded.context_tokens_for("deepseek") == 64_000  # no base_url: the plugin default
+
+
 @pytest.mark.parametrize(
     ("text", "match"),
     [
