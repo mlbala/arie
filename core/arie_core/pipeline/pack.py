@@ -59,20 +59,13 @@ def chunk_number(paper_id: str, chunk_id: str) -> int | None:
     return int(number) if prefix == paper_id and number.isascii() and number.isdigit() else None
 
 
-def build_pack(
-    paper_id: str,
-    title: str,
-    abstract: str,
-    revision: str,
-    chunks: Sequence[EvidenceChunk],
-) -> PaperPack:
-    """Title, abstract, section outline, then every kept chunk as ``[cN]`` plus its text.
+def pack_chunks(paper_id: str, chunks: Sequence[EvidenceChunk]) -> list[tuple[int, EvidenceChunk]]:
+    """The chunks a pack keeps, in page order, each with its number and annotated section.
 
     Chunks of other papers are ignored (I1). Contents listings, credits, references and
     acknowledgements are left out by ``eligible``, the rule the strict answer path uses, and so
     are chunks that are only a heading. Everything else stays, equations and captions
-    included: the pack is the whole paper, not a selection of prose. ``revision`` identifies
-    the paper version (the vector index's ``<dedup_hash>:<chunk_count>``).
+    included: the pack is the whole paper, not a selection of prose.
     """
     numbered: list[tuple[int, EvidenceChunk]] = []
     for row in chunks:
@@ -82,35 +75,73 @@ def build_pack(
     # Page order, not input order, so the bytes don't depend on how the rows were loaded.
     numbered.sort(key=lambda item: (item[1].page_start, item[1].char_start, item[0]))
     numbers = {row.chunk_id: number for number, row in numbered}
-    kept = [
-        row
+    return [
+        (numbers[row.chunk_id], row)
         for row in eligible("", annotate_sections([row for _, row in numbered]))
         if _has_text(row)
     ]
 
-    outline = list(dict.fromkeys(row.section for row in kept if row.section))
+
+def render_blocks(numbered: Sequence[tuple[int, EvidenceChunk]]) -> list[str]:
+    """One ``[cN] text`` block per chunk; a block that starts a section opens with its name."""
+    blocks: list[str] = []
+    section = ""
+    for number, row in numbered:
+        block = f"[c{number}] {escape_markers(row.text.strip())}"
+        if row.section and row.section != section:
+            block = f"Section: {escape_markers(row.section)}\n{block}"
+        section = row.section or section
+        blocks.append(block)
+    return blocks
+
+
+def build_pack(
+    paper_id: str,
+    title: str,
+    abstract: str,
+    revision: str,
+    chunks: Sequence[EvidenceChunk],
+) -> PaperPack:
+    """Title, abstract, section outline, then every kept chunk (``pack_chunks``) as ``[cN]``.
+
+    ``revision`` identifies the paper version (the vector index's
+    ``<dedup_hash>:<chunk_count>``).
+    """
+    kept = pack_chunks(paper_id, chunks)
+    outline = list(dict.fromkeys(row.section for _, row in kept if row.section))
     parts = [f"Title: {escape_markers(title.strip())}"]
     if abstract.strip():
         parts.append(f"Abstract:\n{escape_markers(abstract.strip())}")
     if outline:
         parts.append("Outline:\n" + "\n".join(f"- {escape_markers(name)}" for name in outline))
-    section = ""
-    for row in kept:
-        block = f"[c{numbers[row.chunk_id]}] {escape_markers(row.text.strip())}"
-        if row.section and row.section != section:
-            block = f"Section: {escape_markers(row.section)}\n{block}"
-        section = row.section or section
-        parts.append(block)
+    parts.extend(render_blocks(kept))
 
     text = "\n\n".join(parts) + "\n"
     return PaperPack(
         text=text,
-        chunk_numbers=tuple(numbers[row.chunk_id] for row in kept),
+        chunk_numbers=tuple(number for number, _ in kept),
         token_estimate=estimate_tokens(len(text.encode())),
         revision=pack_revision(revision),
     )
 
 
+def pack_header(pack: PaperPack) -> str:
+    """Title, abstract and outline: the pack's text before its first chunk block."""
+    first = _MARKER.search(pack.text)
+    if first is None:
+        return pack.text.removesuffix("\n")
+    head = pack.text[: first.start()]
+    if not head.endswith("\n\n"):
+        # The first block opens with its "Section: <name>" line; section names hold no "\n\n".
+        head = head[: head.rfind("\n\n") + 2]
+    return head.removesuffix("\n\n")
+
+
+def pack_limit(context_tokens: int, share: float) -> int:
+    """The most estimated tokens a pack may have: ``share`` of the provider's context window."""
+    return int(Decimal(str(share)) * context_tokens)
+
+
 def pack_fits(pack: PaperPack, context_tokens: int, share: float) -> bool:
     """Whether the whole pack stays within ``share`` of the provider's context window."""
-    return pack.token_estimate <= Decimal(str(share)) * context_tokens
+    return pack.token_estimate <= pack_limit(context_tokens, share)

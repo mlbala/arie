@@ -12,6 +12,7 @@ from arie_core.pipeline.pack import (
     escape_markers,
     marker_numbers,
     pack_fits,
+    pack_header,
     pack_revision,
 )
 
@@ -142,3 +143,14 @@ def test_pack_fits_uses_the_share_of_the_context_window() -> None:
     assert pack_fits(PaperPack("t", (), 100, "r"), 64_000, 0.6)
     assert not pack_fits(pack, 64_000, 0.5)
     assert pack_fits(pack, 38_400, 1.0)
+
+
+def test_pack_header_is_the_text_before_the_first_chunk_block() -> None:
+    # The first kept chunk opens a section, so its block starts with a "Section:" line.
+    pack = build(CHUNKS)
+    assert pack.text.startswith(pack_header(pack) + "\n\nSection: Introduction\n[c0] ")
+    assert pack_header(pack).endswith("- Results")
+    # No headings: no outline, and the first block starts with its marker.
+    plain = build([chunk(0, "Deep models help."), chunk(1, "They improve accuracy.")])
+    assert pack_header(plain) == "Title: A Study of Models\n\nAbstract:\nWe study models."
+    assert pack_header(PaperPack("Title: X\n", (), 3, "r")) == "Title: X"

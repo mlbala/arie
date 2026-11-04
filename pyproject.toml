@@ -87,6 +87,10 @@ typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
 extraPaths = ["core", "plugins/db-sqlite", "api", "worker"]
+# Core tests import shared doubles from their conftest.py, as pytest's rootdir import allows.
+executionEnvironments = [
+    { root = "core/tests", extraPaths = ["core", "plugins/db-sqlite", "api", "worker"] },
+]
 
 [tool.pytest.ini_options]
 asyncio_default_fixture_loop_scope = "function"
