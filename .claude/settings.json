@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make lint)",
+      "Bash(make boundaries)",
+      "Bash(make types)",
+      "Bash(make check)",
+      "Bash(make test-unit)",
+      "Bash(make test-api)",
+      "Bash(make test-contracts)",
+      "Bash(make web-check)",
+      "Bash(uv run pytest *)",
+      "Bash(uv run ruff *)",
+      "Bash(uv run pyright *)",
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./data/**)",
+      "Read(**/*.db)",
+      "Read(**/*.pdf)",
+      "Read(./uv.lock)",
+      "Read(./web/package-lock.json)",
+      "Read(./web/node_modules/**)"
+    ]
+  }
+}
