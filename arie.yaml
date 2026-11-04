@@ -29,7 +29,7 @@ plugins:
   # (or an installed package with an arie.plugins entry point), select it here, and run
   # `make test-contracts`. Other keys are passed to the plugin's constructor.
   # Set either `use` to none for keyword-only retrieval.
-  embedder:     {use: gemini}  # online: frees the ~350 MB local model; 768-dim vectors
+  embedder:     {use: fastembed}  # local ONNX model in arie-worker; no API quota
   vector_store: {use: exact, path: ./data/arie-vectors.db}
   # Tier 3 of the quote verifier: a local NLI model checks that each summary claim is
   # entailed by its own quote. Runs in arie-worker; the model (~280 MB) downloads on first
