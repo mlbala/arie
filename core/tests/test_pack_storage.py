@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from arie_api.runtime import ResearchRuntime
 from arie_api.runtime import packs as packs_module
-from arie_core.pipeline.pack import PaperPack, marker_numbers
+from arie_core.pipeline.pack import PaperPack, escape_markers, marker_numbers
 from arie_core.plugin_api import ScrapedPaperInput
 from arie_core.registry.manager import ArieConfig
 from arie_core.registry.sync import SyncConfig
@@ -49,7 +49,7 @@ def document(identifier: str, *, status: str = "INDEXED", count: int = 3) -> dic
     ]
     return dict(
         id=identifier,
-        title=f"Paper {identifier}",
+        title="Agent tools for questions",
         abstract="Research with reproducible evidence.",
         source="arxiv",
         status=status,
@@ -142,6 +142,29 @@ async def test_get_pack_builds_lazily_for_an_older_paper_then_reads_without_the_
 
 
 @pytest.mark.asyncio
+async def test_a_database_from_before_packs_still_loads_and_builds_lazily(tmp_path: Path) -> None:
+    runtime = runtime_at(tmp_path)
+    await runtime.initialize()
+    try:
+        await runtime.save_paper(document("old"))
+        await runtime.db.execute(packs_module.context("test"), "DROP TABLE arie_paper_packs")
+    finally:
+        runtime.close()
+
+    reopened = runtime_at(tmp_path)
+    await reopened.initialize()  # recreates the table instead of failing
+    try:
+        assert await stored_rows(reopened) == []
+        pack = await reopened.get_pack("old")
+        assert pack is not None and pack.chunk_numbers == (0, 1)
+        assert [r["paper_id"] for r in await stored_rows(reopened)] == ["old"]
+        await reopened.delete_paper("old")
+        assert await stored_rows(reopened) == []
+    finally:
+        reopened.close()
+
+
+@pytest.mark.asyncio
 async def test_each_pack_holds_only_its_own_paper_and_delete_removes_it(tmp_path: Path) -> None:
     runtime = runtime_at(tmp_path)
     await runtime.initialize()
@@ -205,7 +228,18 @@ async def test_a_paper_that_reaches_indexed_gets_its_pack_during_sync(tmp_path: 
         rows = await stored_rows(runtime)
         assert [r["paper_id"] for r in rows] == ["resumed"]
         assert rows[0]["revision"] == f"{scraped.dedup_hash}:{len(saved['chunks'])}:p1"
-        assert "Title: Paper resumed" in rows[0]["text"] and "[c0]" in rows[0]["text"]
+        assert "Title: Agent tools for questions" in rows[0]["text"] and "[c0]" in rows[0]["text"]
+        assert "resumed" not in rows[0]["text"]  # the paper id never reaches the pack
+        # Every marker leads back to the saved chunk and to the exact page text it quotes.
+        pages = {page["number"]: page["text"] for page in saved["pages"]}
+        by_id = {chunk["chunk_id"]: chunk for chunk in saved["chunks"]}
+        numbers = marker_numbers(rows[0]["text"])
+        assert numbers
+        for number in numbers:
+            chunk = by_id[f"resumed:{number}"]
+            quoted = pages[chunk["page_start"]][chunk["char_start"] : chunk["char_end"]]
+            assert quoted == chunk["text"]
+            assert escape_markers(quoted.strip()) in rows[0]["text"]
     finally:
         runtime.close()
 

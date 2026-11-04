@@ -483,7 +483,7 @@ evidence, unless it passes the verifier.
 | Section | Purpose |
 | --- | --- |
 | `plugins` | Which plugin fills each slot, plus constructor keys. |
-| `llm_providers` | Default model, key variable, optional `base_url` and optional `context_tokens` (the context window explain mode plans for; defaults are 64,000 for DeepSeek and 128,000 for OpenAI and Gemini) per LLM plugin. |
+| `llm_providers` | Default model, key variable, optional `base_url` and optional `context_tokens` (the context window explain mode plans for; defaults are 64,000 for DeepSeek and 128,000 for OpenAI and Gemini, and 32,000 for any other plugin or one with a `base_url`; they are conservative guesses, so set the real window) per LLM plugin. |
 | `embedding_providers` | Default model, similarity floor and key variable per embedder. |
 | `explain` | `max_pack_share` (default 0.6): the whole paper goes in the prompt only if its estimated tokens are at most this share of the model's `context_tokens` ([ADR 0010](docs/adr/0010-explain-mode-paper-in-the-prompt.md)). Explain mode itself is not built yet. |
 | `sync` | Default sync window and limits (see [Sync](#sync)). |

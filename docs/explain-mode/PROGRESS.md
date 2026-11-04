@@ -35,6 +35,8 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 - Default `context_tokens` (deepseek 64,000, openai and gemini 128,000, other plugins 32,000) are conservative guesses, not provider-documented limits. Check them against the models in `arie.yaml`.
 - The pack text escapes literal markers (`[c12]` becomes `[\c12]`) and has no inverse. S10's quote check must compare against the raw chunk found by id and offsets, never against pack text.
 - The pack keeps every chunk that is not credits, a contents listing, references or acknowledgements, so equations and captions stay. The strict path's prose check (`_usable` in `research.py`) was not reused for that reason. `paper_eval.py` still has its own third copy of the section rules.
+- Gaps in `eligible`, which the pack inherits (found in the S06 review, not fixed because widening it also changes strict retrieval and needs an `arie-eval` run): a section headed "Bibliography", "Literature Cited" or "Reference" is kept; author, affiliation and e-mail blocks are kept unless they contain "equal contribution", "listing order is random" or "work performed while"; a chunk containing one of those phrases is dropped whole, body text included. Revisit after the pack-size measurement above shows real papers with these headings.
+- The pack adds no `paper_id` itself (tested), but a paper's own text can carry its arXiv id in a page stamp. It is left in: the quote check needs the chunk text unchanged, and the invariant is about the id binding, not the paper's words.
 - The kit re-added `AGENTS.md` (CLAUDE.md imports it) although the README had become the canonical doc. Decide later whether to keep both.
 
 ## Log
@@ -113,3 +115,9 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 - Numbers: +20 core tests (9 pack, 5 storage, 6 config). No eval run; no answer-path code changed.
 - Open: see Open issues (pack sizes unmeasured, context_tokens guesses, no unescape, third copy of the section rules).
 - Next: S07.
+
+### S06 review (2026-11-04)
+- Fixed: `paper_id` test (fixture titles no longer hold the id); old-DB test; offsets test now checks stored markers against page-text slices; 0003/0008 files now say "amended by 0010"; a provider with `base_url` and no `context_tokens` falls back to 32,000.
+- Left open: deviation 6, `eligible` keeps "Bibliography", "Literature Cited" and "Reference" sections and unmarked author blocks (see Open issues); widening it changes strict retrieval and needs an `arie-eval` run.
+- Still unverified: the `context_tokens` values (deepseek 64,000, openai and gemini 128,000) were never checked against provider documentation; ADR, README, SPEC and manager.py now say so.
+- Checks: make check ✓ (275 core, 23 api, 44 contract).

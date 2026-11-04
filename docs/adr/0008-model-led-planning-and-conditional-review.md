@@ -1,6 +1,6 @@
 # 0008: The planner decides the question type, and review runs when it adds a check
 
-**Status:** Accepted
+**Status:** Accepted; amended by [ADR 0010](0010-explain-mode-paper-in-the-prompt.md) (explain mode has no LLM planner or review call; strict mode is unchanged)
 
 ## Context
 

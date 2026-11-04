@@ -50,8 +50,6 @@ def test_every_marker_maps_to_a_real_chunk_and_its_text() -> None:
         assert row.chunk_id == f"{PAPER}:{number}"
         body = escape_markers(row.text.strip())
         assert f"[c{number}] {body}" in pack.text
-        # The offsets still address the page text; the pack only quotes the chunk.
-        assert row.char_end - row.char_start == len(row.text)
 
 
 def test_title_abstract_outline_and_sections_come_first_and_in_order() -> None:
@@ -121,6 +119,14 @@ def test_a_pack_holds_only_the_bound_papers_chunks() -> None:
     assert "borrowed" not in pack.text
     empty = build(other, paper_id="2601.11111")
     assert empty.chunk_numbers == ()
+
+
+def test_the_pack_adds_no_paper_id_to_the_model_input() -> None:
+    # Title, abstract, outline, section lines and markers are all the pack adds on its own.
+    pack = build(CHUNKS)
+    assert PAPER not in pack.text
+    assert f"{PAPER}:" not in pack.text and "paper_id" not in pack.text
+    assert "2601" not in pack.text
 
 
 def test_token_estimate_and_revision() -> None:

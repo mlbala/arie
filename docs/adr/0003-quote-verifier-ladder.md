@@ -1,6 +1,6 @@
 # 0003: Three-tier quote verifier with a local entailment model
 
-**Status:** Accepted
+**Status:** Accepted; amended by [ADR 0010](0010-explain-mode-paper-in-the-prompt.md) (explain mode does not pass every claim through the verifier ladder; strict mode is unchanged)
 
 ## Context
 

@@ -13,7 +13,8 @@ the written answer alone is scored. 9 of 49 answers fell back to excerpts: 5
 "explain this paper" gets quotes, not an explanation.
 
 A paper is one document that fits a modern context window, and the providers ARIE
-supports offer windows of 64,000 tokens or more. Putting the paper in the prompt removes
+supports are expected to offer windows of 64,000 tokens or more (not yet checked against
+their documentation). Putting the paper in the prompt removes
 the retrieval step that loses context, and prompt caching makes the repeated prefix cheap
 across the turns of one conversation. How many library papers fit under the fit rule below
 has not been measured yet; `pack_fits` decides per paper at run time.
@@ -36,7 +37,10 @@ or `explain`. The default stays `strict` until explain mode passes its gate.
   `explain.max_pack_share` (default 0.6) of the provider's `llm_providers.<name>.context_tokens`.
   Otherwise a paged pack is used: abstract, introduction, conclusion, then whole sections
   ranked by strict-mode retrieval until the limit. Defaults: DeepSeek 64,000, OpenAI and
-  Gemini 128,000, unknown plugin 32,000. They are below the advertised windows on purpose.
+  Gemini 128,000, unknown plugin 32,000. They are conservative guesses, not checked against
+  the providers' documented limits; `context_tokens` overrides them. A provider with a
+  `base_url` and no `context_tokens` also gets 32,000, because that endpoint may serve any
+  model.
 - **Write, then check.** One streaming writer call cites sources inline as `[cN]`. First
   token within 10 s, stall timeout 15 s, total 90 s. Output limits: brief 600, standard
   1,200, detailed 2,500 tokens. Depth comes from the keyword planner; there is no LLM planner
