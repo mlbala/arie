@@ -23,7 +23,7 @@ Size: S fits easily in one sitting, M is a normal session, L may need a second s
 | S00 | Install this kit and record a baseline | — | S | Partly manual | done |
 | S01 | Answer trace and logging | S00 | M | | done |
 | S02 | Remove dead code listed in SPEC §12 | S00 | S | | done |
-| S03 | Honest model health and eval visibility | S01 | M | API + web | todo |
+| S03 | Honest model health and eval visibility | S01 | M | API + web | done |
 | S04 | Answer-level eval metrics | S01 | M | | todo |
 | S05 | Qasper slice and strict baseline | S04 | M | Needs network and an LLM key | todo |
 | S06 | ADR 0010, paper pack, context limits | S04 | M | **plan first** | todo |

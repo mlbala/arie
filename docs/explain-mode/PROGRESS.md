@@ -5,8 +5,8 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 
 ## Current state
 
-- Last done: S02 (2026-11-04)
-- Next: S03
+- Last done: S03 (2026-11-04)
+- Next: S04
 - Default answer mode: strict
 - Baseline (strict, before changes): paper 2610.40325, arie.yaml llm = deepseek, one run, 11 cases per variant.
   configured (reranker on): passed 9/11 (0.818), fact recall 0.688, evidence hit 0.625, grounded 1.0, median 6.18 s.
@@ -19,6 +19,9 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 - Baseline is one LLM run on 11 cases. The configured variant failed 2 fact cases (`question_not_answered`, `entailment_rejected`) that no_reranker passed, and one no_reranker case fell back with `TimeoutError` yet passed. Rerun before drawing conclusions about the reranker.
 - `IngestionPipeline.discover`, its `queue` and `max_queue_size` have no caller since S02 removed `run` (`sync.py` only uses `gate`, `download_pdf` and `parse_document`). Left in place because the session file did not list them; `test_research_runtime.py` uses a different `queue` (the sync job queue). Remove in a later cleanup.
 - ADR 0006's context says the QoS lanes were "enforced with asyncio semaphores". They never existed in the runtime. Noted in SPEC §12, ADR text left alone; amend it if the ADR is next touched.
+- `degraded` is informational. A degraded model is still called, so each answer still waits for it up to its timeout. Skipping it while degraded is SPEC §13.4 option 2 (needs its own decision and maybe an ADR).
+- `AnswerModel.scores` counts any cancellation as a timeout, because the harness's `asyncio.timeout` reaches it as one. A request cancelled for another reason (client disconnect, shutdown) counts the same way. Three in a row would show a false `degraded` until the next success.
+- `EvaluationPanel` shows only the latest run (or the one just started). `overview.runs` lists earlier runs without results; a run picker would need `getEvalRun` per run.
 - The kit re-added `AGENTS.md` (CLAUDE.md imports it) although the README had become the canonical doc. Decide later whether to keep both.
 
 ## Log
@@ -61,3 +64,12 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 - Numbers: 312 lines removed, 97 added (net -215; 293 removed and 80 added in Python). 241 core (-1 gate test, +3 config tests) + 13 api + 44 contract tests pass.
 - Open: `IngestionPipeline.discover` and `queue` unused; ADR 0006 wording (see Open issues).
 - Next: S03.
+
+### S03: Honest model health and eval visibility (2026-11-04)
+- Done: `AnswerModel.scores` counts consecutive failures per slot (pool `TimeoutError`, a caller cancellation, or any other exception). Three in a row make `status()` `degraded` with the last reason in `detail`; one success makes it `healthy`. `status()` also has `consecutive_failures`, `last_error` and `last_latency_seconds`; `GET /v1/storage` already spreads `status()`, so it carries them. `EvaluationPanel`: per case it shows mode, fallback reason, reranked, seconds and the slowest trace stage; per variant a line of fallback counts by reason. `SystemPane`: the model cards show the last call's latency, and the "Storage & health" header says "Model degraded" instead of "Healthy".
+- Decisions: not-ready refusals are not failures. A refusal's `fallback_reason` (guard code, `not_in_paper`) is shown but not counted as a fallback. Runs saved before S01 have no reasons or trace; the panel says so instead of "no fallbacks". `FakePool` got `delay` and exception results rather than a new double.
+- Files: api/arie_api/models.py, api/tests/test_answer_models.py, web/src/{api/client.ts,index.css}, web/src/components/{EvaluationPanel,SystemPane}.tsx and their tests, docs/SPEC.md §9, §10, §11, §13.4
+- Checks: make check ✓ · make web-check ✓ · `generate:api` ran, no diff (both routes return untyped documents)
+- Numbers: 241 core + 17 api (+4) + 44 contract tests pass; 43 web tests (+3, was 40).
+- Open: see Open issues (degraded is informational, cancellation counted as timeout, latest run only, queue-wait split).
+- Next: S04.

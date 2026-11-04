@@ -2604,5 +2604,9 @@ html, body { overflow: hidden; }
 .evaluation-result.review svg { color: var(--amber); }
 .evaluation-result p { margin: 4px 0 0; color: var(--muted); }
 .evaluation-result details summary { margin-top: 4px; color: var(--muted); cursor: pointer; font-size: 10px; }
+.evaluation-fallbacks { margin: -4px 0 10px; color: var(--muted); font-size: 11px; }
+.evaluation-result p.evaluation-meta { display: flex; flex-wrap: wrap; font-size: 10px; font-variant-numeric: tabular-nums; }
+.evaluation-meta span + span::before { content: "·"; margin: 0 5px; }
+.evaluation-meta .evaluation-fallback { color: var(--amber); font-weight: 650; }
 .evaluation-variant { margin-left: auto; color: var(--muted); font-size: 9px; white-space: nowrap; }
 .supporting-passages blockquote.table-quote { overflow-x: auto; white-space: pre; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; line-height: 1.5; }

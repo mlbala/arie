@@ -218,6 +218,10 @@ export interface EvalResult {
   answer: string;
   cited_pages: number[];
   error: string;
+  /** Why the answer fell back to excerpts or abstained; empty otherwise. Absent in runs saved before the trace existed. */
+  fallback_reason?: string;
+  /** Seconds per stage (`plan`, `vector`, `read`, `rerank`, `write`, `tier3`, `review`, `total`). */
+  trace?: { seconds: Record<string, number>; prompt_version: string; model: string };
 }
 
 export interface EvalSummary {
@@ -417,6 +421,16 @@ export function saveSyncSettings(settings: SyncSettings): Promise<{ settings: Sy
   return requestJson("/v1/sync/settings", { method: "PUT", body: JSON.stringify(settings) });
 }
 
+/** One answer-path model; `degraded` after repeated timeouts or failures, with the reason in `detail`. */
+export interface AnswerModelHealth {
+  plugin: string;
+  status: string;
+  detail: string;
+  consecutive_failures?: number;
+  last_error?: string;
+  last_latency_seconds?: number | null;
+}
+
 export interface StorageHealth {
   checked_at: string;
   database: {
@@ -431,8 +445,8 @@ export interface StorageHealth {
     provider: string; status: string; size_bytes: number | null; detail: string;
     embedder?: string; vectors?: number | null; papers_indexed?: number | null; papers_total?: number | null;
   };
-  entailment?: { plugin: string; status: string; detail: string };
-  reranker?: { plugin: string; status: string; detail: string };
+  entailment?: AnswerModelHealth;
+  reranker?: AnswerModelHealth;
   active_jobs: SyncJob[];
 }
 

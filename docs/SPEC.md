@@ -409,9 +409,24 @@ All CPU-heavy work runs in spawn-started processes managed by `SupervisedPool`
 
 `AnswerModels` ([api/arie_api/models.py](../api/arie_api/models.py)) builds one
 `AnswerModel` per entry in `ANSWER_SLOTS`. `warm()` runs the slot's warm-up input until
-it succeeds and sets `ready = True`. `scores()` raises if not ready. `status()` reports
-`healthy`, `loading` or `degraded`. `ready` is set only by warm-up: later timeouts or
-failures do not change the reported status.
+it succeeds and sets `ready = True`. `scores()` raises if not ready (that refusal is not
+counted as a failure). `ready` is set only by warm-up; the call outcomes below do not
+change it, and a degraded model is still called.
+
+`scores()` counts consecutive failures per slot: a `TimeoutError` from the pool, a
+cancellation (the caller's own deadline passed first, as `asyncio.timeout` does in
+steps 3, 5 and 8; a request cancelled for another reason is counted the same way) or
+any other exception. A success resets the count. `status()` reports:
+
+| Status | When |
+| --- | --- |
+| `loading` | Not ready and no load error yet. |
+| `degraded` | Not ready after a failed load (`error`), **or** ready with `FAILURE_LIMIT` (3) failed calls in a row. `detail` gives the reason, for example `failed its last 3 calls (last: timed out after 3.0 s)`. |
+| `healthy` | Ready, with fewer than 3 failed calls in a row (one success is enough). |
+
+Each slot's status also carries `consecutive_failures`, `last_error` (empty after a
+success) and `last_latency_seconds` (the last call, successful or not; `null` before the
+first). A slot set to `none` reports `disabled` without these fields.
 
 ONNX plugins create sessions with `intra_op_num_threads` = `threads` (entailment 1,
 reranker 2), `inter_op_num_threads` = 1, and the CPU memory arena off.
@@ -442,8 +457,12 @@ reranker 2), `inter_op_num_threads` = 1, and the CPU memory arena off.
    - `passed`: fact cases need grounded, not abstained, and evidence hit or recall
      ≥0.5. Refusal cases need no claims.
    - Each result also stores `mode`, `fallback_reason`, `reranked`, `model_calls`
-     and `seconds`. The UI shows the summary. The per-case `mode` and
-     `fallback_reason` are in `GET /v1/papers/{id}/eval/runs/{run}`.
+     and `seconds`, plus the answer `trace` (8.8). `GET /v1/papers/{id}/eval/runs/{run}`
+     returns all of it. `EvaluationPanel` shows the summary and, per variant, how many
+     answers fell back to excerpts by `fallback_reason` (a refusal's reason is not
+     counted). Each case row shows its variant (when both ran), `mode`, `fallback_reason`,
+     `reranked`, `seconds` and the slowest stage of its trace. Runs saved before the trace
+     existed have no reasons or stages; the panel says so.
 
 A fallback answer made of exact excerpts can still pass: excerpts are grounded and may
 quote the source sentence. So a run where Tier 3 always times out still scores whether
@@ -463,7 +482,11 @@ starts a sync of the paper's source.
 **Health**: `GET /v1/health` checks only that the database answers. `GET /v1/storage`
 (cached 15 s) reports database size and paper/chunk counts, PDF size and free disk,
 vector coverage (`healthy`, `indexing`, `degraded`), and the status of each answer
-model from `AnswerModels.status()`.
+model from `AnswerModels.status()` (section 9: `degraded` after three timeouts or
+failures in a row, with its reason in `detail`, plus the last call's latency). The
+`SystemPane` health card for each model shows the status pill, `detail` and the last
+call's latency, and the collapsed "Storage & health" header reads "Model degraded"
+instead of "Healthy" while either model is degraded.
 
 **MCP**: `POST /mcp/p/{handle}` verifies an HMAC-signed, paper-scoped handle
 (`ARIE_MCP_SECRET`) but serves a built-in demo paper, and no route issues handles.
@@ -596,8 +619,9 @@ Not implemented. In recommended order:
    and record per-stage timings, including rerank time, Tier 3 queue wait vs. compute,
    and writer time. Show `mode` and `fallback_reason` per case in `EvaluationPanel`. Mark
    an answer model `degraded` after repeated consecutive timeouts. *Done (S01, see 8.8):
-   the Tier 3 log lines and the per-answer trace, except the queue-wait split. Still open:
-   the queue-wait split, the `EvaluationPanel` columns and `degraded`.*
+   the Tier 3 log lines and the per-answer trace, except the queue-wait split. Done (S03,
+   see 9, 10 and 11): the `EvaluationPanel` columns and `degraded`. Still open: the
+   queue-wait split.*
 2. **Stop the reranker from blocking the claim check.** Either default
    `shared_model_worker` to `false` on small hosts (about 10% more memory per ADR 0009),
    or skip reranking when the answer worker is still busy with an abandoned call.
