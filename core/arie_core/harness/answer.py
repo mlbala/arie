@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import time
 from collections.abc import Mapping, Sequence
@@ -21,6 +22,7 @@ from arie_core.harness.reader import (
     select_excerpts,
 )
 from arie_core.harness.session import ModelSession, failure_reason
+from arie_core.harness.trace import AnswerTrace
 from arie_core.harness.verifier import (
     MIN_ENTAILMENT,
     REVIEW_OPTIONAL_ENTAILMENT,
@@ -31,6 +33,7 @@ from arie_core.harness.verifier import (
 from arie_core.plugin_api import LLM, Ctx
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+logger = logging.getLogger(__name__)
 
 
 class AnswerResult(msgspec.Struct, frozen=True):
@@ -46,6 +49,7 @@ class AnswerResult(msgspec.Struct, frozen=True):
     covered_aspects: int = 0
     required_aspects: int = 0
     input_tokens: int = 0
+    trace: AnswerTrace = AnswerTrace()
 
 
 def load_playbook(project_root: Path) -> dict[str, str]:
@@ -60,12 +64,12 @@ def load_playbook(project_root: Path) -> dict[str, str]:
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError(f"The QA playbook requires {name}")
         result[name] = prompt
+    # The version recorded on every answer's trace, for example "qa.v1".
+    title, version = data.get("name"), data.get("version")
+    if not isinstance(title, str) or not title or type(version) is not int:
+        raise ValueError("The QA playbook requires a name and an integer version")
+    result["version"] = f"{title}.v{version}"
     return result
-
-
-def answer_prompts(project_root: Path) -> tuple[str, str]:
-    data = load_playbook(project_root)
-    return data["answer_system"], data["review_system"]
 
 
 TABLE_EXCERPT_BYTES = 1200
@@ -242,14 +246,49 @@ async def compose_answer(
     The caller owns the 25-second request timeout. Neither model receives tools.
     With ``entail``, each drafted claim must pass Tier 3 against its own quote before
     review; a model failure or timeout abstains to source excerpts (I2), never skips it.
+    The result carries an ``AnswerTrace`` of the stages run here; the orchestrator
+    replaces it with the full trace of the answer.
     """
+    started = time.monotonic()
+    session = session or ModelSession(ctx, llm)
+    result = await _compose(
+        ctx,
+        paper_id,
+        question,
+        rows,
+        project_root=project_root,
+        plan=plan,
+        session=session,
+        entail=entail,
+        entail_floor=entail_floor,
+    )
+    trace = session.trace(result.mode, result.fallback_reason, time.monotonic() - started)
+    return msgspec.structs.replace(result, trace=trace)
+
+
+def _tier_3_failed(ctx: Ctx, reason: str, detail: str = "") -> None:
+    """One WARNING line per Tier 3 fallback, tagged with the request's trace id."""
+    logger.warning("Tier 3 %s trace=%s%s", reason, ctx.trace_id, f" {detail}" if detail else "")
+
+
+async def _compose(
+    ctx: Ctx,
+    paper_id: str,
+    question: str,
+    rows: Sequence[EvidenceChunk],
+    *,
+    project_root: Path | None,
+    plan: AnswerPlan | None,
+    session: ModelSession,
+    entail: EntailmentCheck | None,
+    entail_floor: float,
+) -> AnswerResult:
     scoped = [
         row for row in rows if row.paper_id == paper_id and not is_untrusted_instruction(row.text)
     ]
     plan = plan or plan_answer(question)
     question = plan.question
     overview = plan.overview
-    session = session or ModelSession(ctx, llm)
     reviewed = rejected = 0
 
     async def fallback(reason: str = "") -> AnswerResult:
@@ -282,29 +321,37 @@ async def compose_answer(
         return await fallback()
 
     try:
-        writer, reviewer = await asyncio.to_thread(answer_prompts, project_root or PROJECT_ROOT)
+        playbook = await asyncio.to_thread(load_playbook, project_root or PROJECT_ROOT)
+        session.prompt_version = playbook["version"]
+        writer, reviewer = playbook["answer_system"], playbook["review_system"]
         # Planner 160 + writer 440 + reviewer 100 = the 700-token output cap (I3).
         writer_limit = 440 if session.calls else 600
-        draft = await session.call(
-            writer,
-            {
-                "task": plan.task,
-                "user_question": plan.user_question or question,
-                "question": question,
-                "required_aspects": list(plan.aspects),
-                "depth": plan.depth,
-                "target_words": plan.target_words,
-                "max_claims": plan.max_claims,
-                "max_paragraphs": 3 if plan.depth == "detailed" else 1,
-                "output_limit": writer_limit,
-                "source_passages": [
-                    {"source": i, "section": row.section, "page": row.page_start, "text": row.text}
-                    for i, row in enumerate(windows)
-                ],
-            },
-            writer_limit,
-            13.0,
-        )
+        with session.stage("write"):
+            draft = await session.call(
+                writer,
+                {
+                    "task": plan.task,
+                    "user_question": plan.user_question or question,
+                    "question": question,
+                    "required_aspects": list(plan.aspects),
+                    "depth": plan.depth,
+                    "target_words": plan.target_words,
+                    "max_claims": plan.max_claims,
+                    "max_paragraphs": 3 if plan.depth == "detailed" else 1,
+                    "output_limit": writer_limit,
+                    "source_passages": [
+                        {
+                            "source": i,
+                            "section": row.section,
+                            "page": row.page_start,
+                            "text": row.text,
+                        }
+                        for i, row in enumerate(windows)
+                    ],
+                },
+                writer_limit,
+                13.0,
+            )
         if not isinstance(draft, dict):
             return await fallback("invalid_draft")
         claims = cast(dict[str, object], draft).get("claims")
@@ -386,15 +433,24 @@ async def compose_answer(
             # Tier 3 runs before review so coverage is judged only on entailed claims.
             budget = min(4.0, ctx.deadline - time.monotonic() - 3.0)
             if budget <= 0.2:
+                _tier_3_failed(ctx, "entailment_timeout", "no time left")
                 return await fallback("entailment_timeout")
             try:
-                async with asyncio.timeout(budget):
-                    scores = await EvidenceVerifier.tier_3_scores(
-                        entail, [(item.quote, item.text) for item in candidates]
-                    )
+                with session.stage("tier3"):
+                    async with asyncio.timeout(budget):
+                        scores = await EvidenceVerifier.tier_3_scores(
+                            entail, [(item.quote, item.text) for item in candidates]
+                        )
             except TimeoutError:
+                _tier_3_failed(ctx, "entailment_timeout", f"after {budget:.1f}s")
                 return await fallback("entailment_timeout")
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "Tier 3 entailment_unavailable trace=%s %s",
+                    ctx.trace_id,
+                    failure_reason(exc),
+                    exc_info=True,
+                )
                 return await fallback("entailment_unavailable")
             kept = [
                 (msgspec.structs.replace(item, checks=(*item.checks, "tier_3_entailment")), score)
@@ -404,6 +460,12 @@ async def compose_answer(
             rejected += len(candidates) - len(kept)
             candidates = [item for item, _ in kept]
             if not candidates:
+                _tier_3_failed(
+                    ctx,
+                    "entailment_rejected",
+                    f"claims={len(scores)} best={max(scores, default=0.0):.2f} "
+                    f"floor={entail_floor:.2f}",
+                )
                 return await fallback("entailment_rejected")
             if rejected == 0 and review_optional(plan, [score for _, score in kept]):
                 return AnswerResult(
@@ -435,7 +497,8 @@ async def compose_answer(
             {"id": i, "summary": item.text, "evidence": quote}
             for i, (item, quote) in enumerate(zip(candidates, evidence, strict=True))
         ]
-        verdict = await session.call(reviewer, review_request, 100, 7.0)
+        with session.stage("review"):
+            verdict = await session.call(reviewer, review_request, 100, 7.0)
         reviewed = len(candidates)
         if not isinstance(verdict, dict):
             return await fallback("invalid_review")

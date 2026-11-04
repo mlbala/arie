@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
@@ -208,6 +210,60 @@ async def test_tier_3_rejection_or_malformed_scores_skip_the_reviewer(
     assert result.mode == "extractive_summary" and result.fallback_reason == reason
     assert result.model_calls == 1, "a rejected draft must not be sent for review"
     assert all(item.checks == ("tier_1",) for item in result.excerpts)
+
+
+@pytest.mark.parametrize(
+    ("scores", "reason", "traceback"),
+    [([0.02], "entailment_rejected", False), ([0.4, 0.9], "entailment_unavailable", True)],
+)
+@pytest.mark.asyncio
+async def test_tier_3_fallbacks_log_one_warning_with_the_trace_id(
+    scores: list[float], reason: str, traceback: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def entail(pairs: Sequence[tuple[str, str]]) -> list[float]:
+        del pairs
+        return scores
+
+    caplog.set_level(logging.WARNING)
+    result = await compose_answer(
+        context("trace-abc"),
+        "chosen",
+        "Summarize this paper",
+        [ROW],
+        cast(LLM, drafted("Cedar retrieves evidence without any memory component at all.")),
+        entail=entail,
+    )
+    [record] = [r for r in caplog.records if r.name == "arie_core.harness.answer"]
+    assert record.levelno == logging.WARNING and "trace=trace-abc" in record.getMessage()
+    assert reason in record.getMessage()
+    assert (record.exc_info is not None) is traceback
+    assert result.fallback_reason == result.trace.fallback_reason == reason
+    assert result.trace.prompt_version == "qa.v1" and result.trace.seconds.write >= 0.0
+
+
+@pytest.mark.asyncio
+async def test_tier_3_timeout_logs_one_line_without_a_traceback(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def entail(pairs: Sequence[tuple[str, str]]) -> list[float]:
+        await asyncio.sleep(30)
+        return [1.0 for _ in pairs]
+
+    caplog.set_level(logging.WARNING)
+    # 3.5 s left leaves the claim check about 0.5 s (the deadline minus its 3 s reserve).
+    result = await compose_answer(
+        context("trace-slow", 3.5),
+        "chosen",
+        "Summarize this paper",
+        [ROW],
+        cast(LLM, drafted("Cedar retrieves evidence with a gated memory bank.")),
+        entail=entail,
+    )
+    [record] = [r for r in caplog.records if r.name == "arie_core.harness.answer"]
+    assert record.levelno == logging.WARNING and record.exc_info is None
+    assert "entailment_timeout" in record.getMessage() and "trace=trace-slow" in record.getMessage()
+    assert result.fallback_reason == result.trace.fallback_reason == "entailment_timeout"
+    assert result.model_calls == 1 and 0.3 <= result.trace.seconds.tier3 < 1.0
 
 
 @pytest.mark.asyncio
