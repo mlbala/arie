@@ -1,6 +1,6 @@
-# 0011: Explain mode adds no local grounding model; the LLM judge checks flagged sentences
+# 0011: Explain mode adds no local grounding model; the LLM judge checks every cited sentence
 
-**Status:** Accepted; amends [ADR 0010](0010-explain-mode-paper-in-the-prompt.md) (no grounding checker runs between the deterministic citation checks and the judge)
+**Status:** Accepted; amends [ADR 0010](0010-explain-mode-paper-in-the-prompt.md) (no grounding checker runs after the deterministic citation checks, and the judge checks every cited sentence, not only flagged ones)
 
 ## Context
 
@@ -35,17 +35,26 @@ the model caught nothing the deterministic checks missed.
 - No `grounding` slot, no `plugins/ground-*` package, no grounding worker pool, no
   `grounding.*` config keys and no `grounding` SSE event.
 - After an explanation streams, the checks are S10's deterministic citation checks
-  (`check_answer`, the `checks` event), then the LLM judge (S13) on the sentences those
-  checks flag. The judge runs on the writer's provider so it reads the cached pack.
+  (`check_answer`, the `checks` event), then the LLM judge (S13) on every cited sentence,
+  flagged or not, in one batched call per answer. The judge runs on the writer's provider
+  so it reads the cached pack.
+- `judge.chat: all | off` (default `all`) turns the in-chat judge off. It does not affect
+  eval runs, which always judge so that `citation_support` keeps its definition.
 - Strict mode's Tier 3 entailment model (`entailment` slot, ADR 0003) is unchanged.
 
 ## Consequences
 
-- The image and the worker memory stay as they are, and no CPU is spent after each answer.
-- A sentence that passes the deterministic checks but misstates its source is not checked
-  by any model. Today a wrong claim with the right numbers and stems passes.
-- The judge costs one LLM call per flagged sentence, at cache-hit prices for the pack.
-  With S10's valid rate of about 0.88, that is about 1 in 9 cited sentences.
+- The image and the worker memory stay as they are, and no local model runs after each
+  answer.
+- A sentence that passes the deterministic checks but misstates its source is still
+  checked, by the judge. The deterministic checks alone pass a wrong claim with the right
+  numbers and stems.
+- The judge costs one LLM call per answer that cites anything: the pack at cache-hit
+  prices, plus the cited sentences and one verdict per sentence. That costs more than
+  judging only S10's flagged sentences (about 1 in 9 cited sentences at a valid rate of
+  about 0.88), but it is still one call.
+- With `judge.chat: off`, no model checks chat answers, and a wrong claim that passes the
+  deterministic checks is shown without a flag.
 - The sample is small: 20 pairs and 2 positives, on one paper, on a Mac. To revisit,
   save `checks` per eval case, collect a larger set of judged sentences, and time a
   candidate in the image with `--cpus=2`. Adding the slot then needs a new ADR that

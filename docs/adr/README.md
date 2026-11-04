@@ -16,4 +16,4 @@ superseded instead of rewriting it.
 | [0008](0008-model-led-planning-and-conditional-review.md) | The planner decides the question type, and review runs when it adds a check | Accepted, amended by 0010 |
 | [0009](0009-one-model-pool-shared-answer-worker.md) | One generic model pool, with the answer models in one worker | Accepted |
 | [0010](0010-explain-mode-paper-in-the-prompt.md) | Explain mode puts the whole paper in the prompt and checks citations after streaming | Accepted, amended by 0011 |
-| [0011](0011-no-local-grounding-model.md) | Explain mode adds no local grounding model; the LLM judge checks flagged sentences | Accepted |
+| [0011](0011-no-local-grounding-model.md) | Explain mode adds no local grounding model; the LLM judge checks every cited sentence | Accepted |
