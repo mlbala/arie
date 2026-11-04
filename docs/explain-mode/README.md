@@ -20,7 +20,7 @@ Size: S fits easily in one sitting, M is a normal session, L may need a second s
 
 | ID | Session | Needs | Size | Notes | Status |
 | --- | --- | --- | --- | --- | --- |
-| S00 | Install this kit and record a baseline | — | S | Partly manual | todo |
+| S00 | Install this kit and record a baseline | — | S | Partly manual | done |
 | S01 | Answer trace and logging | S00 | M | | todo |
 | S02 | Remove dead code listed in SPEC §12 | S00 | S | | todo |
 | S03 | Honest model health and eval visibility | S01 | M | API + web | todo |
