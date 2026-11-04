@@ -37,9 +37,9 @@ installing a package, and fork the core without touching vendor code.
 - **Automated ingestion.** Syncs arXiv and Google DeepMind papers by month, year or
   range, resumes interrupted runs, and imports a single paper from its arXiv link.
   Downloads are size-limited, host-restricted and validated as PDFs before saving.
-- **Hybrid search.** Keyword search (SQLite FTS5) and vector search are fused with
-  reciprocal rank fusion inside the selected paper. Without an embedder, keyword search
-  still works.
+- **Hybrid search.** Keyword ranking (term overlap with section-aware routing, in the
+  core) and vector search are fused with reciprocal rank fusion inside the selected
+  paper. Without an embedder, keyword search still works.
 - **Swappable everything.** Change the LLM provider, embedder, vector store, database,
   parser or sources in `arie.yaml` or in **Settings**, without code changes.
 - **Workspace UI.** A React workspace with a paper library, live sync activity, chat
@@ -161,6 +161,7 @@ flowchart LR
 | `contract_tests/` | Slot contract tests run against every discovered plugin. |
 | `web/` | React 19 workspace. |
 | `docs/adr/` | Architecture decision records. |
+| `docs/SPEC.md` | System specification: how each part works today, step by step, with time budgets, failure reasons and known gaps. |
 
 The core imports no vendor SDK and no plugin. `make check` enforces this with
 `import-linter`, so a fork can replace any plugin without editing the core.
@@ -235,9 +236,16 @@ A worker that exceeds a limit is killed and replaced; only that task fails. PDF 
 embedding workers run at lower CPU priority (`nice 10`), and the PDF pool never starts
 more processes than there are CPUs ([ADR 0006](docs/adr/0006-background-cpu-priority.md)).
 
-Inside the API, work is routed through four priority lanes: interactive chat, manual
-overrides (2 at a time), the worker pool, and scheduled syncs (4 downloads at a time).
-arXiv requests are spaced 3 seconds apart.
+Inside the API, a sync job runs one at a time and processes one paper at a time. Up to
+two single-paper imports run beside it, and evaluations run one at a time. Chat is not
+queued behind any of these: it has priority only through the workers' CPU priority. arXiv
+requests are spaced 3 seconds apart. `arie_core.sched` also defines priority lanes
+(`QoSPriorityGate`) and a per-host limiter, but the runtime does not use them yet.
+
+The claim checker and reranker share one worker that runs one call at a time. A call that
+passes its caller's budget keeps running, so the loaded models stay in memory, and the
+next call waits behind it. Each step's time budget and fallback is listed in
+[`docs/SPEC.md`](docs/SPEC.md#81-pipeline-and-time-budget).
 
 ### Design invariants
 
@@ -479,7 +487,7 @@ evidence, unless it passes the verifier.
 | `llm_providers` | Default model, key variable and optional `base_url` per LLM plugin. |
 | `embedding_providers` | Default model, similarity floor and key variable per embedder. |
 | `sync` | Default sync window and limits (see [Sync](#sync)). |
-| `runtime_qos` | Worker counts, download concurrency, arXiv spacing, event-loop warnings. `shared_model_worker` (default `true`) runs the claim checker and reranker in one process; `false` gives each its own. |
+| `runtime_qos` | `utility_worker_processes` (PDF workers, capped to the CPUs), `slow_callback_threshold_ms` (event-loop lag warning) and `shared_model_worker` (default `true`: the claim checker and reranker share one process; `false` gives each its own). `use_uvloop`, `user_initiated_override_concurrency`, `background_pdf_stream_concurrency` and `arxiv_rate_limit_delay_sec` are accepted but not read yet: uvloop is chosen by the uvicorn `--loop` flag and arXiv spacing is fixed at 3 s. |
 
 Keys for the local-model plugins:
 
@@ -535,6 +543,17 @@ To make ARIE lighter:
   vector order.
 - Set `entailment: {use: none}` only on very small machines: claims then rest on quote
   matching and the LLM reviewer, without the Tier 3 check.
+
+**Known issue on small machines.** The reranker's 3 s budget and the claim checker's
+4 s budget were measured on an 8-core Mac. On a 2-vCPU Docker VM the worst cases
+measured 9.7 s for reranking and 20.1 s for 12 long claim pairs
+([ADR 0009](docs/adr/0009-one-model-pool-shared-answer-worker.md)). When the claim check
+misses its budget, the answer falls back to exact source excerpts with
+`fallback_reason: entailment_timeout` and the reviewer never runs. This timeout is not
+logged, and **Storage & health** still shows the claim checker as healthy, because that
+status reports only whether the model loaded. Check `fallback_reason` in the answer's
+evaluation details or in an evaluation run. Steps to confirm the cause and fix options are
+in [`docs/SPEC.md`](docs/SPEC.md#13-open-issue-evaluation-answers-fall-back-to-excerpts).
 
 **Docling** adds layout analysis, table structure and OCR for scanned PDFs, at a much
 higher cost:
