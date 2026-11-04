@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import sys
 import time
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any, Protocol, cast
 
 import httpx
 import pytest
+from arie_api import eval_paper
 from arie_api.export_openapi import export_openapi
 from arie_api.mcp_server import create_scope_handle, verify_scope_handle
 from arie_api.routes import create_app
@@ -268,9 +270,7 @@ def test_answers_can_be_rated_and_the_rating_is_restored(client: _APIClient) -> 
     assert missing.status_code == 404
 
 
-def test_a_paper_evaluation_answers_saved_cases_and_scores_them(
-    client: _APIClient, tmp_path: Path
-) -> None:
+def _seed_fact_case(tmp_path: Path) -> None:
     start = SOURCE.index("The method")
     case = {
         "case_id": "case-1",
@@ -290,22 +290,102 @@ def test_a_paper_evaluation_answers_saved_cases_and_scores_them(
             "INSERT INTO arie_eval_cases VALUES (?, ?, ?, ?)",
             ("case-1", "paper-1", json.dumps(case), "2026-01-01T00:00:00+00:00"),
         )
-    assert client.post("/v1/papers/paper-2/eval/runs", json={}).status_code == 409
-    started = client.post("/v1/papers/paper-1/eval/runs", json={"compare_reranker": True})
+
+
+def _finished_run(client: _APIClient, started: httpx.Response) -> dict[str, Any]:
     assert started.status_code == 202
     run_id = started.json()["run_id"]
     deadline = time.monotonic() + 30
-    run = started.json()
+    run: dict[str, Any] = started.json()
     while run["status"] in {"queued", "running"} and time.monotonic() < deadline:
         time.sleep(0.1)
         run = client.get(f"/v1/papers/paper-1/eval/runs/{run_id}").json()
     assert run["status"] == "complete", run["message"]
+    return run
+
+
+def test_a_paper_evaluation_answers_saved_cases_and_scores_them(
+    client: _APIClient, tmp_path: Path
+) -> None:
+    _seed_fact_case(tmp_path)
+    assert client.post("/v1/papers/paper-2/eval/runs", json={}).status_code == 409
+    started = client.post("/v1/papers/paper-1/eval/runs", json={"compare_reranker": True})
+    run_id = started.json()["run_id"]
+    run = _finished_run(client, started)
     # The reranker is off in this fixture, so there is nothing to compare against.
     assert set(run["summary"]) == {"configured"}
     [result] = run["results"]
     assert result["grounded"] is True and result["kind"] == "fact"
     assert set(result["trace"]["seconds"]) == {*STAGES, "total"}
     assert result["trace"]["mode"] == result["mode"]
+    # Answer-level scores sit beside the old ones, and the run records the mode it ran.
+    assert run["mode"] == "strict" and result["requested_mode"] == "strict"
+    assert result["citation_support"] is None and result["win_rate"] is None
+    assert result["answer_written"] is False and result["passed_written"] is False
+    assert run["summary"]["configured"]["passed_written"] == 0
+    assert run["summary"]["configured"]["fallbacks"] == {"unspecified": 1}
     overview = client.get("/v1/papers/paper-1/eval").json()
     assert overview["latest"]["run_id"] == run_id and overview["cases"][0]["case_id"] == "case-1"
     assert client.get("/v1/papers/paper-1/eval/runs/unknown").status_code == 404
+
+
+def test_key_facts_make_a_feedback_case_scoreable(client: _APIClient, tmp_path: Path) -> None:
+    streamed = client.post("/v1/papers/paper-1/questions", json={"question": "What is Cedar?"})
+    [done] = _events(streamed.text, "done")
+    turn_id = done["turn_id"]
+    url = f"/v1/papers/paper-1/chat/{turn_id}/feedback"
+    facts = {"key_facts": ["grounded verification"], "source_sentence": SOURCE.split(". ")[0]}
+
+    # Only an answer rated down can carry key facts.
+    assert client.put(f"{url}/facts", json=facts).status_code == 404
+    client.put(url, json={"rating": "up"})
+    assert client.put(f"{url}/facts", json=facts).status_code == 400
+    client.put(url, json={"rating": "down", "note": "Vague"})
+    invalid: list[dict[str, list[str]]] = [
+        {"key_facts": []},
+        {"key_facts": ["a", "b", "c", "d"]},
+        {"key_facts": ["x" * 301]},
+    ]
+    for bad in invalid:
+        assert client.put(f"{url}/facts", json=bad).status_code == 422
+    unknown = {"key_facts": ["grounded verification"], "source_sentence": "Cedar is not here."}
+    assert client.put(f"{url}/facts", json=unknown).status_code == 400
+    wrong_fact = {"key_facts": ["99%"], "source_sentence": facts["source_sentence"]}
+    assert client.put(f"{url}/facts", json=wrong_fact).status_code == 400
+    assert client.get("/v1/papers/paper-1/eval").json()["feedback"][0]["key_facts"] == []
+
+    saved = client.put(f"{url}/facts", json=facts)
+    assert saved.status_code == 200 and saved.json()["key_facts"] == ["grounded verification"]
+    [feedback] = client.get("/v1/papers/paper-1/eval").json()["feedback"]
+    assert feedback["key_facts"] == ["grounded verification"]
+    assert feedback["source_sentence"] == facts["source_sentence"]
+
+    # The next run scores the question like a fact case, with the sentence as its evidence.
+    _seed_fact_case(tmp_path)
+    run = _finished_run(client, client.post("/v1/papers/paper-1/eval/runs", json={}))
+    by_id = {item["case_id"]: item for item in run["results"]}
+    scored = by_id[f"feedback-{turn_id}"]
+    assert scored["kind"] == "fact" and scored["passed"] is not None
+    assert scored["question"] == "What is Cedar?" and scored["requested_mode"] == "strict"
+    assert (
+        run["summary"]["configured"]["scored"] == 2 and run["summary"]["configured"]["review"] == 0
+    )
+
+    # Clearing the rating drops the facts, so they do not come back with a later rating.
+    client.put(url, json={"rating": None})
+    client.put(url, json={"rating": "down"})
+    assert client.get("/v1/papers/paper-1/eval").json()["feedback"][0]["key_facts"] == []
+
+
+def test_explain_mode_evaluations_are_refused_until_they_exist(
+    client: _APIClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    refused = client.post("/v1/papers/paper-1/eval/runs", json={"mode": "explain"})
+    assert refused.status_code == 409 and "not available yet" in refused.json()["detail"]
+    assert client.post("/v1/papers/paper-1/eval/runs", json={"mode": "other"}).status_code == 422
+
+    # The command line refuses before it spends minutes warming the models.
+    monkeypatch.setattr(sys, "argv", ["eval_paper", "paper-1", "--mode", "explain"])
+    with pytest.raises(SystemExit) as stopped:
+        eval_paper.main()
+    assert stopped.value.code == 2

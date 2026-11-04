@@ -23,8 +23,11 @@ import msgspec
 from arie_core.harness.paper_eval import (
     PaperEvalCase,
     PaperEvalResult,
+    check_feedback_facts,
+    feedback_case,
     fixed_cases,
     generate_cases,
+    locate_sentence,
     score_case,
     summarize,
 )
@@ -40,10 +43,20 @@ Document = dict[str, Any]
 RUNS_KEPT = 10
 ANSWER_SECONDS = 25.0
 RATINGS = {"up", "down"}
+MODES = ("strict", "explain")
 
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def require_available_mode(mode: str) -> None:
+    """Raise ``ValueError`` for a mode an evaluation cannot run yet."""
+    if mode not in MODES:
+        raise ValueError(f"mode must be one of {', '.join(MODES)}")
+    if mode == "explain":
+        # Explain mode has no answer path until S09; refuse instead of scoring strict answers.
+        raise ValueError("Explain mode is not available yet")
 
 
 class PaperEvaluations:
@@ -81,6 +94,12 @@ class PaperEvaluations:
             rating TEXT NOT NULL, note TEXT NOT NULL, answer_json TEXT NOT NULL,
             created_at TEXT NOT NULL)""",
         )
+        await db.execute(
+            ctx,
+            """CREATE TABLE IF NOT EXISTS arie_feedback_facts (
+            turn_id TEXT PRIMARY KEY, paper_id TEXT NOT NULL, key_facts_json TEXT NOT NULL,
+            source_sentence TEXT NOT NULL, created_at TEXT NOT NULL)""",
+        )
         # A run cut short by a restart is reported as interrupted, not left running.
         rows = await db.fetch(ctx, "SELECT run_id, payload_json FROM arie_eval_runs")
         for row in rows:
@@ -103,13 +122,31 @@ class PaperEvaluations:
         return [msgspec.json.decode(str(row["case_json"]), type=PaperEvalCase) for row in rows]
 
     async def feedback(self, paper_id: str) -> list[Document]:
+        """Rated answers, newest first, with the key facts attached to them (if any)."""
+        ctx = self._ctx(f"feedback:{paper_id}")
         rows = await self.runtime.db.fetch(
-            self._ctx(f"feedback:{paper_id}"),
+            ctx,
             """SELECT turn_id, question, rating, note, created_at FROM arie_feedback
             WHERE paper_id = ? ORDER BY created_at DESC""",
             (paper_id,),
         )
-        return [dict(row) for row in rows]
+        facts = await self.runtime.db.fetch(
+            ctx,
+            "SELECT turn_id, key_facts_json, source_sentence FROM arie_feedback_facts "
+            "WHERE paper_id = ?",
+            (paper_id,),
+        )
+        attached = {str(row["turn_id"]): row for row in facts}
+        return [
+            {
+                **dict(row),
+                "key_facts": cast(list[str], json.loads(str(found["key_facts_json"])))
+                if (found := attached.get(str(row["turn_id"])))
+                else [],
+                "source_sentence": str(found["source_sentence"]) if found else "",
+            }
+            for row in rows
+        ]
 
     async def overview(self, paper_id: str) -> Document:
         """Saved cases, recent run summaries (newest first) and feedback for one paper."""
@@ -155,10 +192,15 @@ class PaperEvaluations:
         }
 
     async def start(
-        self, paper_id: str, *, regenerate: bool = False, compare_reranker: bool = False
+        self,
+        paper_id: str,
+        *,
+        regenerate: bool = False,
+        compare_reranker: bool = False,
+        mode: str = "strict",
     ) -> Document:
         """Queue a run for an indexed paper; raise ``LookupError`` or ``ValueError``."""
-        run, paper = await self._new_run(paper_id, compare_reranker)
+        run, paper = await self._new_run(paper_id, compare_reranker, mode)
         await self.queue.put((run, paper, regenerate))
         return run
 
@@ -172,14 +214,22 @@ class PaperEvaluations:
                 self.queue.task_done()
 
     async def run_to_completion(
-        self, paper_id: str, *, regenerate: bool = False, compare_reranker: bool = False
+        self,
+        paper_id: str,
+        *,
+        regenerate: bool = False,
+        compare_reranker: bool = False,
+        mode: str = "strict",
     ) -> Document:
         """Run one evaluation in the caller's task and return it (for the command line)."""
-        run, paper = await self._new_run(paper_id, compare_reranker)
+        run, paper = await self._new_run(paper_id, compare_reranker, mode)
         await self._run(run, paper, regenerate)
         return run
 
-    async def _new_run(self, paper_id: str, compare_reranker: bool) -> tuple[Document, Document]:
+    async def _new_run(
+        self, paper_id: str, compare_reranker: bool, mode: str
+    ) -> tuple[Document, Document]:
+        require_available_mode(mode)
         paper = await self.runtime.get_paper(paper_id)
         if paper is None:
             raise LookupError("Paper not found")
@@ -195,6 +245,7 @@ class PaperEvaluations:
             "created_at": _now(),
             "finished_at": None,
             "settings": self._settings(),
+            "mode": mode,
             "compare_reranker": compare_reranker,
             "progress": {"done": 0, "total": 0},
             "summary": {},
@@ -218,22 +269,20 @@ class PaperEvaluations:
 
     async def _execute(self, run: Document, paper: Document, regenerate: bool) -> None:
         paper_id = str(paper["id"])
-        rows = [
-            EvidenceChunk(**row)
-            for row in paper.get("chunks", [])
-            if row.get("paper_id") == paper_id
-        ]
+        rows = self._chunks(paper)
         cases = [] if regenerate else await self.cases(paper_id)
         if not cases:
             run.update(status="running", message="Writing questions from the paper's own sentences")
             cases = await self._generate(paper, rows)
+        # Answers rated down are re-asked; once a person attached key facts to one, it is
+        # scored like a fact case, otherwise it is only shown for review.
         review = [
-            PaperEvalCase(
-                case_id=f"feedback-{item['turn_id']}",
-                question=str(item["question"]),
-                kind="feedback",
-                origin="feedback",
-                note=str(item["note"]),
+            feedback_case(
+                str(item["turn_id"]),
+                str(item["question"]),
+                str(item["note"]),
+                cast(list[str], item["key_facts"]),
+                locate_sentence(rows, paper_id, str(item["source_sentence"])),
             )
             for item in await self.feedback(paper_id)
             if item["rating"] == "down"
@@ -247,7 +296,7 @@ class PaperEvaluations:
         run.update(status="running", message="Answering", progress={"done": 0, "total": len(work)})
         scored: dict[str, list[PaperEvalResult]] = {variant: [] for variant, _ in variants}
         for case, variant, rerank in work:
-            result = await self._answer(paper, rows, case, rerank)
+            result = await self._answer(paper, rows, case, rerank, str(run["mode"]))
             scored[variant].append(result)
             run["results"].append({"variant": variant, **msgspec.to_builtins(result)})
             run["progress"]["done"] += 1
@@ -282,8 +331,22 @@ class PaperEvaluations:
             )
         return cases
 
+    @staticmethod
+    def _chunks(paper: Document) -> list[EvidenceChunk]:
+        paper_id = str(paper["id"])
+        return [
+            EvidenceChunk(**row)
+            for row in paper.get("chunks", [])
+            if row.get("paper_id") == paper_id
+        ]
+
     async def _answer(
-        self, paper: Document, rows: Sequence[EvidenceChunk], case: PaperEvalCase, rerank: bool
+        self,
+        paper: Document,
+        rows: Sequence[EvidenceChunk],
+        case: PaperEvalCase,
+        rerank: bool,
+        mode: str,
     ) -> PaperEvalResult:
         started = time.monotonic()
         try:
@@ -311,6 +374,8 @@ class PaperEvaluations:
                 error="Timed out after 25 s"
                 if isinstance(exc, TimeoutError)
                 else type(exc).__name__,
+                passed_written=False if case.kind == "fact" else None,
+                requested_mode=mode,
             )
         return score_case(
             case,
@@ -318,6 +383,7 @@ class PaperEvaluations:
             run.answer,
             seconds=time.monotonic() - started,
             reranked=run.reading.reranked,
+            requested_mode=mode,
         )
 
     async def _save_run(self, run: Document) -> None:
@@ -351,6 +417,11 @@ class PaperEvaluations:
                 "DELETE FROM arie_feedback WHERE turn_id = ? AND paper_id = ?",
                 (turn_id, paper_id),
             )
+            await self.runtime.db.execute(
+                ctx,
+                "DELETE FROM arie_feedback_facts WHERE turn_id = ? AND paper_id = ?",
+                (turn_id, paper_id),
+            )
             return {"turn_id": turn_id, "rating": None}
         if rating not in RATINGS:
             raise ValueError("rating must be up, down or null")
@@ -378,13 +449,46 @@ class PaperEvaluations:
         )
         return {"turn_id": turn_id, "rating": rating, "note": note[:500]}
 
+    async def save_feedback_facts(
+        self, paper_id: str, turn_id: str, key_facts: Sequence[str], source_sentence: str = ""
+    ) -> Document:
+        """Attach 1-3 key facts (and optionally the paper sentence that holds them) to an answer.
+
+        With key facts, the answer's question is scored like a fact case in the next run.
+        Replaces earlier facts. Raises ``LookupError`` for an answer that was not rated and
+        ``ValueError`` for facts that fail ``check_feedback_facts`` or an answer not rated down.
+        """
+        ctx = self._ctx(f"feedback-facts:{turn_id}")
+        rated = await self.runtime.db.fetch(
+            ctx,
+            "SELECT rating FROM arie_feedback WHERE turn_id = ? AND paper_id = ?",
+            (turn_id, paper_id),
+        )
+        paper = await self.runtime.get_paper(paper_id)
+        if not rated or paper is None:
+            raise LookupError("Rate the answer down before adding key facts")
+        if rated[0]["rating"] != "down":
+            raise ValueError("Only answers rated down become evaluation cases")
+        facts, source = check_feedback_facts(
+            self._chunks(paper), paper_id, key_facts, source_sentence
+        )
+        sentence = source.text if source else ""
+        await self.runtime.db.execute(
+            ctx,
+            """INSERT INTO arie_feedback_facts VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(turn_id) DO UPDATE SET key_facts_json = excluded.key_facts_json,
+            source_sentence = excluded.source_sentence, created_at = excluded.created_at""",
+            (turn_id, paper_id, json.dumps(facts), sentence, _now()),
+        )
+        return {"turn_id": turn_id, "key_facts": facts, "source_sentence": sentence}
+
     async def forget(self, paper_id: str) -> None:
         """Delete a removed paper's cases, runs and feedback."""
         ctx = self._ctx(f"eval-forget:{paper_id}")
-        for table in ("arie_eval_cases", "arie_eval_runs", "arie_feedback"):
+        for table in ("arie_eval_cases", "arie_eval_runs", "arie_feedback", "arie_feedback_facts"):
             await self.runtime.db.execute(
                 ctx, f"DELETE FROM {table} WHERE paper_id = ?", (paper_id,)
             )
 
 
-__all__ = ["PaperEvaluations"]
+__all__ = ["MODES", "PaperEvaluations", "require_available_mode"]

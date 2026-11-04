@@ -56,12 +56,22 @@ class FeedbackRequest(BaseModel):
     note: str = Field(default="", max_length=500)
 
 
+class FeedbackFactsRequest(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    # What a correct answer must contain; each fact must appear in source_sentence if given.
+    key_facts: tuple[Annotated[str, Field(max_length=300)], ...] = Field(min_length=1, max_length=3)
+    # The paper's own sentence that holds the facts; scores whether the answer cited it.
+    source_sentence: str = Field(default="", max_length=600)
+
+
 class EvalRunRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     # Write new questions instead of reusing this paper's saved ones.
     regenerate: bool = False
     # Also answer every question without the reranker, to measure what it changes.
     compare_reranker: bool = False
+    # Which answer path to score. "explain" is refused until it exists.
+    mode: Literal["strict", "explain"] = "strict"
 
 
 class SyncRequest(BaseModel):
@@ -187,6 +197,21 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @app.put("/v1/papers/{paper_id:path}/chat/{turn_id}/feedback/facts")
+    async def add_feedback_facts(
+        paper_id: str, turn_id: str, request: FeedbackFactsRequest
+    ) -> Document:
+        """Attach key facts to an answer rated down, so its question is scored in evaluations."""
+        await document(paper_id)
+        try:
+            return await active().evaluations.save_feedback_facts(
+                paper_id, turn_id, request.key_facts, request.source_sentence
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.get("/v1/papers/{paper_id:path}/eval")
     async def paper_evaluation(paper_id: str) -> Document:
         """This paper's evaluation questions, recent runs and answer feedback."""
@@ -199,7 +224,10 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
         await document(paper_id)
         try:
             run = await active().evaluations.start(
-                paper_id, regenerate=request.regenerate, compare_reranker=request.compare_reranker
+                paper_id,
+                regenerate=request.regenerate,
+                compare_reranker=request.compare_reranker,
+                mode=request.mode,
             )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
