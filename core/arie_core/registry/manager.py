@@ -95,6 +95,13 @@ class PluginConfigEntry(BaseModel):
     inline: str | None = None
 
 
+# Context windows in tokens, deliberately below what the providers advertise. A provider that
+# sets ``context_tokens`` in ``llm_providers`` overrides these; an unknown plugin gets the
+# fallback. Explain mode sizes the paper pack against this number (ADR 0010).
+DEFAULT_CONTEXT_TOKENS = {"deepseek": 64_000, "openai": 128_000, "gemini": 128_000}
+FALLBACK_CONTEXT_TOKENS = 32_000
+
+
 class LLMProviderConfig(BaseModel):
     """Server-side provider defaults; credentials are resolved from environment variables."""
 
@@ -102,6 +109,8 @@ class LLMProviderConfig(BaseModel):
     model: str = Field(min_length=1, max_length=128)
     api_key_env: str = Field(pattern=r"^[A-Z][A-Z0-9_]*$")
     base_url: str | None = None
+    # None means the plugin's default in ``DEFAULT_CONTEXT_TOKENS``.
+    context_tokens: int | None = Field(default=None, ge=4096)
 
 
 def default_llm_providers() -> dict[str, LLMProviderConfig]:
@@ -133,6 +142,15 @@ def default_embedding_providers() -> dict[str, EmbeddingProviderConfig]:
     }
 
 
+class ExplainConfig(BaseModel):
+    """Explain-mode settings (ADR 0010)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    # The whole paper pack is used only if its estimated tokens fit within this share of the
+    # provider's context window; otherwise the paged pack is used.
+    max_pack_share: float = Field(default=0.6, gt=0.0, le=1.0)
+
+
 class ArieConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -144,6 +162,14 @@ class ArieConfig(BaseModel):
         default_factory=default_embedding_providers
     )
     sync: SyncConfig = Field(default_factory=lambda: SyncConfig())
+    explain: ExplainConfig = Field(default_factory=ExplainConfig)
+
+    def context_tokens_for(self, provider: str) -> int:
+        """The context window to plan for with this LLM plugin."""
+        profile = self.llm_providers.get(provider)
+        if profile is not None and profile.context_tokens is not None:
+            return profile.context_tokens
+        return DEFAULT_CONTEXT_TOKENS.get(provider, FALLBACK_CONTEXT_TOKENS)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> ArieConfig:

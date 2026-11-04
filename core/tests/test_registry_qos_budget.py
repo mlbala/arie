@@ -170,3 +170,57 @@ def test_repo_arie_yaml_has_no_retired_runtime_qos_keys(caplog: pytest.LogCaptur
     with caplog.at_level(logging.WARNING, logger="arie_core.registry.manager"):
         ArieConfig.from_yaml(root / "arie.yaml")
     assert not [r for r in caplog.records if "deprecated" in r.getMessage()]
+
+
+def test_context_tokens_default_per_plugin_and_explicit_override(tmp_path: Path) -> None:
+    config = ArieConfig()
+    assert config.explain.max_pack_share == 0.6
+    assert config.context_tokens_for("deepseek") == 64_000
+    assert config.context_tokens_for("openai") == 128_000
+    assert config.context_tokens_for("gemini") == 128_000
+    assert config.context_tokens_for("some-plugin") == 32_000
+
+    path = tmp_path / "arie.yaml"
+    path.write_text(
+        "llm_providers:\n"
+        "  deepseek: {model: m, api_key_env: DEEPSEEK_API_KEY, context_tokens: 100000}\n"
+        "  other: {model: m, api_key_env: OTHER_KEY}\n"
+        "explain:\n  max_pack_share: 0.4\n",
+        encoding="utf-8",
+    )
+    loaded = ArieConfig.from_yaml(path)
+    assert loaded.context_tokens_for("deepseek") == 100_000
+    assert loaded.context_tokens_for("other") == 32_000  # configured without a window
+    assert loaded.explain.max_pack_share == 0.4
+
+
+@pytest.mark.parametrize(
+    ("text", "match"),
+    [
+        ("explain:\n  max_pack_share: 0\n", "max_pack_share"),
+        ("explain:\n  max_pack_share: 1.5\n", "max_pack_share"),
+        ("explain:\n  budget: 3\n", "budget"),
+        (
+            "llm_providers:\n  x: {model: m, api_key_env: X_KEY, context_tokens: 100}\n",
+            "context_tokens",
+        ),
+    ],
+)
+def test_bad_explain_and_context_settings_are_rejected(
+    tmp_path: Path, text: str, match: str
+) -> None:
+    path = tmp_path / "arie.yaml"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match=match):
+        ArieConfig.from_yaml(path)
+
+
+def test_repo_arie_yaml_states_the_context_windows_and_pack_share() -> None:
+    root = Path(__file__).resolve().parents[2]
+    config = ArieConfig.from_yaml(root / "arie.yaml")
+    assert {name: p.context_tokens for name, p in config.llm_providers.items()} == {
+        "deepseek": 64_000,
+        "openai": 128_000,
+        "gemini": 128_000,
+    }
+    assert config.explain.max_pack_share == 0.6

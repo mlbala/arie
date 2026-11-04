@@ -1,0 +1,234 @@
+"""Paper packs in the runtime: stored per revision, built at INDEXED, lazy for older papers."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import pytest
+from arie_api.runtime import ResearchRuntime
+from arie_api.runtime import packs as packs_module
+from arie_core.pipeline.pack import PaperPack, marker_numbers
+from arie_core.plugin_api import ScrapedPaperInput
+from arie_core.registry.manager import ArieConfig
+from arie_core.registry.sync import SyncConfig
+
+ROOT = Path(__file__).resolve().parents[2]
+TEXTS = [
+    "## Introduction\nLarge language models use agent tools to answer questions.",
+    "Our method is simple and it improves accuracy by four points.",
+    "## References\n[1] A. Author. A paper about models. 2020.",
+]
+
+
+def runtime_at(tmp_path: Path) -> ResearchRuntime:
+    config = ArieConfig.from_yaml(ROOT / "arie.yaml")
+    plugins = dict(config.plugins)
+    plugins.update(
+        database={"use": "sqlite", "path": str(tmp_path / "arie.db")},
+        file_storage={"use": "local", "root": str(tmp_path / "papers")},
+        embedder={"use": "none"},
+        entailment={"use": "none"},
+        reranker={"use": "none"},
+        sources=["arxiv"],
+    )
+    return ResearchRuntime(ROOT, config.model_copy(update={"plugins": plugins}))
+
+
+def document(identifier: str, *, status: str = "INDEXED", count: int = 3) -> dict[str, Any]:
+    chunks = [
+        dict(
+            paper_id=identifier,
+            chunk_id=f"{identifier}:{i}",
+            page_start=1,
+            char_start=i * 100,
+            char_end=i * 100 + len(TEXTS[i]),
+            text=TEXTS[i],
+        )
+        for i in range(count)
+    ]
+    return dict(
+        id=identifier,
+        title=f"Paper {identifier}",
+        abstract="Research with reproducible evidence.",
+        source="arxiv",
+        status=status,
+        published_at="2025-06-01T00:00:00+00:00",
+        relevance_gate=True,
+        overridden_by_user=0,
+        status_reason="Indexed",
+        dedup_hash="hash-1",
+        metadata={"primary_category": "cs.AI"},
+        pages=[{"number": 1, "text": "\n\n".join(TEXTS)}],
+        chunks=chunks,
+    )
+
+
+class BuildCounter:
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.calls = 0
+        original = packs_module.build_pack
+
+        def counted(*args: Any, **kwargs: Any) -> PaperPack:
+            self.calls += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(packs_module, "build_pack", counted)
+
+
+async def stored_rows(runtime: ResearchRuntime) -> list[dict[str, Any]]:
+    rows = await runtime.db.fetch(
+        packs_module.context("test"),
+        "SELECT paper_id, revision, text, tokens FROM arie_paper_packs ORDER BY paper_id",
+    )
+    return [dict(row) for row in rows]
+
+
+@pytest.mark.asyncio
+async def test_ensure_pack_stores_once_per_revision_and_rebuilds_when_the_paper_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = runtime_at(tmp_path)
+    await runtime.initialize()
+    counter = BuildCounter(monkeypatch)
+    try:
+        paper = document("first")
+        pack = await runtime.ensure_pack(paper)
+        assert pack.chunk_numbers == (0, 1) and "[c2]" not in pack.text  # references excluded
+        assert pack.revision == "hash-1:3:p1"
+        rows = await stored_rows(runtime)
+        assert [(r["paper_id"], r["revision"], r["tokens"]) for r in rows] == [
+            ("first", "hash-1:3:p1", pack.token_estimate)
+        ]
+        assert rows[0]["text"] == pack.text
+
+        again = await runtime.ensure_pack(paper)
+        assert again == pack and counter.calls == 1
+
+        changed = await runtime.ensure_pack(document("first", count=2))
+        assert counter.calls == 2 and changed.revision == "hash-1:2:p1"
+        assert [r["revision"] for r in await stored_rows(runtime)] == ["hash-1:2:p1"]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_get_pack_builds_lazily_for_an_older_paper_then_reads_without_the_document(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = runtime_at(tmp_path)
+    await runtime.initialize()
+    counter = BuildCounter(monkeypatch)
+    try:
+        await runtime.save_paper(document("old"))
+        await runtime.save_paper(document("parsed", status="PARSED"))
+        assert await stored_rows(runtime) == []  # saving alone builds nothing
+
+        pack = await runtime.get_pack("old")
+        assert pack is not None and pack.chunk_numbers == (0, 1) and counter.calls == 1
+        assert marker_numbers(pack.text) == pack.chunk_numbers
+
+        async def no_document(paper_id: str) -> None:
+            raise AssertionError(f"loaded the document of {paper_id}")
+
+        monkeypatch.setattr(runtime, "get_paper", no_document)
+        assert await runtime.get_pack("old") == pack and counter.calls == 1
+
+        assert await runtime.get_pack("parsed") is None
+        assert await runtime.get_pack("missing") is None
+        assert [r["paper_id"] for r in await stored_rows(runtime)] == ["old"]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_each_pack_holds_only_its_own_paper_and_delete_removes_it(tmp_path: Path) -> None:
+    runtime = runtime_at(tmp_path)
+    await runtime.initialize()
+    try:
+        second = document("second")
+        second["chunks"][0]["text"] = "## Introduction\nA different paper uses its own method."
+        await runtime.save_paper(document("first"))
+        await runtime.save_paper(second)
+        first_pack = await runtime.get_pack("first")
+        second_pack = await runtime.get_pack("second")
+        assert first_pack and second_pack
+        assert "different paper" in second_pack.text and "different paper" not in first_pack.text
+        assert "agent tools" in first_pack.text and "agent tools" not in second_pack.text
+
+        await runtime.delete_paper("first", pdf_only=True)
+        assert [r["paper_id"] for r in await stored_rows(runtime)] == ["first", "second"]
+        await runtime.delete_paper("first")
+        assert [r["paper_id"] for r in await stored_rows(runtime)] == ["second"]
+    finally:
+        runtime.close()
+
+
+def resumable(tmp_path: Path) -> tuple[ScrapedPaperInput, dict[str, Any]]:
+    """A paper parsed in an earlier run, so ingestion resumes at chunking with no download."""
+    scraped = ScrapedPaperInput(
+        paper_id="resumed",
+        title="Agent tools for questions",
+        source="arxiv",
+        pdf_url="https://arxiv.org/pdf/resumed",
+        abstract="Research with reproducible evidence.",
+        published_at="2025-06-01T00:00:00Z",
+        metadata={"primary_category": "cs.AI"},
+    )
+    pdf = tmp_path / "papers" / "resumed.pdf"
+    pdf.parent.mkdir(parents=True, exist_ok=True)
+    pdf.write_bytes(b"%PDF- test file")
+    parsed = document("resumed", status="PARSED")
+    parsed.update(
+        dedup_hash=scraped.dedup_hash, chunks=[], file_path=str(pdf), authors=[], outline=[]
+    )
+    return scraped, parsed
+
+
+async def ingest(runtime: ResearchRuntime, scraped: ScrapedPaperInput) -> dict[str, Any]:
+    job = await runtime.start_sync(settings=SyncConfig(mode="year", year=2025))
+    await runtime._supervised_paper(job, scraped, ("arxiv.org",))  # pyright: ignore[reportPrivateUsage]
+    return job
+
+
+@pytest.mark.asyncio
+async def test_a_paper_that_reaches_indexed_gets_its_pack_during_sync(tmp_path: Path) -> None:
+    runtime = runtime_at(tmp_path)
+    await runtime.initialize()
+    scraped, parsed = resumable(tmp_path)
+    try:
+        await runtime.save_paper(parsed)
+        job = await ingest(runtime, scraped)
+        assert job["indexed"] == 1 and job["failed"] == 0
+        saved = await runtime.get_paper("resumed")
+        assert saved and saved["status"] == "INDEXED" and saved["chunks"]
+        rows = await stored_rows(runtime)
+        assert [r["paper_id"] for r in rows] == ["resumed"]
+        assert rows[0]["revision"] == f"{scraped.dedup_hash}:{len(saved['chunks'])}:p1"
+        assert "Title: Paper resumed" in rows[0]["text"] and "[c0]" in rows[0]["text"]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_a_pack_failure_never_fails_an_indexed_paper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    runtime = runtime_at(tmp_path)
+    await runtime.initialize()
+    scraped, parsed = resumable(tmp_path)
+
+    async def broken(paper: dict[str, Any]) -> PaperPack:
+        raise RuntimeError(f"cannot pack {paper['id']}")
+
+    monkeypatch.setattr(runtime, "ensure_pack", broken)
+    try:
+        await runtime.save_paper(parsed)
+        job = await ingest(runtime, scraped)
+        assert job["indexed"] == 1 and job["failed"] == 0
+        saved = await runtime.get_paper("resumed")
+        assert saved and saved["status"] == "INDEXED"
+        assert "Could not build the paper pack for resumed" in caplog.text
+        assert await stored_rows(runtime) == []
+    finally:
+        runtime.close()

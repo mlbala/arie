@@ -5,8 +5,8 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 
 ## Current state
 
-- Last done: S05 (2026-11-04)
-- Next: S06
+- Last done: S06 (2026-11-04)
+- Next: S07 (S08 needs S06 and S07)
 - Default answer mode: strict
 - Baseline (strict, before changes): paper 2610.40325, arie.yaml llm = deepseek, one run, 11 cases per variant.
   configured (reranker on): passed 9/11 (0.818), fact recall 0.688, evidence hit 0.625, grounded 1.0, median 6.18 s.
@@ -31,6 +31,10 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 - Qasper spans now match on letters and digits (case, punctuation, spacing, ligatures ignored) and the paper's own text becomes the key fact. 13 of 94 questions are still dropped; in the N=5 sample those held Qasper citation markers (`BIBREF13`, `lang2011unsupervised`) that never match PDF text. Stripping `BIBREF\d+` before matching would keep more; not done because it was not asked for.
 - Qasper fact recall is exact text containment of the span, so a correct answer worded differently scores 0. Read `fact_recall_prose` as a lower bound; the judge (S13) is the fix. Only 3 abstain cases (all answered), too few to read.
 - The embedder is now fastembed in `arie.yaml` (Gemini free tier hit 1000 requests a day). That made every library paper stale: about 2 of 420 were re-embedded before the API was stopped, at about 1 paper a minute on 1 thread (about 7 hours in all; `threads: 8` under `embedders.fastembed` would be faster). Until the API runs its backfill, chat on those papers is keyword-only. The 30 Qasper papers have fastembed vectors and joined the library.
+- Pack sizes on the real library are not measured. The one attempt (a read-only script over `data/arie.db`) was blocked by the permission classifier, so the ADR makes no claim about how many papers fit under the 60% rule. Run `build_pack` over the INDEXED papers (or call `get_pack` once per paper) and record the token estimates against 64,000 and 128,000 before S08 relies on the whole-pack path. The 3 bytes per token estimate is conservative; real counts will be lower.
+- Default `context_tokens` (deepseek 64,000, openai and gemini 128,000, other plugins 32,000) are conservative guesses, not provider-documented limits. Check them against the models in `arie.yaml`.
+- The pack text escapes literal markers (`[c12]` becomes `[\c12]`) and has no inverse. S10's quote check must compare against the raw chunk found by id and offsets, never against pack text.
+- The pack keeps every chunk that is not credits, a contents listing, references or acknowledgements, so equations and captions stay. The strict path's prose check (`_usable` in `research.py`) was not reused for that reason. `paper_eval.py` still has its own third copy of the section rules.
 - The kit re-added `AGENTS.md` (CLAUDE.md imports it) although the README had become the canonical doc. Decide later whether to keep both.
 
 ## Log
@@ -100,3 +104,12 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 - Numbers: 30 papers: 23 evaluated, 7 had no cases, 0 import or vector failures. 94 questions: 46 fact, 3 abstain, 13 dropped (span not in text), 16 yes/no and 16 free-form skipped. Results under Current state.
 - Open: see Open issues (worker errors that cannot be unpickled, remaining dropped spans, exact-match recall, library re-embedding).
 - Next: S06.
+
+### S06: ADR 0010, paper pack and context limits (2026-11-04)
+- Done: ADR 0010 (explain mode; amends 0003 and 0008; row added, 0003/0008 marked amended). `build_pack`, `pack_fits`, `escape_markers`, `marker_numbers` in `core/arie_core/pipeline/pack.py`. Table `arie_paper_packs`; `PaperPacks.ensure_pack`/`get_pack` (`api/arie_api/runtime/packs.py`) build at INDEXED in `sync.py` (a failure is logged, never fails the paper) and lazily for older papers; paper delete removes the row. Config: `llm_providers.<name>.context_tokens`, `ArieConfig.context_tokens_for`, `explain.max_pack_share` (0.6), both in `arie.yaml`.
+- Decisions: `build_pack` takes `(paper_id, title, abstract, revision, chunks)` instead of the document dict (core has no `Document` type). Revision is `<dedup_hash>:<chunk_count>:p1`, so a layout change bumps `PACK_FORMAT`. Kept chunks = `annotate_sections` + `eligible("")` minus heading-only chunks; the strict prose check was not reused (it drops equations and captions). Escape form `[\c12]`, layout `Title / Abstract / Outline / Section: ... / [cN] text`.
+- Files: core/arie_core/{pipeline/pack.py,registry/manager.py}, api/arie_api/runtime/{packs,__init__,library,sync,vectors}.py, arie.yaml, tests core/tests/{test_pack,test_pack_storage,test_registry_qos_budget}.py, docs/adr/{0010,README}, AGENTS.md, README.md, docs/SPEC.md §1, §3, §5, §6.2
+- Checks: make check ✓ (272 core, 23 api, 44 contract) · make web-check n/a (no route or response model change)
+- Numbers: +20 core tests (9 pack, 5 storage, 6 config). No eval run; no answer-path code changed.
+- Open: see Open issues (pack sizes unmeasured, context_tokens guesses, no unescape, third copy of the section rules).
+- Next: S07.

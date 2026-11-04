@@ -82,6 +82,12 @@ class ResearchRuntime(ChatHistory):
         )
         await self.db.execute(
             ctx,
+            """CREATE TABLE IF NOT EXISTS arie_paper_packs (
+            paper_id TEXT PRIMARY KEY, revision TEXT NOT NULL, text TEXT NOT NULL,
+            tokens INTEGER NOT NULL)""",
+        )
+        await self.db.execute(
+            ctx,
             """CREATE TABLE IF NOT EXISTS arie_sync_runs (
             job_id TEXT PRIMARY KEY, updated_at TEXT NOT NULL, payload_json TEXT NOT NULL)""",
         )

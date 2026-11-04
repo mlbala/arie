@@ -30,7 +30,7 @@ any coding agent. `docs/SPEC.md` describes what the code does; `docs/adr/` says 
 ## Invariants (never break; see SPEC section 1)
 
 - **I1 Paper isolation.** `paper_id` is bound in Python, never in model input or tool schemas; every row is re-filtered by `paper_id`.
-- **I2 No unverified claims.** Strict mode: every shown claim passes the verifier, or the answer abstains or falls back to excerpts. Explain mode (ADR 0010, once written) amends this: every sentence is cited or marked background, and every citation is checked.
+- **I2 No unverified claims.** Strict mode: every shown claim passes the verifier, or the answer abstains or falls back to excerpts. Explain mode ([ADR 0010](docs/adr/0010-explain-mode-paper-in-the-prompt.md)) amends this: every sentence is cited or marked background, and every citation is checked.
 - **I3 Bounded execution.** Every model call goes through `ModelSession` with a token and time budget.
 - **I4 Clean ingestion.** Validated records, declared hosts only, size/type-checked PDFs, atomic writes.
 - **I5 No vendor code in core.** `arie_core` imports no SDK or plugin; plugins import only `arie_core.plugin_api` and `arie_core.contracts`. `make boundaries` enforces it.

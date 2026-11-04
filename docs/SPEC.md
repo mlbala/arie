@@ -33,8 +33,8 @@ from that paper. Five invariants hold for all code, plugins included:
 | ID | Invariant | Where it is enforced |
 | --- | --- | --- |
 | I1 | **Paper isolation.** No other paper's text can reach an answer. | `paper_id` is bound in Python and never appears in model input or tool schemas. Every row from chunks, vectors, the reranker pool and history is filtered by `paper_id` again (`research.py`, `rerank.py`, `answer.py`, `vectors.semantic_search`). |
-| I2 | **No unverified claims.** Every shown claim cites a quote that passes the verifier, or the answer abstains or falls back to exact excerpts. | `compose_answer` in `core/arie_core/harness/answer.py` |
-| I3 | **Bounded execution.** Per question: 3 reading steps, 3 model calls, 12,000 input tokens, 700 output tokens, 25 s. | `BudgetHandle`, `ModelSession`, the route's `asyncio.timeout(25.0)` |
+| I2 | **No unverified claims.** Strict mode: every shown claim cites a quote that passes the verifier, or the answer abstains or falls back to exact excerpts. Explain mode ([ADR 0010](adr/0010-explain-mode-paper-in-the-prompt.md)) amends this: every sentence is cited or marked background, and every citation is checked. An unsupported sentence is flagged, not hidden. | Strict: `compose_answer` in `core/arie_core/harness/answer.py`. Explain: not built yet; the paper pack it reads is (`core/arie_core/pipeline/pack.py`). |
+| I3 | **Bounded execution.** Per question in strict mode: 3 reading steps, 3 model calls, 12,000 input tokens, 700 output tokens, 25 s. Explain mode has its own budgets (ADR 0010): one streaming call, 90 s, 600, 1,200 or 2,500 output tokens. | `BudgetHandle`, `ModelSession`, the route's `asyncio.timeout(25.0)` |
 | I4 | **Clean ingestion.** Source records are validated, downloads go only to declared hosts, PDFs are size- and type-checked, and writes are atomic. | `normalize_scraper_output`, `IngestionPipeline.download_pdf` |
 | I5 | **No vendor code in the core.** `arie_core` imports no SDK or plugin; plugins import only `arie_core.plugin_api` and `arie_core.contracts`. | `lint-imports` in `make check` |
 
@@ -103,8 +103,9 @@ deprecation warning per file that still has them.
 | Section | Read by | Notes |
 | --- | --- | --- |
 | `plugins.<slot>` | `RuntimeBase.instance`, `AnswerModels`, `ExtractionPool`, `VectorIndex` | `use` names the plugin. Other keys go to its constructor, except the keys ARIE reads itself: `parser.timeout_sec/max_rss_mb/tasks_per_worker` (`ExtractionLimits`) and `entailment.min_score`. `path` and `root` are resolved against the project root. |
-| `llm_providers` | `LLMProviders` | Model, key variable and `base_url` per LLM plugin. |
+| `llm_providers` | `LLMProviders` | Model, key variable and `base_url` per LLM plugin, and `context_tokens` (the window explain mode plans for; at least 4,096). Without it, `ArieConfig.context_tokens_for` uses deepseek 64,000, openai 128,000, gemini 128,000 and 32,000 for any other plugin. |
 | `embedding_providers` | `resolve_embedder` | Model, cosine floor `min_score` and key variable per embedder. `embedder.use: auto` follows the LLM provider if it offers embeddings and its key is set, and otherwise uses `fastembed`. |
+| `explain` | `ExplainConfig`, `pack_fits` | `max_pack_share` (default 0.6, above 0 and at most 1): the whole paper pack is used when its estimated tokens are at most this share of `context_tokens` (ADR 0010). Nothing reads it yet. |
 | `sync` | `SyncConfig` | Default window (`relative`, `year`, `month`, `since`, `range`), `batch_size`, `max_papers`. |
 | `runtime_qos` | `RuntimeBase`, `AnswerModels`, `routes.py` | `utility_worker_processes`, `slow_callback_threshold_ms` and `shared_model_worker`. arXiv spacing is fixed at 3 s in `wait_for_source_host`, and uvloop is chosen by the uvicorn `--loop` flag (section 12). |
 
@@ -156,6 +157,7 @@ these tables:
 | `arie_library` | One row per paper: `status`, `published_at`, `summary_json` (list view), `document_json` (the whole paper, including every page's text and every chunk), `topics_text`. |
 | `arie_vector_index` | Per paper: which embedder model and paper revision its vectors were built with. |
 | `arie_chat_turns` | Saved answers exactly as streamed. Last 10 turns per paper, 10 most recent papers. |
+| `arie_paper_packs` | One row per indexed paper: `revision` (`<dedup_hash>:<chunk_count>:p1`), `text` (the paper pack, section 6.2) and `tokens` (its estimate). Built when the paper reaches `INDEXED`, or on first use for papers indexed earlier (`PaperPacks.get_pack`), rebuilt when the revision changes, deleted with the paper. |
 | `arie_sync_runs` | Sync and import job payloads, so a restart can offer resume. |
 | `arie_eval_cases`, `arie_eval_runs`, `arie_feedback`, `arie_feedback_facts` | Evaluation questions, the last 10 runs per paper, answer ratings, and the key facts attached to answers rated down. |
 
@@ -207,7 +209,14 @@ Only `INDEXED` papers appear in the library and accept questions.
      paragraphs up to 2,200 characters, split on spaces if longer. Tables (`|` lines) and
      `$$` equation blocks stay whole, and a "Table N" caption joins its table. Chunk
      IDs are `<paper_id>:<n>`, with exact `char_start`/`char_end` into the page text.
-   - Save as `INDEXED` and wake the vector indexer.
+   - Save as `INDEXED`, build the paper pack and wake the vector indexer. The pack
+     (`build_pack` in `core/arie_core/pipeline/pack.py`) is the whole paper as one
+     text for explain mode: title, abstract, a section outline, then every chunk as
+     `[cN]` plus its text, where `N` is the number in the chunk id. It leaves out
+     contents listings, credits, references and acknowledgements (the `eligible` rule
+     of the strict path) and chunks that are only a heading. A literal `[c12]` in the
+     paper becomes `[\c12]`. The same input always gives the same bytes. A pack
+     failure is logged and does not fail the paper.
 4. The job pauses (`interrupted`, `limit_reached`) after `max_papers` papers or when a
    pause is requested. Pausing takes effect after the current paper.
 5. One paper's failure is recorded on the paper and the job, and never stops the job.
