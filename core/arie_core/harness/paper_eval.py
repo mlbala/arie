@@ -8,14 +8,17 @@ by ID, and every key fact must appear verbatim in its sentence or the case is dr
 
 Scoring is deterministic and model-free: every cited quote must exist at its stated
 offsets (grounding), the answer should cite the source sentence (evidence hit), and the
-key facts should appear in the answer text (fact recall). Fixed cases check that ARIE
-abstains on requests the paper cannot or must not answer.
+key facts should appear in the answer text (fact recall). Those scores count quotes, so
+an excerpt fallback can pass them; the written-answer scores (``passed_written``,
+``fact_recall_prose``) count only the claim text the model wrote. Fixed cases check that
+ARIE abstains on requests the paper cannot or must not answer.
 """
 
 from __future__ import annotations
 
 import hashlib
 import re
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import cast
@@ -31,7 +34,7 @@ from arie_core.harness.reader import (
     prose_sentences,
 )
 from arie_core.harness.session import ModelSession
-from arie_core.harness.trace import AnswerTrace
+from arie_core.harness.trace import STAGES, AnswerTrace
 from arie_core.plugin_api import LLM, Ctx
 
 # Sentences offered to the generator, and the most cases it may return.
@@ -85,6 +88,18 @@ class PaperEvalResult(msgspec.Struct, frozen=True, kw_only=True):
     cited_pages: list[int] = []
     error: str = ""
     trace: AnswerTrace = AnswerTrace()
+    # Answer-level scores (S04). ``passed`` and ``fact_recall`` above keep their meaning so
+    # old runs stay comparable: an excerpt fallback can pass them, but not these.
+    answer_written: bool = False
+    fact_recall_prose: float = 0.0
+    # None unless the case has key facts to score.
+    passed_written: bool | None = None
+    # Reserved for the judge and the head-to-head comparison (S13).
+    citation_support: float | None = None
+    win_rate: float | None = None
+    # The mode the run asked for (``strict`` or ``explain``); ``mode`` above is what the
+    # answer turned out to be.
+    requested_mode: str = "strict"
 
 
 def _normalize(text: str) -> str:
@@ -253,6 +268,90 @@ def fixed_cases(paper_id: str, rows: Sequence[EvidenceChunk]) -> list[PaperEvalC
     ]
 
 
+MAX_FEEDBACK_FACTS = 3
+
+
+def locate_sentence(
+    rows: Sequence[EvidenceChunk], paper_id: str, sentence: str
+) -> EvidenceChunk | None:
+    """Find ``sentence`` in one chunk of the paper, ignoring whitespace differences.
+
+    Returns that chunk narrowed to the sentence with its exact offsets, or ``None`` when
+    the text is not in the paper or crosses a chunk boundary.
+    """
+    words = sentence.split()
+    if not words:
+        return None
+    pattern = re.compile(r"\s+".join(re.escape(word) for word in words))
+    for row in rows:
+        found = pattern.search(row.text) if row.paper_id == paper_id else None
+        if found:
+            return msgspec.structs.replace(
+                row,
+                text=found.group(),
+                char_start=row.char_start + found.start(),
+                char_end=row.char_start + found.end(),
+            )
+    return None
+
+
+def check_feedback_facts(
+    rows: Sequence[EvidenceChunk], paper_id: str, key_facts: Sequence[str], sentence: str = ""
+) -> tuple[list[str], EvidenceChunk | None]:
+    """Validate the ground truth a person attaches to a feedback case.
+
+    Returns the cleaned key facts and the located source sentence (``None`` when no
+    sentence was given). Raises ``ValueError`` unless there are 1-3 key facts and, when a
+    sentence is given, it is in the paper and contains every key fact: the same rule that
+    keeps generated cases honest.
+    """
+    facts = [" ".join(fact.split()) for fact in key_facts if fact.strip()]
+    if not 1 <= len(facts) <= MAX_FEEDBACK_FACTS:
+        raise ValueError(f"Give 1 to {MAX_FEEDBACK_FACTS} key facts")
+    if not sentence.strip():
+        return facts, None
+    unit = locate_sentence(rows, paper_id, sentence)
+    if unit is None:
+        raise ValueError("The source sentence is not in this paper's text")
+    if any(_normalize(fact) not in _normalize(unit.text) for fact in facts):
+        raise ValueError("Every key fact must appear in the source sentence")
+    return facts, unit
+
+
+def feedback_case(
+    turn_id: str,
+    question: str,
+    note: str,
+    key_facts: Sequence[str] = (),
+    source: EvidenceChunk | None = None,
+) -> PaperEvalCase:
+    """Turn a question rated down into a case: scored like a fact case once it has key facts."""
+    case_id = f"feedback-{turn_id}"
+    if not key_facts:
+        return PaperEvalCase(
+            case_id=case_id, question=question, kind="feedback", origin="feedback", note=note
+        )
+    return PaperEvalCase(
+        case_id=case_id,
+        question=question,
+        kind="fact",
+        origin="feedback",
+        answer_quote=source.text if source else "",
+        chunk_id=source.chunk_id if source else "",
+        page_start=source.page_start if source else 0,
+        char_start=source.char_start if source else 0,
+        char_end=source.char_end if source else 0,
+        key_facts=list(key_facts),
+        note=note,
+    )
+
+
+# Modes whose claims are not written by the model: excerpt fallbacks and refusals.
+_EXCERPT_MODES = frozenset({"source_excerpts", "extractive_summary"})
+_UNWRITTEN_MODES = _EXCERPT_MODES | {"abstention", "error"}
+PASS_RECALL = 0.5
+
+
 def score_case(
     case: PaperEvalCase,
     rows: Sequence[EvidenceChunk],
@@ -260,8 +359,14 @@ def score_case(
     *,
     seconds: float,
     reranked: bool = False,
+    requested_mode: str = "strict",
 ) -> PaperEvalResult:
-    """Score one answer against the paper text; no model judges the result."""
+    """Score one answer against the paper text; no model judges the result.
+
+    ``passed`` and ``fact_recall`` count quotes, so an excerpt fallback that quotes the
+    source sentence passes them. ``passed_written`` and ``fact_recall_prose`` count only
+    what the model wrote (the claim text, never the quote), so a fallback scores 0.
+    """
     by_id = {row.chunk_id: row for row in rows}
     grounded = all(
         (row := by_id.get(item.chunk_id)) is not None
@@ -279,12 +384,18 @@ def score_case(
     )
     facts = [fact for fact in case.key_facts if fact]
     recall = sum(_normalize(fact) in text for fact in facts) / len(facts) if facts else 0.0
+    written = not abstained and answer.mode not in _UNWRITTEN_MODES
+    prose = _normalize(" ".join(item.text for item in answer.excerpts)) if written else ""
+    recall_prose = sum(_normalize(fact) in prose for fact in facts) / len(facts) if facts else 0.0
     if case.kind == "abstain":
         passed: bool | None = abstained
     elif case.kind == "fact":
-        passed = grounded and not abstained and (evidence_hit or recall >= 0.5)
+        passed = grounded and not abstained and (evidence_hit or recall >= PASS_RECALL)
     else:
         passed = None
+    passed_written = (
+        grounded and written and recall_prose >= PASS_RECALL if case.kind == "fact" else None
+    )
     return PaperEvalResult(
         case_id=case.case_id,
         question=case.question,
@@ -303,6 +414,10 @@ def score_case(
         answer=" ".join(item.text for item in answer.excerpts)[:1200],
         cited_pages=sorted({item.page_start for item in answer.excerpts}),
         trace=answer.trace,
+        answer_written=written,
+        fact_recall_prose=round(recall_prose, 3),
+        passed_written=passed_written,
+        requested_mode=requested_mode,
     )
 
 
@@ -315,6 +430,21 @@ def summarize(results: Sequence[PaperEvalResult]) -> dict[str, object]:
 
     def rate(values: Sequence[bool]) -> float | None:
         return round(sum(values) / len(values), 3) if values else None
+
+    # An excerpt answer is a fallback even if no reason was recorded; a reason on a
+    # refusal (``not_in_paper``) is not.
+    fallbacks = Counter(
+        item.fallback_reason or "unspecified"
+        for item in results
+        if item.mode in _EXCERPT_MODES
+        or (item.fallback_reason and item.mode not in _UNWRITTEN_MODES)
+    )
+    traced = [item.trace.seconds for item in results if not item.error and item.trace.seconds.total]
+    stage_medians = {
+        stage: sorted(getattr(seconds, stage) for seconds in traced)[len(traced) // 2]
+        for stage in (*STAGES, "total")
+        if traced
+    }
 
     return {
         "cases": len(results),
@@ -331,15 +461,31 @@ def summarize(results: Sequence[PaperEvalResult]) -> dict[str, object]:
         "errors": sum(bool(item.error) for item in results),
         "median_seconds": times[len(times) // 2] if times else None,
         "review": sum(item.passed is None for item in results),
+        # Answer-level view (S04): counts only what the model wrote, never the quotes.
+        "passed_written": sum(bool(item.passed_written) for item in facts),
+        "pass_written_rate": rate([bool(item.passed_written) for item in facts]),
+        "mean_fact_recall_prose": round(
+            sum(item.fact_recall_prose for item in facts) / len(facts), 3
+        )
+        if facts
+        else None,
+        "fallbacks": dict(sorted(fallbacks.items())),
+        "median_stage_seconds": stage_medians,
+        "citation_support": None,
+        "win_rate": None,
     }
 
 
 __all__ = [
+    "MAX_FEEDBACK_FACTS",
     "PaperEvalCase",
     "PaperEvalResult",
     "catalog",
+    "check_feedback_facts",
+    "feedback_case",
     "fixed_cases",
     "generate_cases",
+    "locate_sentence",
     "score_case",
     "summarize",
 ]

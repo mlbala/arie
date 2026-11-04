@@ -181,6 +181,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/papers/{paper_id}/chat/{turn_id}/feedback/facts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Add Feedback Facts
+         * @description Attach key facts to an answer rated down, so its question is scored in evaluations.
+         */
+        put: operations["add_feedback_facts_v1_papers__paper_id__chat__turn_id__feedback_facts_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/papers/{paper_id}/eval": {
         parameters: {
             query?: never;
@@ -472,10 +492,26 @@ export interface components {
              */
             compare_reranker: boolean;
             /**
+             * Mode
+             * @default strict
+             * @enum {string}
+             */
+            mode: "strict" | "explain";
+            /**
              * Regenerate
              * @default false
              */
             regenerate: boolean;
+        };
+        /** FeedbackFactsRequest */
+        FeedbackFactsRequest: {
+            /** Key Facts */
+            key_facts: string[];
+            /**
+             * Source Sentence
+             * @default
+             */
+            source_sentence: string;
         };
         /** FeedbackRequest */
         FeedbackRequest: {
@@ -935,6 +971,44 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["FeedbackRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_feedback_facts_v1_papers__paper_id__chat__turn_id__feedback_facts_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                paper_id: string;
+                turn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FeedbackFactsRequest"];
             };
         };
         responses: {

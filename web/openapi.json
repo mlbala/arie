@@ -9,6 +9,15 @@
             "title": "Compare Reranker",
             "type": "boolean"
           },
+          "mode": {
+            "default": "strict",
+            "enum": [
+              "strict",
+              "explain"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
           "regenerate": {
             "default": false,
             "title": "Regenerate",
@@ -16,6 +25,32 @@
           }
         },
         "title": "EvalRunRequest",
+        "type": "object"
+      },
+      "FeedbackFactsRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "key_facts": {
+            "items": {
+              "maxLength": 300,
+              "type": "string"
+            },
+            "maxItems": 3,
+            "minItems": 1,
+            "title": "Key Facts",
+            "type": "array"
+          },
+          "source_sentence": {
+            "default": "",
+            "maxLength": 600,
+            "title": "Source Sentence",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key_facts"
+        ],
+        "title": "FeedbackFactsRequest",
         "type": "object"
       },
       "FeedbackRequest": {
@@ -944,6 +979,67 @@
           }
         },
         "summary": "Rate Answer"
+      }
+    },
+    "/v1/papers/{paper_id}/chat/{turn_id}/feedback/facts": {
+      "put": {
+        "description": "Attach key facts to an answer rated down, so its question is scored in evaluations.",
+        "operationId": "add_feedback_facts_v1_papers__paper_id__chat__turn_id__feedback_facts_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "paper_id",
+            "required": true,
+            "schema": {
+              "title": "Paper Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "turn_id",
+            "required": true,
+            "schema": {
+              "title": "Turn Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeedbackFactsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Add Feedback Facts V1 Papers  Paper Id  Chat  Turn Id  Feedback Facts Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Feedback Facts"
       }
     },
     "/v1/papers/{paper_id}/eval": {

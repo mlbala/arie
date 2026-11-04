@@ -157,7 +157,7 @@ these tables:
 | `arie_vector_index` | Per paper: which embedder model and paper revision its vectors were built with. |
 | `arie_chat_turns` | Saved answers exactly as streamed. Last 10 turns per paper, 10 most recent papers. |
 | `arie_sync_runs` | Sync and import job payloads, so a restart can offer resume. |
-| `arie_eval_cases`, `arie_eval_runs`, `arie_feedback` | Evaluation questions, the last 10 runs per paper, and answer ratings. |
+| `arie_eval_cases`, `arie_eval_runs`, `arie_feedback`, `arie_feedback_facts` | Evaluation questions, the last 10 runs per paper, answer ratings, and the key facts attached to answers rated down. |
 
 The SQLite plugin also applies `core/arie_core/persistence/migrations/*.sql`, which
 create `papers`, `jobs`, `chunks`, `chunks_fts` and others. The runtime does not read or
@@ -445,7 +445,13 @@ reranker 2), `inter_op_num_threads` = 1, and the CPU memory arena off.
    cross-paper, prompt injection, and energy use (only if the paper never mentions
    energy). Cases are saved and reused until **Write new questions**.
 2. **Feedback cases.** Answers rated thumbs-down are re-asked as `feedback` cases and
-   shown for review, not scored.
+   shown for review, not scored, until a person attaches 1-3 key facts and optionally
+   the paper sentence that holds them (`PUT /v1/papers/{id}/chat/{turn_id}/feedback/facts`,
+   `save_feedback_facts`; no UI yet). The sentence must be in one chunk of the paper and
+   contain every key fact, the rule generated cases follow; it is stored as the paper's
+   own text. With key facts the case runs as a `fact` case (`case_id` stays
+   `feedback-<turn_id>`), anchored to the sentence for `evidence_hit` when one was given.
+   Facts live in `arie_feedback_facts` and are dropped when the rating is cleared.
 3. **Running.** One run at a time across the library. Cases run **sequentially** through
    `answer_paper_question`, each with its own 25 s context. **Also answer without the
    reranker** repeats every case with `rerank=False`. Results are saved after every
@@ -456,6 +462,14 @@ reranker 2), `inter_op_num_threads` = 1, and the CPU memory arena off.
    - `fact_recall`: share of key facts found in claim text plus quotes.
    - `passed`: fact cases need grounded, not abstained, and evidence hit or recall
      ≥0.5. Refusal cases need no claims.
+   - Answer-level scores, which count only what the model wrote: `answer_written` (mode
+     is not `source_excerpts`, `extractive_summary`, `abstention` or `error`),
+     `fact_recall_prose` (key facts found in the claim text alone, quotes excluded; 0 when
+     the answer was not written), and `passed_written` (fact cases: grounded, written and
+     `fact_recall_prose` ≥0.5; `null` for refusal and unscored feedback cases).
+     `passed` and `fact_recall` are unchanged so old runs stay comparable; runs saved
+     before S04 lack the new fields. `citation_support` and `win_rate` are reserved as
+     `null` until the judge exists (S13).
    - Each result also stores `mode`, `fallback_reason`, `reranked`, `model_calls`
      and `seconds`, plus the answer `trace` (8.8). `GET /v1/papers/{id}/eval/runs/{run}`
      returns all of it. `EvaluationPanel` shows the summary and, per variant, how many
@@ -463,6 +477,16 @@ reranker 2), `inter_op_num_threads` = 1, and the CPU memory arena off.
      counted). Each case row shows its variant (when both ran), `mode`, `fallback_reason`,
      `reranked`, `seconds` and the slowest stage of its trace. Runs saved before the trace
      existed have no reasons or stages; the panel says so.
+   - **Run summary** (per variant): the counts above plus `passed_written`,
+     `pass_written_rate`, `mean_fact_recall_prose` (over fact cases, fallbacks count as 0),
+     `fallbacks` (count per `fallback_reason`; an excerpt answer with no reason counts as
+     `unspecified`, a refusal's reason is not a fallback) and `median_stage_seconds` (the
+     upper median of each trace stage and `total` over answers that have a trace).
+   - **Mode.** A run records the answer path it scored: `mode` (`strict` or `explain`) on
+     the run and `requested_mode` on each result; `mode` on a result stays the answer's own
+     result mode (8.8). `POST .../eval/runs` takes `mode`, the command line takes
+     `--mode strict|explain`. `explain` is refused (409, or exit 2 before the models warm
+     up) with "Explain mode is not available yet" until S09 adds the path.
 
 A fallback answer made of exact excerpts can still pass: excerpts are grounded and may
 quote the source sentence. So a run where Tier 3 always times out still scores whether

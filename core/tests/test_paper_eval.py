@@ -13,6 +13,8 @@ from arie_core.harness.answer import AnswerResult
 from arie_core.harness.paper_eval import (
     PaperEvalCase,
     catalog,
+    check_feedback_facts,
+    feedback_case,
     fixed_cases,
     generate_cases,
     score_case,
@@ -188,6 +190,141 @@ def test_abstain_and_feedback_cases_and_summary() -> None:
     summary = summarize([answered, refused, reviewed])
     assert summary["scored"] == 2 and summary["passed"] == 2 and summary["review"] == 1
     assert summary["abstain_correct_rate"] == 1.0 and summary["mean_fact_recall"] == 1.0
+
+
+def test_an_excerpt_fallback_that_quotes_the_source_passes_but_is_not_a_written_pass() -> None:
+    row = ROWS[2]
+    fallback = AnswerResult(
+        [excerpt(row, 0, len(row.text))], "source_excerpts", fallback_reason="entailment_timeout"
+    )
+    result = score_case(fact_case(), ROWS, fallback, seconds=3.0)
+    # The old scores still count the quote, so old runs stay comparable.
+    assert result.passed and result.fact_recall == 1.0
+    assert not result.answer_written and result.fact_recall_prose == 0.0
+    assert result.passed_written is False
+    assert result.citation_support is None and result.win_rate is None
+    assert result.requested_mode == "strict"
+
+
+def test_a_written_answer_is_scored_on_its_claim_text_and_not_its_quotes() -> None:
+    row = ROWS[2]
+    written = AnswerResult(
+        [excerpt(row, 0, len(row.text), text="Accuracy rose from 62% to 68%.")], "reviewed_answer"
+    )
+    result = score_case(fact_case(), ROWS, written, seconds=2.0, requested_mode="explain")
+    assert result.answer_written and result.fact_recall_prose == 1.0
+    assert result.passed_written is True and result.requested_mode == "explain"
+
+    # The quote holds both facts but the claim says nothing: retrieval worked, the answer did not.
+    vague = AnswerResult(
+        [excerpt(row, 0, len(row.text), text="Accuracy improved.")], "reviewed_answer"
+    )
+    scored = score_case(fact_case(), ROWS, vague, seconds=2.0)
+    assert scored.passed and scored.fact_recall == 1.0
+    assert scored.fact_recall_prose == 0.0 and scored.passed_written is False
+
+    # Refusal cases expect no written answer, so they have no written score.
+    refusal = score_case(
+        fixed_cases("p1", ROWS)[0], ROWS, AnswerResult([], "abstention"), seconds=0
+    )
+    assert refusal.passed is True and refusal.passed_written is None
+
+
+def test_the_summary_counts_written_passes_fallbacks_and_median_stage_times() -> None:
+    row = ROWS[2]
+
+    def traced(total: float, **stages: float) -> AnswerTrace:
+        return AnswerTrace(seconds=StageSeconds(total=total, **stages))
+
+    fallback = AnswerResult(
+        [excerpt(row, 0, len(row.text))],
+        "source_excerpts",
+        fallback_reason="entailment_timeout",
+        trace=traced(3.0, tier3=2.0),
+    )
+    full = AnswerResult(
+        [excerpt(row, 0, len(row.text), text="Accuracy rose from 62% to 68%.")],
+        "reviewed_answer",
+        trace=traced(5.0, write=2.0),
+    )
+    vague = AnswerResult(
+        [excerpt(row, 0, len(row.text), text="Accuracy improved.")],
+        "reviewed_answer",
+        trace=traced(4.0, write=1.0),
+    )
+    refusal = AnswerResult([], "abstention", fallback_reason="not_in_paper")
+    results = [
+        score_case(fact_case(), ROWS, answer, seconds=1.0) for answer in (fallback, full, vague)
+    ]
+    results.append(score_case(fixed_cases("p1", ROWS)[0], ROWS, refusal, seconds=0.1))
+    summary = summarize(results)
+    assert summary["passed"] == 4 and summary["passed_written"] == 1
+    assert summary["pass_written_rate"] == 0.333 and summary["mean_fact_recall_prose"] == 0.333
+    # A refusal's reason is shown but is not a fallback.
+    assert summary["fallbacks"] == {"entailment_timeout": 1}
+    assert summary["median_stage_seconds"] == {
+        "plan": 0.0,
+        "vector": 0.0,
+        "read": 0.0,
+        "rerank": 0.0,
+        "write": 1.0,
+        "tier3": 0.0,
+        "review": 0.0,
+        "total": 4.0,
+    }
+    assert summary["citation_support"] is None and summary["win_rate"] is None
+    assert summarize([])["median_stage_seconds"] == {}
+
+    # An excerpt answer is a fallback even when no reason was recorded.
+    bare = AnswerResult([excerpt(row, 0, len(row.text))], "extractive_summary")
+    assert summarize([score_case(fact_case(), ROWS, bare, seconds=1.0)])["fallbacks"] == {
+        "unspecified": 1
+    }
+
+
+def test_feedback_facts_must_be_few_and_verbatim_in_the_source_sentence() -> None:
+    sentence = "Cedar accuracy   increased from 62% to 68%"
+    facts, unit = check_feedback_facts(ROWS, "p1", [" 62% ", "", "68%"], sentence)
+    assert facts == ["62%", "68%"] and unit is not None
+    # Offsets are exact even though the person's whitespace differed from the paper's.
+    assert unit.text == "Cedar accuracy increased from 62% to 68%"
+    assert unit.char_start == ROWS[2].char_start + ROWS[2].text.index("Cedar")
+    assert check_feedback_facts(ROWS, "p1", ["62%"]) == (["62%"], None)
+
+    for bad_facts in ([], ["", "  "], ["a", "b", "c", "d"]):
+        with pytest.raises(ValueError, match="1 to 3 key facts"):
+            check_feedback_facts(ROWS, "p1", bad_facts)
+    with pytest.raises(ValueError, match="not in this paper"):
+        check_feedback_facts(ROWS, "p1", ["62%"], "Accuracy increased from 62% to 68%.")
+    with pytest.raises(ValueError, match="not in this paper"):
+        check_feedback_facts(ROWS, "other", ["62%"], sentence)
+    with pytest.raises(ValueError, match="appear in the source sentence"):
+        check_feedback_facts(ROWS, "p1", ["99%"], sentence)
+
+
+def test_a_feedback_case_with_key_facts_is_scored_like_a_fact_case() -> None:
+    row = ROWS[2]
+    plain = feedback_case("t1", "How much did accuracy improve?", "wrong")
+    assert plain.kind == "feedback" and plain.case_id == "feedback-t1" and not plain.key_facts
+    answer = AnswerResult(
+        [excerpt(row, 0, len(row.text), text="Accuracy rose from 62% to 68%.")], "reviewed_answer"
+    )
+    assert score_case(plain, ROWS, answer, seconds=1.0).passed is None
+
+    _, source = check_feedback_facts(ROWS, "p1", ["62%", "68%"], row.text)
+    case = feedback_case("t1", plain.question, "wrong", ["62%", "68%"], source)
+    assert case.kind == "fact" and case.origin == "feedback" and case.case_id == plain.case_id
+    assert (case.chunk_id, case.char_start, case.char_end) == (
+        row.chunk_id,
+        row.char_start,
+        row.char_end,
+    )
+    scored = score_case(case, ROWS, answer, seconds=1.0)
+    assert scored.passed and scored.evidence_hit and scored.passed_written is True
+    # Without a source sentence the case is scored on recall alone.
+    unanchored = feedback_case("t2", plain.question, "", ["62%", "68%"])
+    assert score_case(unanchored, ROWS, answer, seconds=1.0).evidence_hit is False
+    assert score_case(unanchored, ROWS, answer, seconds=1.0).passed is True
 
 
 def test_the_unanswerable_case_is_skipped_when_the_paper_reports_energy() -> None:

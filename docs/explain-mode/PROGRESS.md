@@ -5,8 +5,8 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 
 ## Current state
 
-- Last done: S03 (2026-11-04)
-- Next: S04
+- Last done: S04 (2026-11-04)
+- Next: S05
 - Default answer mode: strict
 - Baseline (strict, before changes): paper 2610.40325, arie.yaml llm = deepseek, one run, 11 cases per variant.
   configured (reranker on): passed 9/11 (0.818), fact recall 0.688, evidence hit 0.625, grounded 1.0, median 6.18 s.
@@ -22,6 +22,8 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 - `degraded` is informational. A degraded model is still called, so each answer still waits for it up to its timeout. Skipping it while degraded is SPEC §13.4 option 2 (needs its own decision and maybe an ADR).
 - `AnswerModel.scores` counts any cancellation as a timeout, because the harness's `asyncio.timeout` reaches it as one. A request cancelled for another reason (client disconnect, shutdown) counts the same way. Three in a row would show a false `degraded` until the next success.
 - `EvaluationPanel` shows only the latest run (or the one just started). `overview.runs` lists earlier runs without results; a run picker would need `getEvalRun` per run.
+- Eval results have two `mode` fields: `mode` is the answer's own result mode (`source_excerpts`, ...) and `requested_mode` is the run's `strict|explain`. The session file said "store `mode` per result", which would have overwritten the first. Old saved runs lack the S04 fields (`answer_written`, `fact_recall_prose`, `passed_written`, `requested_mode`) and the panel does not show them yet.
+- The panel's fallback count (S03) needs a `fallback_reason`; `summarize` also counts excerpt answers without one as `unspecified`, so the two can differ on runs where the reason was not recorded.
 - The kit re-added `AGENTS.md` (CLAUDE.md imports it) although the README had become the canonical doc. Decide later whether to keep both.
 
 ## Log
@@ -73,3 +75,12 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 - Numbers: 241 core + 17 api (+4) + 44 contract tests pass; 43 web tests (+3, was 40).
 - Open: see Open issues (degraded is informational, cancellation counted as timeout, latest run only, queue-wait split).
 - Next: S04.
+
+### S04: Answer-level eval metrics (2026-11-04)
+- Done: each result has `answer_written`, `fact_recall_prose` (claim text only, 0 for unwritten answers), `passed_written` (fact cases) and reserved `citation_support`/`win_rate` = null; `passed` and `fact_recall` unchanged. Summary adds `passed_written`, `pass_written_rate`, `mean_fact_recall_prose`, `fallbacks` by reason, `median_stage_seconds`. Feedback cases take 1-3 key facts and an optional source sentence (`PUT .../chat/{turn_id}/feedback/facts`, table `arie_feedback_facts`) and then run as fact cases. Runs take `mode strict|explain` (API field, `--mode`); `explain` is refused as "not available yet" (409; CLI exits 2 before warming models).
+- Decisions: key facts must be in the source sentence and the sentence in one chunk (same rule as generated cases); facts only on answers rated down, dropped when the rating is cleared. `requested_mode` is a new field because `mode` was taken (see Open issues). No UI (S15). Excerpt answers without a reason count as `unspecified` fallbacks.
+- Files: core/arie_core/harness/paper_eval.py, api/arie_api/{paper_eval,routes,eval_paper}.py, tests in core/tests/test_paper_eval.py and api/tests/test_api_and_mcp.py, web/openapi.json, web/src/api/generated.ts, docs/SPEC.md §5 and §10, README.md
+- Checks: make check ✓ · make web-check ✓ · `generate:api` ran (new route and `mode`: +170 generated lines)
+- Numbers: 246 core (+5) + 19 api (+2) + 44 contract tests pass; 43 web tests. No eval run (needs a key); S05 records the first answer-level numbers.
+- Open: see Open issues (two `mode` fields, panel does not show the new scores).
+- Next: S05.
