@@ -56,6 +56,20 @@ class PaperPacks(LibraryStore):
 
         A current pack is read without loading the paper's document.
         """
+        revision = await self.current_pack_revision(paper_id)
+        if revision is None:
+            return None
+        stored = await self._stored_pack(paper_id, revision)
+        if stored is not None:
+            return stored
+        paper = await self.get_paper(paper_id)
+        return await self.ensure_pack(paper) if paper is not None else None
+
+    async def current_pack_revision(self, paper_id: str) -> str | None:
+        """The pack revision an indexed paper's pack should have; ``None`` if not indexed.
+
+        Read from the library summary, without loading the paper's document.
+        """
         rows = await self.db.fetch(
             context(paper_id),
             "SELECT paper_id, status, summary_json FROM arie_library WHERE paper_id = ?",
@@ -65,12 +79,7 @@ class PaperPacks(LibraryStore):
         if not rows or rows[0]["status"] != "INDEXED":
             return None
         summary = cast(Document, json.loads(str(rows[0]["summary_json"])))
-        revision = f"{summary.get('revision', '')}:{summary.get('chunk_count', 0)}"
-        stored = await self._stored_pack(paper_id, pack_revision(revision))
-        if stored is not None:
-            return stored
-        paper = await self.get_paper(paper_id)
-        return await self.ensure_pack(paper) if paper is not None else None
+        return pack_revision(f"{summary.get('revision', '')}:{summary.get('chunk_count', 0)}")
 
     async def _stored_pack(self, paper_id: str, revision: str) -> PaperPack | None:
         rows = await self.db.fetch(

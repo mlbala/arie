@@ -129,6 +129,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
             worker = group.create_task(supervised(service.run)())
             imports = group.create_task(supervised(service.run_imports)())
             vectors = group.create_task(supervised(service.run_vector_index)())
+            guides = group.create_task(supervised(service.run_guides)())
             models = group.create_task(supervised(service.models.warm)())
             evaluations = group.create_task(supervised(service.evaluations.serve)())
             lag = EventLoopLagMonitor(
@@ -138,7 +139,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
             try:
                 yield
             finally:
-                for task in (worker, imports, vectors, models, evaluations, lag_monitor):
+                for task in (worker, imports, vectors, guides, models, evaluations, lag_monitor):
                     task.cancel()
                 service.close()
 
@@ -190,6 +191,16 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
         """Saved turns for this paper, oldest first, each with the events it streamed."""
         await document(paper_id)
         return {"paper_id": paper_id, "turns": await active().chat_history(paper_id)}
+
+    @app.get("/v1/papers/{paper_id:path}/guide")
+    async def get_guide(paper_id: str) -> Document:
+        """The paper's cited guide, with a citation per marker, or its build status.
+
+        ``status`` is ``ready`` (``guide`` and ``citations`` set), ``pending`` (queued, or
+        failed and waiting for a retry; ``error`` names the last failure) or ``missing``.
+        """
+        paper = await document(paper_id)
+        return await active().guide_view(paper)
 
     @app.put("/v1/papers/{paper_id:path}/chat/{turn_id}/feedback")
     async def rate_answer(paper_id: str, turn_id: str, request: FeedbackRequest) -> Document:

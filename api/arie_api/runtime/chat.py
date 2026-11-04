@@ -33,7 +33,7 @@ from arie_api.runtime.base import (
     context,
     explain_context,
 )
-from arie_api.runtime.sync import SyncJobs
+from arie_api.runtime.guides import PaperGuides
 
 
 def saved_answer_text(events: Sequence[Document]) -> str:
@@ -49,7 +49,7 @@ def saved_answer_text(events: Sequence[Document]) -> str:
     return " ".join(text for text in claims if text)
 
 
-class ChatHistory(SyncJobs):
+class ChatHistory(PaperGuides):
     """Chat history and the answer path shared by chat and per-paper evaluation."""
 
     async def save_chat_turn(
@@ -120,12 +120,14 @@ class ChatHistory(SyncJobs):
         history: Sequence[DialogueTurn] = (),
         *,
         rerank: bool = True,
+        guides: bool = True,
     ) -> ResearchAnswer:
         """Answer one question about one indexed paper with every configured model.
 
         The chat route and the per-paper evaluation both call this, so an evaluation
-        measures exactly what users get. ``rerank=False`` skips the reranker, for
-        comparisons. ``paper["id"]`` is bound into every read and search (I1).
+        measures exactly what users get. ``rerank=False`` skips the reranker and
+        ``guides=False`` the guide's section summaries, for comparisons. ``paper["id"]`` is
+        bound into every read and search (I1).
         """
         paper_id = str(paper["id"])
         rows = [
@@ -140,18 +142,21 @@ class ChatHistory(SyncJobs):
         async def semantic(queries: Sequence[str]) -> list[str]:
             return await self.semantic_search(paper_id, queries)
 
-        return await answer_question(
-            ctx,
-            paper_id,
-            question,
-            rows,
-            llm,
-            history=history,
-            semantic=semantic,
-            entail=self.entailment_scores if self.models.get("entailment") else None,
-            entail_floor=self.entail_floor,
-            rerank=self.rerank_scores if rerank and self.models.get("reranker") else None,
-        )
+        guide = await self.get_guide(paper_id) if guides else None
+        with self.answering():
+            return await answer_question(
+                ctx,
+                paper_id,
+                question,
+                rows,
+                llm,
+                history=history,
+                semantic=semantic,
+                entail=self.entailment_scores if self.models.get("entailment") else None,
+                entail_floor=self.entail_floor,
+                rerank=self.rerank_scores if rerank and self.models.get("reranker") else None,
+                section_summaries=guide.summaries() if guide is not None else None,
+            )
 
     async def explain_turns(self, paper_id: str) -> list[ExplainTurn]:
         """The last ``HISTORY_TURNS`` saved turns of this paper, as context for an explanation.
@@ -202,14 +207,10 @@ class ChatHistory(SyncJobs):
             pack_share=self.config.explain.max_pack_share,
             turns=turns,
         )
-        async with aclosing(stream) as items:
-            async for item in items:
-                yield item
-
-    def _keyed_llm(self, provider: str | None = None) -> LLM | None:
-        """The LLM plugin for ``provider`` (default: the writer's), or ``None`` without a key."""
-        llm = cast(LLM, self.instance("llm", provider))
-        return llm if getattr(llm, "api_key", None) else None
+        with self.answering():
+            async with aclosing(stream) as items:
+                async for item in items:
+                    yield item
 
     async def judge_explanation(self, trace_id: str, result: ExplainResult) -> SupportJudgement:
         """Judge every cited sentence of an explain answer in one call on the writer's provider.

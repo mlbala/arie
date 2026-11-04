@@ -1,17 +1,20 @@
-"""Paper packs in the runtime: stored per revision, built at INDEXED, lazy for older papers."""
+"""Paper packs and guides in the runtime: stored per revision, built at INDEXED."""
 
 from __future__ import annotations
 
+import asyncio
+import json
 from pathlib import Path
 from typing import Any
 
 import pytest
-from arie_api.runtime import ResearchRuntime
+from arie_api.runtime import ResearchRuntime, context
 from arie_api.runtime import packs as packs_module
 from arie_core.pipeline.pack import PaperPack, escape_markers, marker_numbers
 from arie_core.plugin_api import ScrapedPaperInput
 from arie_core.registry.manager import ArieConfig
 from arie_core.registry.sync import SyncConfig
+from conftest import ScriptedModel
 
 ROOT = Path(__file__).resolve().parents[2]
 TEXTS = [
@@ -264,5 +267,106 @@ async def test_a_pack_failure_never_fails_an_indexed_paper(
         assert saved and saved["status"] == "INDEXED"
         assert "Could not build the paper pack for resumed" in caplog.text
         assert await stored_rows(runtime) == []
+    finally:
+        runtime.close()
+
+
+GUIDE_REPLY = json.dumps(
+    {
+        "tldr": "Large language models use agent tools to answer questions [c0].",
+        "results": ["Accuracy rose by 12 points [c1]."],
+        "section_summaries": {"Introduction": "The method improves accuracy by four points [c1]."},
+        "suggested_questions": ["Which tools are used?"],
+    }
+)
+
+
+def keyed(runtime: ResearchRuntime, monkeypatch: pytest.MonkeyPatch, *replies: str) -> Any:
+    model = ScriptedModel(streams=[[reply] for reply in replies])
+
+    def llm(provider: str | None = None) -> ScriptedModel:
+        del provider
+        return model
+
+    monkeypatch.setattr(runtime, "_keyed_llm", llm)
+    return model
+
+
+@pytest.mark.asyncio
+async def test_the_guide_builder_waits_while_an_answer_is_in_flight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = runtime_at(tmp_path)
+    await runtime.initialize()
+    model = keyed(runtime, monkeypatch, GUIDE_REPLY)
+    try:
+        await runtime.save_paper(document("first"))
+        runtime.queue_guide("first")
+        with runtime.answering():
+            builder = asyncio.create_task(runtime.guide_pass())
+            await asyncio.sleep(0.05)
+            assert not builder.done() and model.requests == []  # skipped while answering
+        await asyncio.wait_for(builder, 5.0)
+        assert len(model.requests) == 1 and runtime.guide_pending == {}
+
+        guide = await runtime.get_guide("first")
+        assert guide is not None and guide.revision == "hash-1:3:p1"
+        assert guide.results == ()  # "12" is in no chunk, so the result was dropped
+        assert guide.summaries() == {"Introduction": "The method improves accuracy by four points."}
+        view = await runtime.guide_view(document("first"))
+        assert view["status"] == "ready"
+        assert [c["chunk_id"] for c in view["citations"]] == ["first:0", "first:1"]
+        # A new revision of the paper makes the stored guide stale.
+        await runtime.save_paper(document("first", count=2))
+        assert await runtime.get_guide("first") is None
+        assert await runtime.missing_guides() == ["first"]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_guide_stays_queued_and_is_retried_on_the_next_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = runtime_at(tmp_path)
+    await runtime.initialize()
+    keyed(runtime, monkeypatch, "not json", GUIDE_REPLY)
+    try:
+        await runtime.save_paper(document("first"))
+        runtime.queue_guide("first")
+        await runtime.guide_pass()
+        assert "first" in runtime.guide_pending
+        assert runtime.guide_errors == {"first": "malformed_output"}
+        view = await runtime.guide_view(document("first"))
+        assert view == {"paper_id": "first", "status": "pending", "error": "malformed_output"}
+
+        await runtime.guide_pass()
+        assert runtime.guide_pending == {} and runtime.guide_errors == {}
+        assert await runtime.get_guide("first") is not None
+        await runtime.delete_paper("first")
+        rows = await runtime.db.fetch(context("test"), "SELECT paper_id FROM arie_paper_guides")
+        assert rows == []
+    finally:
+        runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_without_a_key_the_builder_waits_and_sync_queues_indexed_papers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = runtime_at(tmp_path)
+    await runtime.initialize()
+    def no_llm(provider: str | None = None) -> None:
+        del provider
+
+    monkeypatch.setattr(runtime, "_keyed_llm", no_llm)
+    scraped, parsed = resumable(tmp_path)
+    try:
+        await runtime.save_paper(parsed)
+        await ingest(runtime, scraped)
+        assert runtime.guide_pending == {"resumed": None} and runtime.guide_wakeup.is_set()
+        await runtime.guide_pass()
+        assert runtime.guide_pending == {"resumed": None}
+        assert runtime.guide_errors == {"*": "model_unavailable"}
     finally:
         runtime.close()

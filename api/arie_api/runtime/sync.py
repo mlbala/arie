@@ -514,6 +514,9 @@ class SyncJobs(VectorIndex):
                     "Could not build the paper pack for %s", paper.paper_id, exc_info=True
                 )
             self.vector_wakeup.set()
+            # The guide builder (``guides.py``) writes this paper's guide when no answer runs.
+            self.guide_pending[paper.paper_id] = None
+            self.guide_wakeup.set()
             job["indexed"] += 1
         except Exception as exc:
             job["failed"] += 1

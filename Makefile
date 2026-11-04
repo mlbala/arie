@@ -1,4 +1,4 @@
-.PHONY: check lint boundaries types test test-unit test-api test-contracts web-check eval-llm eval-paper eval-qasper
+.PHONY: check lint boundaries types test test-unit test-api test-contracts web-check eval-llm eval-paper eval-qasper guides
 
 # Everything CI runs for Python: lint, import boundaries, strict types, all test suites.
 check: lint boundaries types test
@@ -42,3 +42,8 @@ eval-paper:
 N ?= 5
 eval-qasper:
 	uv run python -m arie_api.eval_qasper $(N) $(ARGS)
+
+# Builds the paper guides that are missing, one paper at a time (network + LLM key):
+# make guides [ARGS="<paper_id> ..."] rebuilds the named papers instead
+guides:
+	uv run python -m arie_api.build_guides $(ARGS)

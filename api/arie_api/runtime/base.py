@@ -105,6 +105,14 @@ class RuntimeBase:
         self.embedding: LocalModel | None = None
         self.vector_wakeup = asyncio.Event()
         self.vector_errors: dict[str, str] = {}
+        # Paper guides (S14): papers waiting for one, the builder's wake-up, and the answers in
+        # flight, which the builder waits out so a guide call never competes with a reader.
+        self.guide_pending: dict[str, None] = {}
+        self.guide_wakeup = asyncio.Event()
+        self.guide_errors: dict[str, str] = {}
+        self.answers_active = 0
+        self.answers_quiet = asyncio.Event()
+        self.answers_quiet.set()
 
     def llm_provider(self) -> str:
         """The name of the configured LLM plugin."""
