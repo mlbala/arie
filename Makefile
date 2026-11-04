@@ -38,7 +38,7 @@ eval-paper:
 	uv run python -m arie_api.eval_paper $(PAPER) $(ARGS)
 
 # Evaluates answers on the first N papers of Qasper's dev split (imports them from arXiv):
-# make eval-qasper N=30
+# make eval-qasper N=30 (ARGS="--mode explain" scores explain mode)
 N ?= 5
 eval-qasper:
-	uv run python -m arie_api.eval_qasper $(N)
+	uv run python -m arie_api.eval_qasper $(N) $(ARGS)

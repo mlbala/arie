@@ -1,4 +1,4 @@
-import { Activity, Fragment, useEffect, useRef, useState } from "react";
+import { Activity, Fragment, useEffect, useRef, useState, type MouseEvent } from "react";
 import {
   ArrowUpRight,
   BookOpen,
@@ -15,6 +15,15 @@ import {
   X,
 } from "lucide-react";
 import { apiUrl, getChat, rateAnswer, type AnswerRating, type CitationRange, type PaperSummary } from "../api/client";
+import {
+  mergeSentences,
+  normalizeCitations,
+  normalizeSentences,
+  renderExplanation,
+  type ExplainCitation,
+  type SentenceStatus,
+} from "../explanation";
+import { DEFAULT_MODE, type AnswerMode } from "../paperSessions";
 import { EvaluationPanel } from "./EvaluationPanel";
 
 export interface ChatProgress {
@@ -29,6 +38,9 @@ interface ChatWorkspaceProps {
   onClosePaper: (paperId: string) => void;
   onCitation: (citation: CitationRange) => void;
   onProgress?: (paperId: string, progress: ChatProgress) => void;
+  /** Answer mode per paper (from `paperSessions`); a paper without one uses DEFAULT_MODE. */
+  modes?: Record<string, AnswerMode> | undefined;
+  onModeChange?: ((paperId: string, mode: AnswerMode) => void) | undefined;
 }
 interface VerifiedClaim {
   text: string;
@@ -55,6 +67,11 @@ interface ChatEntry {
   /** Set once the answer is saved; needed to rate it. */
   turnId?: string | undefined;
   rating?: AnswerRating | undefined;
+  /** Explain mode: the streamed Markdown, its resolved markers and per-sentence verdicts. */
+  text?: string | undefined;
+  citations?: ExplainCitation[] | undefined;
+  sentences?: SentenceStatus[] | undefined;
+  incomplete?: boolean | undefined;
 }
 interface RequestCallbacks {
   onStart: (controller: AbortController) => void;
@@ -68,6 +85,8 @@ export function ChatWorkspace({
   onClosePaper,
   onCitation,
   onProgress,
+  modes,
+  onModeChange,
 }: ChatWorkspaceProps) {
   const activeRequest = useRef<AbortController | null>(null);
   const previousActiveId = useRef(activePaperId);
@@ -161,6 +180,8 @@ export function ChatWorkspace({
               callbacks={callbacks}
               onCitation={onCitation}
               onProgress={onProgress}
+              mode={modes?.[paper.id] ?? DEFAULT_MODE}
+              onModeChange={(mode) => onModeChange?.(paper.id, mode)}
             />
           </Activity>
         ))
@@ -178,12 +199,16 @@ interface ChatPanelProps {
   callbacks: RequestCallbacks;
   onCitation: (citation: CitationRange) => void;
   onProgress: ChatWorkspaceProps["onProgress"];
+  mode: AnswerMode;
+  onModeChange: (mode: AnswerMode) => void;
 }
 function ChatPanel({
   paper,
   callbacks,
   onCitation,
   onProgress,
+  mode,
+  onModeChange,
 }: ChatPanelProps) {
   const [question, setQuestion] = useState("");
   const [entries, setEntries] = useState<ChatEntry[]>([]);
@@ -238,17 +263,22 @@ function ChatPanel({
     setIsLoading(true);
     setEntries((current) => [...current, { id, question: prompt, claims: [] }]);
     callbacks.onStart(controller);
-    report("retrieval", "Finding relevant passages…");
+    const explain = mode === "explain";
+    report("retrieval", explain ? "Reading the whole paper…" : "Finding relevant passages…");
     try {
+      // Explain mode reads its history from the server's saved turns, so it sends none.
       const response = await fetch(
         apiUrl(`/v1/papers/${encodeURIComponent(paper.id)}/questions`),
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ question: prompt, ...(entries.length ? {
+          body: JSON.stringify({ question: prompt, mode, ...(!explain && entries.length ? {
             history: entries.filter((entry) => !entry.error).slice(-3).map((entry) => ({
               question: (entry.contextQuestion ?? entry.question).slice(0, 700),
-              source_ids: [...new Set(entry.claims.flatMap((claim) => claim.citation?.chunk_id ? [claim.citation.chunk_id] : []))].slice(0, 8),
+              source_ids: [...new Set([
+                ...entry.claims.flatMap((claim) => claim.citation?.chunk_id ? [claim.citation.chunk_id] : []),
+                ...(entry.citations ?? []).map((citation) => citation.chunkId),
+              ])].slice(0, 8),
             })),
           } : {}) }),
           signal: controller.signal,
@@ -294,7 +324,7 @@ function ChatPanel({
           }
           if (kind === "done") {
             finished = true;
-            report("complete", "Source quotes and page citations checked.");
+            report("complete", explain ? "Citations checked." : "Source quotes and page citations checked.");
           }
         }
       };
@@ -404,12 +434,13 @@ function ChatPanel({
                       <Sparkles size={13} />
                     </span>
                     <strong>ARIE</strong>
-                    <span>Grounded in this paper</span>
+                    <span>{entry.text === undefined ? "Grounded in this paper" : "Explained from this paper"}</span>
                   </div>
                   {entry.heading && (
                     <h3 className="answer-title">{entry.heading}</h3>
                   )}
                   {entry.claims.length > 0 && <GroundedAnswer entry={entry} onCitation={onCitation} />}
+                  {entry.text !== undefined && <ExplainedAnswer entry={entry} onCitation={onCitation} />}
                   {entry.message && (
                     <p className="answer-notice">{entry.message}</p>
                   )}
@@ -480,9 +511,27 @@ function ChatPanel({
             rows={2}
           />
           <div className="composer-bottom">
-            <span>
-              <BookOpen size={12} /> One paper. Every citation.
-            </span>
+            <div className="composer-tools">
+              <div className="answer-mode" role="group" aria-label="Answer mode">
+                {(["explain", "strict"] as const).map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    aria-pressed={mode === option}
+                    disabled={isLoading}
+                    title={option === "explain"
+                      ? "A readable explanation; every sentence cited or marked as background"
+                      : "Only verified statements, each with its exact quote"}
+                    onClick={() => onModeChange(option)}
+                  >
+                    {option === "explain" ? "Explain" : "Strict"}
+                  </button>
+                ))}
+              </div>
+              <span>
+                <BookOpen size={12} /> One paper. Every citation.
+              </span>
+            </div>
             {isLoading ? (
               <button
                 className="composer-send"
@@ -556,6 +605,26 @@ function GroundedAnswer({ entry, onCitation }: { entry: ChatEntry; onCitation: (
   </div>;
 }
 
+/** An explain-mode answer: streamed Markdown whose page chips open the cited chunk. */
+function ExplainedAnswer({ entry, onCitation }: { entry: ChatEntry; onCitation: (citation: CitationRange) => void }) {
+  const html = renderExplanation(entry.text ?? "", entry.sentences ?? [], entry.citations);
+  // The chips are inside rendered HTML, so one handler on the container opens them.
+  const open = (event: MouseEvent<HTMLDivElement>) => {
+    const chip = event.target instanceof Element ? event.target.closest("button[data-marker]") : null;
+    const cited = entry.citations?.find((citation) => String(citation.marker) === chip?.getAttribute("data-marker"));
+    if (cited) onCitation({
+      page_start: cited.page,
+      char_start: cited.charStart,
+      char_end: cited.charEnd,
+      chunk_id: cited.chunkId,
+    });
+  };
+  return <div className="explained-answer">
+    <div className="explanation-text" onClick={open} dangerouslySetInnerHTML={{ __html: html }} />
+    {entry.incomplete && <p className="answer-notice">This explanation stopped before it finished.</p>}
+  </div>;
+}
+
 /** Thumbs up or down on a saved answer; a down rating can carry a short note. */
 function AnswerFeedback({ entry, onRate }: { entry: ChatEntry; onRate: (entry: ChatEntry, rating: AnswerRating, note?: string) => void }) {
   const [note, setNote] = useState("");
@@ -584,8 +653,12 @@ function applyAnswerEvent(entry: ChatEntry, kind: string | undefined, parsed: Re
     const claim = normalizeClaim(parsed.claim);
     return claim ? { ...entry, claims: [...entry.claims, claim] } : entry;
   }
+  if (kind === "delta" && typeof parsed.text === "string")
+    return { ...entry, text: (entry.text ?? "") + parsed.text };
+  if (kind === "citations") return { ...entry, citations: normalizeCitations(parsed.citations) };
   if (kind === "answer") return {
     ...entry,
+    incomplete: parsed.mode === "explained_answer" && evaluation.complete === false,
     mode: String(parsed.mode ?? ""),
     heading: String(parsed.heading ?? "Answer"),
     contextQuestion: typeof parsed.context_question === "string" ? parsed.context_question.slice(0, 700) : entry.question,
@@ -602,6 +675,9 @@ function applyAnswerEvent(entry: ChatEntry, kind: string | undefined, parsed: Re
     mode: String(parsed.mode ?? ""),
     turnId: typeof parsed.turn_id === "string" ? parsed.turn_id : entry.turnId,
   };
+  // `checks` today; any later checker that sends sentence verdicts merges the same way.
+  if (Array.isArray(parsed.sentences))
+    return { ...entry, sentences: mergeSentences(entry.sentences ?? [], normalizeSentences(parsed.sentences)) };
   return entry;
 }
 

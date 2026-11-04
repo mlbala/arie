@@ -613,6 +613,11 @@ ready.
 - Select a paper, then ask a question. **What is this paper about?** gives a summary of
   contribution, method, evaluation, findings and limitations where the paper supports
   them. Each claim links to its page and quote.
+- The **Explain / Strict** switch under the question box is remembered per paper.
+  **Strict** shows only verified statements, each with its quote. **Explain** streams a
+  readable explanation from the whole paper. Each page chip (`p. 4`) opens the passage it
+  cites. Sentences a check flagged are underlined in amber, with the reason on hover.
+  Background sentences, which cite nothing in the paper, are muted.
 - **Import & status** shows extraction activity, evidence counts, database and PDF
   size, free disk and vector index coverage.
 - **Delete PDF** keeps the extracted text for chat; **Delete paper** removes the PDF,
@@ -652,7 +657,7 @@ The last 10 runs per paper are kept. From a terminal:
 
 For questions ARIE did not write, `make eval-qasper N=30` imports the first N papers of
 [Qasper](https://allenai.org/data/qasper)'s dev split from arXiv (they join your library)
-and scores strict answers to its questions: extractive-span answers become key facts
+and scores strict answers to its questions (`ARGS="--mode explain"` scores explain mode): extractive-span answers become key facts
 (a span is found in the paper's extracted text ignoring case, punctuation and spacing, and the
 paper's own wording is kept), unanswerable questions must be
 refused, and yes/no and free-form answers are skipped and counted. The dev file is
@@ -667,7 +672,7 @@ downloaded once into `data/eval/qasper/`. Needs network and an LLM key.
 | `GET /v1/papers/{id}/pdf`, `.../pages/{n}`, `.../chat` | Original PDF, extracted page, chat history |
 | `PUT /v1/papers/{id}/chat/{turn_id}/feedback` | Rate a saved answer `up`, `down` or `null`, with an optional note |
 | `PUT /v1/papers/{id}/chat/{turn_id}/feedback/facts` | Attach 1-3 key facts (and the paper sentence that holds them) to an answer rated down, so its question is scored in evaluations |
-| `GET /v1/papers/{id}/eval`, `POST .../eval/runs`, `GET .../eval/runs/{run}` | A paper's evaluation questions, runs and feedback; start a run (`mode` is `strict`; `explain` is refused until it exists) |
+| `GET /v1/papers/{id}/eval`, `POST .../eval/runs`, `GET .../eval/runs/{run}` | A paper's evaluation questions, runs and feedback; start a run (`mode` is `strict` or `explain`) |
 | `POST /v1/sync`, `GET /v1/sync/{job}`, `POST /v1/sync/{job}/pause` | Run and control syncs |
 | `POST /v1/imports` | Import one paper by URL |
 | `GET /v1/plugins`, `PUT /v1/plugins/{slot}`, `POST /v1/plugins/{slot}/test` | List, switch and test plugins |

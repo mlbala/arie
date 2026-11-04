@@ -1,6 +1,12 @@
 /** Active paper chats pinned in the top pane, and the sidebar history they shift into. */
 export const MAX_PINNED = 5;
 export const MAX_HISTORY = 10;
+/** Papers whose answer mode is remembered, most recently set last. */
+export const MAX_MODES = 50;
+
+/** `strict` answers in verified claims; `explain` streams cited prose (SPEC 8.9). */
+export type AnswerMode = "strict" | "explain";
+export const DEFAULT_MODE: AnswerMode = "strict";
 
 export interface PaperSessions {
   /** Pinned paper ids, oldest first; never longer than MAX_PINNED. */
@@ -11,6 +17,8 @@ export interface PaperSessions {
   activeId: string | null;
   /** True once the reader has opened a paper, which disables the default-paper fallback. */
   touched: boolean;
+  /** Answer mode chosen per paper; a paper without one uses DEFAULT_MODE. */
+  modes: Record<string, AnswerMode>;
 }
 
 export type PaperSessionAction =
@@ -18,9 +26,15 @@ export type PaperSessionAction =
   | { type: "close"; id: string }
   | { type: "deselect" }
   | { type: "forget"; id: string }
-  | { type: "clearHistory" };
+  | { type: "clearHistory" }
+  | { type: "setMode"; id: string; mode: AnswerMode };
 
-export const EMPTY_SESSIONS: PaperSessions = { pinned: [], history: [], activeId: null, touched: false };
+export const EMPTY_SESSIONS: PaperSessions = { pinned: [], history: [], activeId: null, touched: false, modes: {} };
+
+/** Keep at most MAX_MODES papers, dropping the ones set longest ago. */
+function capModes(modes: [string, AnswerMode][]): Record<string, AnswerMode> {
+  return Object.fromEntries(modes.slice(-MAX_MODES));
+}
 
 function remember(history: string[], ids: string[]) {
   return [...ids, ...history.filter((item) => !ids.includes(item))].slice(0, MAX_HISTORY);
@@ -34,6 +48,7 @@ function remember(history: string[], ids: string[]) {
  * - `close` unpins a paper into history and activates its nearest neighbour tab; closing
  *   the unpinned default paper also marks the session touched so it does not reappear.
  * - `forget` drops a deleted paper everywhere; `clearHistory` empties history only.
+ * - `setMode` remembers a paper's answer mode, even for the unpinned default paper.
  * History beyond MAX_HISTORY is discarded oldest-first.
  */
 export function paperSessionsReducer(state: PaperSessions, action: PaperSessionAction): PaperSessions {
@@ -44,7 +59,7 @@ export function paperSessionsReducer(state: PaperSessions, action: PaperSessionA
       const pinned = [...state.pinned, id];
       const shifted = pinned.length > MAX_PINNED ? pinned.splice(0, pinned.length - MAX_PINNED) : [];
       const history = remember(state.history.filter((item) => item !== id), shifted.reverse());
-      return { pinned, history, activeId: id, touched: true };
+      return { ...state, pinned, history, activeId: id, touched: true };
     }
     case "close": {
       const index = state.pinned.indexOf(action.id);
@@ -52,7 +67,7 @@ export function paperSessionsReducer(state: PaperSessions, action: PaperSessionA
       const activeId = state.activeId === action.id
         ? (pinned[Math.min(index, pinned.length - 1)] ?? null)
         : state.activeId;
-      return { pinned, history: remember(state.history, [action.id]), activeId, touched: true };
+      return { ...state, pinned, history: remember(state.history, [action.id]), activeId, touched: true };
     }
     case "deselect":
       return state.activeId === null ? state : { ...state, activeId: null };
@@ -62,9 +77,15 @@ export function paperSessionsReducer(state: PaperSessions, action: PaperSessionA
         pinned: state.pinned.filter((item) => item !== action.id),
         history: state.history.filter((item) => item !== action.id),
         activeId: state.activeId === action.id ? null : state.activeId,
+        modes: Object.fromEntries(Object.entries(state.modes).filter(([id]) => id !== action.id)),
       };
     case "clearHistory":
       return state.history.length ? { ...state, history: [] } : state;
+    case "setMode": {
+      if (state.modes[action.id] === action.mode) return state;
+      const others = Object.entries(state.modes).filter(([id]) => id !== action.id);
+      return { ...state, modes: capModes([...others, [action.id, action.mode]]) };
+    }
   }
 }
 
@@ -77,11 +98,16 @@ export function loadSessions(): PaperSessions {
     const ids = (items: unknown, limit: number) =>
       Array.isArray(items) ? items.filter((item): item is string => typeof item === "string").slice(0, limit) : [];
     if (!value || typeof value !== "object") return EMPTY_SESSIONS;
+    const modes = typeof value.modes === "object" && value.modes !== null && !Array.isArray(value.modes)
+      ? Object.entries(value.modes as Record<string, unknown>)
+        .filter((entry): entry is [string, AnswerMode] => entry[1] === "strict" || entry[1] === "explain")
+      : [];
     return {
       pinned: ids(value.pinned, MAX_PINNED),
       history: ids(value.history, MAX_HISTORY),
       activeId: typeof value.activeId === "string" ? value.activeId : null,
       touched: value.touched === true,
+      modes: capModes(modes),
     };
   } catch {
     return EMPTY_SESSIONS;
