@@ -131,6 +131,56 @@ async def test_markers_map_to_chunk_ids_and_unknown_markers_are_listed() -> None
 
 
 @pytest.mark.asyncio
+async def test_each_sentence_is_checked_against_the_raw_chunks_of_the_bound_paper() -> None:
+    # A foreign row with this paper's chunk id and a number only it holds, listed first.
+    foreign = EvidenceChunk("other-paper", f"{PAPER}:4", "Accuracy was 99% there.", 3, 0, 20)
+    model = ScriptedModel(
+        streams=[
+            [
+                "Accuracy increased from 62% to 68% on the Cedar benchmark [c4]. ",
+                "The gate threshold is 0.5 [c3]. ",
+                "Accuracy was 99% [c4]. ",
+                "Cedar gates writes [c99]. ",
+                "Memory banks store vectors. ",
+                "It has 12 layers.",
+            ]
+        ]
+    )
+    _, final = await run(model, rows=[foreign, *ROWS])
+    checks = final.checks
+    assert [(s.status, s.reasons) for s in checks.sentences] == [
+        ("cited_ok", ()),
+        ("flagged", ("number_not_in_source",)),
+        ("flagged", ("number_not_in_source",)),
+        ("flagged", ("invalid_marker",)),
+        ("background", ()),
+        ("flagged", ("uncited_number",)),
+    ]
+    assert (checks.cited_ok, checks.cited, checks.valid_rate) == (1, 4, 0.25)
+    assert checks.background_share == pytest.approx(0.167, abs=0.001)
+    # The same facts that ``citations`` and ``unknown_markers`` report, sentence by sentence.
+    assert checks.flagged_markers() == {3, 4, 99}
+    assert final.unknown_markers == (99,)
+
+
+@pytest.mark.asyncio
+async def test_a_marker_the_paged_pack_left_out_is_invalid_even_if_the_paper_has_it() -> None:
+    answer = "Accuracy increased from 62% to 68% on the Cedar benchmark [c4]."
+    _, whole = await run(ScriptedModel(streams=[[answer]]))
+    assert [s.status for s in whole.checks.sentences] == ["cited_ok"]
+    _, paged = await run(ScriptedModel(streams=[[answer]]), pack_share=0.0001)
+    assert paged.paged and 4 in paged.unknown_markers
+    assert [s.reasons for s in paged.checks.sentences] == [("invalid_marker",)]
+
+
+@pytest.mark.asyncio
+async def test_no_text_means_no_checks() -> None:
+    _, final = await run(ScriptedModel(streams=[[]]))
+    assert final.text == "" and final.checks.sentences == ()
+    assert final.checks.valid_rate is None and final.checks.background_share is None
+
+
+@pytest.mark.asyncio
 async def test_two_questions_on_one_paper_share_the_prompt_bytes_up_to_the_history() -> None:
     model = ScriptedModel(streams=[["First [c2]."], ["Second [c4]."], ["Second again [c4]."]])
     await run(model)

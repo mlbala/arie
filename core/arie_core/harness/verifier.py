@@ -100,26 +100,38 @@ def normalize_verification_text(value: str) -> str:
     return re.sub(r"[*_`|]", "", text)
 
 
+# Qualifier groups: negation, hedge, restriction. A quote that has a group's word and a
+# claim that lacks every one of them has dropped a qualification.
+_QUALIFIERS = (
+    r"\b(?:not|no|never|without|cannot|neither|fails?|unable|lacks?|removes?|dispensing)\b|n't",
+    r"\b(?:may|might|could|suggests?|appears?|potentially|preliminary)\b",
+    r"\b(?:only|limited|small|restricted)\b",
+)
+_ABSOLUTES = r"\b(?:always|never|every|guarantees?|proves?|perfect|all datasets)\b"
+
+
+def anchor_numbers(value: str) -> set[str]:
+    """The numbers in a text as written, with thousands commas removed (``1,000`` is ``1000``)."""
+    return set(re.findall(r"\d+(?:\.\d+)?", value.replace(",", "")))
+
+
+def lost_qualifier(text: str, quote: str) -> bool:
+    """True if ``quote`` has a negation, hedge or restriction word that ``text`` lacks."""
+    return any(
+        re.search(group, quote, re.I) and not re.search(group, text, re.I) for group in _QUALIFIERS
+    )
+
+
 def preserves_anchors(text: str, quote: str) -> bool:
     """Reject changed numbers, lost qualifications and new absolutes before model review."""
-
-    def numbers(value: str) -> set[str]:
-        return set(re.findall(r"\d+(?:\.\d+)?", value.replace(",", "")))
-
-    if not numbers(text) <= numbers(quote):
+    if not anchor_numbers(text) <= anchor_numbers(quote):
         return False
-    groups = (
-        r"\b(?:not|no|never|without|cannot|neither|fails?|unable|lacks?|removes?|dispensing)\b|n't",
-        r"\b(?:may|might|could|suggests?|appears?|potentially|preliminary)\b",
-        r"\b(?:only|limited|small|restricted)\b",
-    )
-    if any(re.search(group, quote, re.I) and not re.search(group, text, re.I) for group in groups):
+    if lost_qualifier(text, quote):
         return False
-    absolutes = r"\b(?:always|never|every|guarantees?|proves?|perfect|all datasets)\b"
-    return not (re.search(absolutes, text, re.I) and not re.search(absolutes, quote, re.I))
+    return not (re.search(_ABSOLUTES, text, re.I) and not re.search(_ABSOLUTES, quote, re.I))
 
 
-def _content_tokens(value: str) -> set[str]:
+def content_tokens(value: str) -> set[str]:
     return {
         token
         for token in re.findall(r"\w+", value.lower())
@@ -182,11 +194,11 @@ class EvidenceVerifier:
         detect polarity flips such as "performs well" -> "performs badly"; only the
         Tier 3 entailment model can, so passing this check is never sufficient alone.
         """
-        claim_tokens = _content_tokens(claim_text)
+        claim_tokens = content_tokens(claim_text)
         if not evidence_quotes or not claim_tokens:
             return False
         joined = " ".join(evidence_quotes)
-        stems = {token[:5] for token in _content_tokens(joined)}
+        stems = {token[:5] for token in content_tokens(joined)}
         covered = sum(1 for token in claim_tokens if token[:5] in stems)
         return covered * 2 >= len(claim_tokens) and preserves_anchors(claim_text, joined)
 

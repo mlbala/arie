@@ -455,7 +455,16 @@ def test_an_explain_request_streams_text_then_the_answer_citations_and_usage(
     model = _StreamingLLM(ANSWER)
     llm.append(model)
     text = _explain(client).text
-    assert _kinds(text) == ["progress", "delta", "delta", "delta", "answer", "citations", "done"]
+    assert _kinds(text) == [
+        "progress",
+        "delta",
+        "delta",
+        "delta",
+        "answer",
+        "citations",
+        "checks",
+        "done",
+    ]
     assert "".join(item["text"] for item in _events(text, "delta")) == "".join(ANSWER)
 
     [answer] = _events(text, "answer")
@@ -474,7 +483,8 @@ def test_an_explain_request_streams_text_then_the_answer_citations_and_usage(
     }
     assert evaluation["first_token_seconds"] is not None
 
-    # The marker names a chunk of this paper; its page and span are the whole chunk's until S10.
+    # The marker names a chunk of this paper; its span is the whole chunk's, and it is checked
+    # because the one sentence that cites it passed.
     [citations] = _events(text, "citations")
     assert citations["citations"] == [
         {
@@ -483,9 +493,19 @@ def test_an_explain_request_streams_text_then_the_answer_citations_and_usage(
             "page": 1,
             "char_start": 0,
             "char_end": len(SOURCE),
-            "checked": False,
+            "checked": True,
         }
     ]
+    [checks] = _events(text, "checks")
+    assert [(s["status"], s["markers"], s["reasons"]) for s in checks["sentences"]] == [
+        ("cited_ok", [0], []),
+        ("flagged", [42], ["invalid_marker"]),
+    ]
+    first = checks["sentences"][0]
+    assert first["text"] == "Cedar verifies source quotes before it answers [c0]."
+    assert "".join(ANSWER)[first["start"] : first["end"]] == first["text"]
+    assert (checks["cited_ok"], checks["flagged"], checks["background"]) == (1, 1, 0)
+    assert checks["valid_rate"] == 0.5 and checks["background_share"] == 0.0
     [done] = _events(text, "done")
     assert done["status"] == "complete" and done["mode"] == "explained_answer"
     assert done["usage"] == trace["tokens"] and done["claims_count"] == 1
@@ -508,10 +528,10 @@ def test_a_saved_explain_turn_replays_the_same_events_and_feeds_the_next_prompt(
     # The streamed pieces are saved as one delta; the other events as sent. Progress is not
     # saved, in strict mode either.
     events = [event["event"] for event in turn["events"]]
-    assert events == ["delta", "answer", "citations", "done"]
+    assert events == ["delta", "answer", "citations", "checks", "done"]
     by_kind = {event["event"]: event["data"] for event in turn["events"]}
     assert by_kind["delta"]["text"] == "".join(ANSWER)
-    for kind in ("answer", "citations", "done"):
+    for kind in ("answer", "citations", "checks", "done"):
         assert by_kind[kind] == _events(streamed, kind)[0]
     assert by_kind["done"]["turn_id"] == turn["turn_id"]
 
@@ -544,7 +564,7 @@ def test_an_explanation_cut_short_keeps_its_text_and_says_so(
 ) -> None:
     llm.append(_StreamingLLM(["Cedar verifies quotes [c0]. "], fail_after=True))
     text = _explain(client).text
-    assert _kinds(text) == ["progress", "delta", "answer", "citations", "done"]
+    assert _kinds(text) == ["progress", "delta", "answer", "citations", "checks", "done"]
     [answer] = _events(text, "answer")
     assert answer["mode"] == "explained_answer" and answer["evaluation"]["complete"] is False
     assert answer["evaluation"]["fallback_reason"] == "ConnectionResetError"
@@ -615,9 +635,11 @@ def test_an_explain_evaluation_scores_the_written_text_and_stores_cache_and_firs
     assert result["answer_written"] is True and result["fact_recall_prose"] == 1.0
     assert result["evidence_hit"] is True and result["grounded"] is True
     assert result["cache_hit_rate"] == 0.75 and result["first_token_seconds"] is not None
+    assert result["citation_valid_rate"] == 1.0 and result["background_share"] == 0.0
     assert result["trace"]["prompt_version"] == "explain.v1"
     summary = run["summary"]["configured"]
     assert summary["mean_cache_hit_rate"] == 0.75 and summary["passed_written"] == 1
+    assert summary["mean_citation_valid_rate"] == 1.0 and summary["mean_background_share"] == 0.0
     assert summary["median_first_token_seconds"] == result["first_token_seconds"]
 
 
@@ -630,4 +652,5 @@ def test_an_explain_evaluation_without_a_key_fails_every_case_visibly(
     [result] = run["results"]
     assert result["passed"] is False and result["fallback_reason"] == "model_unavailable"
     assert result["answer_written"] is False and result["cache_hit_rate"] is None
+    assert result["citation_valid_rate"] is None and result["background_share"] is None
     assert run["summary"]["configured"]["fallbacks"] == {"model_unavailable": 1}

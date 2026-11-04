@@ -10,9 +10,11 @@ import pytest
 from arie_api.runtime import context
 from arie_core.contracts import LLMRequest, LLMResponse, TokenUsage
 from arie_core.harness.answer import AnswerResult
+from arie_core.harness.citations import CitationChecks, check_answer
 from arie_core.harness.explain import ExplainCitation, ExplainResult
 from arie_core.harness.paper_eval import (
     PaperEvalCase,
+    PaperEvalResult,
     catalog,
     check_feedback_facts,
     feedback_case,
@@ -346,6 +348,7 @@ def explained(
     usage: TokenUsage = CACHED,
     first_token: float | None = 1.5,
     reason: str = "",
+    checks: CitationChecks | None = None,
 ) -> ExplainResult:
     return ExplainResult(
         text=text,
@@ -357,6 +360,7 @@ def explained(
         fallback_reason=reason,
         trace=AnswerTrace(tokens=usage, mode=mode, fallback_reason=reason),
         first_token_seconds=first_token,
+        checks=checks or CitationChecks(),
     )
 
 
@@ -441,3 +445,27 @@ def test_the_summary_reports_first_token_seconds_and_cache_hit_rate_for_explain_
     assert summary["fallbacks"] == {"x": 1}
     strict = summarize([score_case(fact_case(), ROWS, AnswerResult([], "abstention"), seconds=1)])
     assert strict["median_first_token_seconds"] is None and strict["mean_cache_hit_rate"] is None
+
+
+def test_explain_results_carry_the_citation_check_rates_and_the_summary_averages_them() -> None:
+    def scored(text: str, sources: dict[int, str]) -> PaperEvalResult:
+        answer = explained(text, cited=(2,), checks=check_answer(text, sources))
+        return score_explained(fact_case(), ROWS, answer, seconds=1)
+
+    # Marker 2 is not in this pack, so the one cited sentence is flagged; one number is uncited.
+    first = scored("Accuracy rose [c2]. It has 12 layers. Attention weighs tokens.", {})
+    assert first.citation_valid_rate == 0.0
+    assert first.background_share == pytest.approx(0.333, abs=0.001)
+    second = scored("Accuracy rose [c2]. Attention weighs tokens.", {2: "Accuracy rose."})
+    assert second.citation_valid_rate == 1.0 and second.background_share == 0.5
+    # No cited sentence and no sentence at all: nothing to measure, so unset.
+    plain = scored("Attention weighs tokens.", {})
+    assert plain.citation_valid_rate is None and plain.background_share == 1.0
+    empty = scored("", {})
+    assert empty.citation_valid_rate is None and empty.background_share is None
+
+    summary = summarize([first, second, plain, empty])
+    assert summary["mean_citation_valid_rate"] == 0.5
+    assert summary["mean_background_share"] == pytest.approx(0.611, abs=0.001)
+    strict = summarize([score_case(fact_case(), ROWS, AnswerResult([], "abstention"), seconds=1)])
+    assert strict["mean_citation_valid_rate"] is None and strict["mean_background_share"] is None
