@@ -14,6 +14,7 @@ from arie_api.export_openapi import export_openapi
 from arie_api.mcp_server import create_scope_handle, verify_scope_handle
 from arie_api.routes import create_app
 from arie_api.runtime import ResearchRuntime
+from arie_core.harness.trace import STAGES
 from arie_core.registry.manager import ArieConfig
 from fastapi.testclient import TestClient
 
@@ -241,9 +242,17 @@ def _events(text: str, kind: str) -> list[dict[str, Any]]:
 def test_answers_can_be_rated_and_the_rating_is_restored(client: _APIClient) -> None:
     streamed = client.post("/v1/papers/paper-1/questions", json={"question": "What is Cedar?"})
     [done] = _events(streamed.text, "done")
+    [answer] = _events(streamed.text, "answer")
     turn_id = done["turn_id"]
     [turn] = client.get("/v1/papers/paper-1/chat").json()["turns"]
     assert turn["turn_id"] == turn_id and turn["rating"] is None
+    # The answer trace is streamed in the evaluation block and saved with the turn.
+    trace = answer["evaluation"]["trace"]
+    assert set(trace["seconds"]) == {*STAGES, "total"} and trace["mode"] == answer["mode"]
+    assert set(trace["tokens"]) == {"prompt", "completion", "cache_hit", "cache_miss"}
+    assert trace["fallback_reason"] == answer["evaluation"]["fallback_reason"]
+    [saved] = [event for event in turn["events"] if event["event"] == "answer"]
+    assert saved["data"]["evaluation"]["trace"] == trace
 
     url = f"/v1/papers/paper-1/chat/{turn_id}/feedback"
     rated = client.put(url, json={"rating": "down", "note": "Missed the method"})
@@ -295,6 +304,8 @@ def test_a_paper_evaluation_answers_saved_cases_and_scores_them(
     assert set(run["summary"]) == {"configured"}
     [result] = run["results"]
     assert result["grounded"] is True and result["kind"] == "fact"
+    assert set(result["trace"]["seconds"]) == {*STAGES, "total"}
+    assert result["trace"]["mode"] == result["mode"]
     overview = client.get("/v1/papers/paper-1/eval").json()
     assert overview["latest"]["run_id"] == run_id and overview["cases"][0]["case_id"] == "case-1"
     assert client.get("/v1/papers/paper-1/eval/runs/unknown").status_code == 404
