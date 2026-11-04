@@ -71,6 +71,17 @@ class SupervisedPool:
         self._max_rss = max_rss_mb * 1024 * 1024
         self._pool: ProcessPoolExecutor | None = None
         self._lock = asyncio.Lock()
+        # Calls whose caller gave up but that still run (``keep_on_cancel``) or wait in the
+        # executor; the next call queues behind them.
+        self._abandoned = 0
+
+    @property
+    def abandoned_calls(self) -> int:
+        """How many calls a caller gave up on that the worker has not finished yet."""
+        return self._abandoned
+
+    def _abandoned_call_ended(self, _done: object) -> None:
+        self._abandoned -= 1
 
     async def submit[T](self, kill_after: float, func: Callable[..., T], *args: object) -> T:
         """Run ``func(*args)`` in a worker; kill the pool if it runs past ``kill_after`` s."""
@@ -114,6 +125,9 @@ class SupervisedPool:
                 if not self.keep_on_cancel:
                     pool.kill_workers()
                     self._pool = None
+                elif not future.done():
+                    self._abandoned += 1
+                    future.add_done_callback(self._abandoned_call_ended)
                 raise
             except BaseException:
                 pool.kill_workers()

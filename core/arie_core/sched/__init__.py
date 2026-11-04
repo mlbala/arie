@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Generator
+from contextlib import contextmanager
 from typing import TypeVar
 
 T = TypeVar("T")
@@ -19,6 +20,38 @@ def supervised[T](
         return await func(*args, **kwargs)
 
     return _runner
+
+
+class ForegroundGate:
+    """Let background work wait while any question is being answered (SPEC section 9).
+
+    A question holds the gate with ``hold()`` for as long as it answers or streams.
+    Background submitters (PDF parsing, embedding, guide builds) ``await wait_quiet()``
+    before they start new work; work already running is never interrupted. Never wait
+    on the gate from inside an answer: it would wait for itself.
+    """
+
+    def __init__(self) -> None:
+        self.active = 0
+        self._quiet = asyncio.Event()
+        self._quiet.set()
+
+    @contextmanager
+    def hold(self) -> Generator[None]:
+        """Mark one question in flight until the block ends, even if it raises."""
+        self.active += 1
+        self._quiet.clear()
+        try:
+            yield
+        finally:
+            self.active -= 1
+            if not self.active:
+                self._quiet.set()
+
+    async def wait_quiet(self) -> None:
+        """Return once no question is in flight; a question that starts first holds us again."""
+        while self.active:
+            await self._quiet.wait()
 
 
 class EventLoopLagMonitor:
@@ -56,5 +89,6 @@ class EventLoopLagMonitor:
 
 __all__ = [
     "EventLoopLagMonitor",
+    "ForegroundGate",
     "supervised",
 ]

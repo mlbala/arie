@@ -184,7 +184,8 @@ class ChatHistory(PaperGuides):
             return await self.semantic_search(paper_id, queries)
 
         guide = await self.get_guide(paper_id) if guides else None
-        with self.answering():
+        reranker = self.models.get("reranker") if rerank else None
+        with self.foreground.hold():
             return await answer_question(
                 ctx,
                 paper_id,
@@ -195,7 +196,8 @@ class ChatHistory(PaperGuides):
                 semantic=semantic,
                 entail=self.entailment_scores if self.models.get("entailment") else None,
                 entail_floor=self.entail_floor,
-                rerank=self.rerank_scores if rerank and self.models.get("reranker") else None,
+                rerank=self.rerank_scores if reranker else None,
+                rerank_busy=(lambda: reranker.busy) if reranker else None,
                 section_summaries=guide.summaries() if guide is not None else None,
             )
 
@@ -248,7 +250,7 @@ class ChatHistory(PaperGuides):
             pack_share=self.config.explain.max_pack_share,
             turns=turns,
         )
-        with self.answering():
+        with self.foreground.hold():
             async with aclosing(stream) as items:
                 async for item in items:
                     yield item

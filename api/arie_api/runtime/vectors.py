@@ -158,9 +158,14 @@ class VectorIndex(PaperPacks):
             and str(chunk.get("text", "")).strip()
         ]
         ctx = context(f"vectors:{paper_id}", 600.0)
+        # Do not drop the old vectors while a question may be reading them (S16).
+        await self.foreground.wait_quiet()
         await self.vector_store.delete(ctx, filters={"paper_id": paper_id})
         for start in range(0, len(chunks), EMBED_BATCH):
             batch = chunks[start : start + EMBED_BATCH]
+            # One batch is the unit of waiting: a question that starts mid-paper gets the CPU
+            # at the next batch boundary, and this paper resumes after it (S16).
+            await self.foreground.wait_quiet()
             vectors = await embedding.embed([str(chunk["text"]) for chunk in batch])
             await self.vector_store.upsert(
                 ctx,
@@ -206,6 +211,7 @@ class VectorIndex(PaperPacks):
             try:
                 if pending and warmed != self.embedder_id:
                     # The first load may download the model, which can exceed a batch timeout.
+                    await self.foreground.wait_quiet()
                     await self.embedding.embed(["warm-up"], kill_after=600.0)
                     warmed = self.embedder_id
                     self.vector_errors.pop("*", None)

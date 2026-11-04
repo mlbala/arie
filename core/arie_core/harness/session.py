@@ -90,6 +90,7 @@ class ModelSession:
         self.model = model_name(llm)
         self.prompt_version = ""
         self.stages: dict[str, float] = {}
+        self.rerank_skipped_busy = False
 
     @contextmanager
     def stage(self, name: str) -> Generator[None]:
@@ -113,6 +114,7 @@ class ModelSession:
             model=self.model,
             mode=mode,
             fallback_reason=fallback_reason,
+            rerank_skipped_busy=self.rerank_skipped_busy,
         )
 
     def remaining_input(self, system: str, payload: object) -> int:

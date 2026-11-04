@@ -18,6 +18,7 @@ from arie_core.plugin_api import (
 )
 from arie_core.registry.manager import ArieConfig, RegistryManager
 from arie_core.registry.sync import months_ago as months_ago
+from arie_core.sched import ForegroundGate
 from arie_worker.extraction import ExtractionLimits, ExtractionPool
 from arie_worker.models import LocalModel
 
@@ -105,14 +106,13 @@ class RuntimeBase:
         self.embedding: LocalModel | None = None
         self.vector_wakeup = asyncio.Event()
         self.vector_errors: dict[str, str] = {}
-        # Paper guides (S14): papers waiting for one, the builder's wake-up, and the answers in
-        # flight, which the builder waits out so a guide call never competes with a reader.
+        # Paper guides (S14): papers waiting for one, and the builder's wake-up.
         self.guide_pending: dict[str, None] = {}
         self.guide_wakeup = asyncio.Event()
         self.guide_errors: dict[str, str] = {}
-        self.answers_active = 0
-        self.answers_quiet = asyncio.Event()
-        self.answers_quiet.set()
+        # Held by every answer in flight; PDF parsing, embedding and guide builds wait on it
+        # before starting new work, so a question never competes with them for the CPU (S16).
+        self.foreground = ForegroundGate()
 
     def llm_provider(self) -> str:
         """The name of the configured LLM plugin."""

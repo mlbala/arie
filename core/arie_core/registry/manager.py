@@ -10,6 +10,7 @@ import importlib.metadata
 import importlib.util
 import inspect
 import logging
+import os
 import random
 import sys
 import time
@@ -59,13 +60,19 @@ DEPRECATED_RUNTIME_QOS_KEYS = (
 )
 
 
+# A host with this many CPUs or fewer gives each answer model its own worker by default.
+SMALL_HOST_CPUS = 2
+
+
 class RuntimeQoSConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     slow_callback_threshold_ms: float = 15.0
     utility_worker_processes: int = 4
-    # Entailment and reranker models share one worker process; false gives each its own.
-    shared_model_worker: bool = True
+    # Entailment and reranker share one worker process (true) or each has its own (false).
+    # Unset: share on hosts with more than ``SMALL_HOST_CPUS`` CPUs, separate otherwise, so a
+    # slow reranker cannot queue the claim check behind it on a small host (ADR 0012).
+    shared_model_worker: bool | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -83,6 +90,12 @@ class RuntimeQoSConfig(BaseModel):
         if value < 0:
             raise ValueError("values must be non-negative")
         return value
+
+    def shares_model_worker(self, cpus: int | None = None) -> bool:
+        """Whether the answer models share one worker: the setting, else by the CPU count."""
+        if self.shared_model_worker is not None:
+            return self.shared_model_worker
+        return (cpus if cpus is not None else os.process_cpu_count() or 1) > SMALL_HOST_CPUS
 
 
 class PluginConfigEntry(BaseModel):
