@@ -5,8 +5,8 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 
 ## Current state
 
-- Last done: S11 (2026-11-04)
-- Next: S12 (needs S10, done)
+- Last done: S12 (2026-11-04): measured, no local grounding model added (ADR 0011)
+- Next: S13 (needs S12, S05, done)
 - Default answer mode: strict
 - Baseline (strict, before changes): paper 2610.40325, arie.yaml llm = deepseek, one run, 11 cases per variant.
   configured (reranker on): passed 9/11 (0.818), fact recall 0.688, evidence hit 0.625, grounded 1.0, median 6.18 s.
@@ -53,6 +53,7 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 - Qasper explain run 2 of 2 (same code, same day) had 25 `first_token_timeout` and 1 `ConnectError` out of 49. Even cached 41K-token prompts took 4 to 7 s to first text, against about 1 to 2 s in the clean run. That is provider latency, but it means the fixed 10 s first-token budget fails half the answers on a slow provider day. Gate 1 counts the clean run; recheck first token on the 2-vCPU host.
 - The web always sends `mode`, and `DEFAULT_MODE` in `web/src/paperSessions.ts` is `strict`. When S13 switches the default, change it there as well as `answer.default_mode`. A paper whose mode was already chosen keeps its choice.
 - Explain answers render no math. `web/src/workers/markdown.worker.ts` (markdown-it plus KaTeX) is not imported anywhere, and the chat renders explanations synchronously without KaTeX. Wire KaTeX into `src/explanation.ts` if papers' `$...$` shows up in answers.
+- S12 found where real answers trip the checkers: table rows rendered as Markdown pipes, formulas in PDF markup (`<sup>` runs), and one-sentence summaries of two chunks. Both local models flagged these, and S13's judge will see the same chunk text. The 20 pairs (`sentence`, `premise`, `question`) can be rebuilt read-only from `arie_eval_runs` and `arie_paper_packs` with `check_answer`. The script was a throwaway in the S12 scratchpad and is not in the repo.
 - `valid_rate` counts only sentences that carry a marker, as the session file defined it, so an uncited number (`uncited_number`) shows in `flagged` but does not lower the rate. A writer that cites nothing gets `valid_rate: null`. If that hides too much, count `uncited_number` sentences as invalid in the rate.
 
 ## Log
@@ -186,3 +187,15 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 - Gate 1: pass on all four criteria. First token was measured on a Mac, not the 2-vCPU host. Default stays `strict`.
 - Open: see Open issues (flag false-positive rate, first-token budget on slow provider days, `DEFAULT_MODE` for S13, no math in answers, SSE route never run live).
 - Next: S12.
+
+### S12: Background grounding checker, Step 1 measured (2026-11-04)
+- Setup (user's choice): throwaway venv in the scratchpad (torch 2.15, transformers 5.22, onnxruntime 1.31), Mac, 2 threads, Docker off. 20 pairs from 3 saved explain eval answers on 2610.40325, read read-only (no saved explain chat turns exist): S10's `check_answer` on the saved `answer`, chunk text from `arie_paper_packs`. Premises are 430 to 3,101 chars and up to 3 chunks.
+- Both candidates need PyTorch (HHEM-2.1-Open is `trust_remote_code` T5; LettuceDetect base is ModernBERT). I exported both to ONNX myself: fp32 scores match torch within 0.0001. The Hub's ONNX ports come from unknown uploaders (0 to 3 downloads) and were not used.
+- Time for 15 pairs, one pair per call / peak RSS: HHEM torch 3.1 s / 901 MB, ONNX fp32 10.3 s / 836 MB. LettuceDetect torch 4.5 s / 943 MB, ONNX fp32 13.3 s / 819 MB. Batching 4 was slower everywhere (padding). Apple's Accelerate likely explains why torch beats ORT here, so x86 may differ.
+- int8 ONNX (dynamic, per channel): HHEM 3.3 s and LettuceDetect 5.9 s, but scores move by up to 0.45 and 0.52, and HHEM int8 misses one of the two real errors. Rejected.
+- Image: fp32 ONNX adds no packages (models of 439 or 599 MB go to `HF_HOME` on the volume). Torch for CPU is a 210 MB wheel, 753 MB unpacked, plus transformers, sympy and others; plain PyPI resolves about 3 GB of CUDA wheels, so it needs the CPU index.
+- Quality at 0.5, by my reading: 2 of 20 sentences are unsupported, and S10 already flags both. Both models catch them. LettuceDetect also flags 4 of the 18 supported ones (two table rows, one formula in PDF markup, one two-chunk summary); HHEM flags 7 (also plain paraphrases). Neither caught anything S10 missed. Only 20 pairs and 2 positives.
+- Choice (user): skip the local checker. Against the bar (about 5 s for 15 pairs, under 1 GB) only torch fits, it grows the image by about 0.8 GB, and it caught nothing S10 missed. No slot, plugin, pool, config or event was built. ADR 0011 amends 0010; SPEC §8.9's limits line and S13's `support` scope (flagged sentences only) were updated. SPEC §4 and §9 are unchanged because no slot or pool was added.
+- Files: docs/adr/{0011-no-local-grounding-model (new),README}.md, docs/SPEC.md (§8.9), docs/explain-mode/{PROGRESS,README}.md, docs/explain-mode/sessions/S13-judge-and-default.md
+- Checks: make check ✓ · make web-check n/a
+- Next: S13.

@@ -501,7 +501,8 @@ model saw are sources (I1), so in a paged pack a marker for a chunk left out is 
 - **Limits.** The checks are deterministic evidence, not proof. A paraphrase can be flagged
   (an "only" word in the paper's sentence and a different one in the answer), a sentence can
   pass with the right numbers and a wrong claim, and new absolutes ("always") are not
-  looked for. The entailment grounding check (S12) and the judge (S13) cover that.
+  looked for. No local grounding model runs after these checks (measured in S12 and not
+  added, ADR 0011); the LLM judge (S13) on flagged sentences is the next check.
 
 **Route.** `ChatHistory.explain_paper_question` is what the route and the evaluation call.
 It binds `paper["id"]`, loads the stored pack (`ensure_pack`) and gives the request its own

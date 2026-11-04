@@ -17,7 +17,7 @@ A judge for the few sentences the small checker flags, the two missing eval metr
 - `prompts/judge.v1.yaml`, two roles placed after the pack (same shared header, so the pack stays cached):
   - `support`: a sentence plus its cited chunks → `supported`, `partial` or `unsupported`, with one short reason.
   - `pairwise`: two answers plus the case's key facts → `A`, `B` or `tie`, with one short reason.
-- Chat: run `support` only on sentences that are `flagged` or below `grounding.min_score`, on the writer's provider. Emit `judge` events and save them.
+- Chat: run `support` only on sentences that are `flagged`, on the writer's provider (S12 added no grounding score, ADR 0011). Emit `judge` events and save them.
 - Eval:
   - `citation_support` = share of cited sentences that are deterministic-ok and not judged unsupported.
   - `win_rate` = explain vs strict on the same case, judged both ways round; disagreement counts as a tie.
