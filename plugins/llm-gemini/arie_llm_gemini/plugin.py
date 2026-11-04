@@ -69,21 +69,26 @@ class GeminiLLM:
             else (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
         )
 
-    def _payload(self, request: LLMRequest) -> dict[str, object]:
+    def _payload(self, request: LLMRequest, *, stream: bool = False) -> dict[str, object]:
         if request.tools:
             raise ValueError("This adapter only supports bounded text requests without tools")
         if self.model.startswith("gemini-2.5-"):
             thinking: dict[str, object] = {"thinkingBudget": 128 if "pro" in self.model else 0}
         else:
             thinking = {"thinkingLevel": "minimal"}
+        generation: dict[str, object] = {
+            "responseMimeType": "application/json",
+            "temperature": 0,
+            "maxOutputTokens": min(700, request.max_output_tokens),
+            "thinkingConfig": thinking,
+        }
+        if stream:
+            # A stream is prose (explain mode's Markdown) with the caller's own output budget.
+            del generation["responseMimeType"]
+            generation["maxOutputTokens"] = request.max_output_tokens
         payload: dict[str, object] = {
             "contents": [{"role": "user", "parts": [{"text": request.prompt}]}],
-            "generationConfig": {
-                "responseMimeType": "application/json",
-                "temperature": 0,
-                "maxOutputTokens": min(700, request.max_output_tokens),
-                "thinkingConfig": thinking,
-            },
+            "generationConfig": generation,
         }
         if request.system_prompt:
             payload["systemInstruction"] = {"parts": [{"text": request.system_prompt}]}
@@ -116,7 +121,7 @@ class GeminiLLM:
         """Yield text deltas, then one final delta with the usage (None if none was sent)."""
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY is not configured")
-        payload = self._payload(request)
+        payload = self._payload(request, stream=True)
         remaining = ctx.deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("Gemini request deadline has expired")

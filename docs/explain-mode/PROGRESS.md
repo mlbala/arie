@@ -5,8 +5,8 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 
 ## Current state
 
-- Last done: S10 (2026-11-04)
-- Next: S11 (needs S10, done)
+- Last done: S11 (2026-11-04)
+- Next: S12 (needs S10, done)
 - Default answer mode: strict
 - Baseline (strict, before changes): paper 2610.40325, arie.yaml llm = deepseek, one run, 11 cases per variant.
   configured (reranker on): passed 9/11 (0.818), fact recall 0.688, evidence hit 0.625, grounded 1.0, median 6.18 s.
@@ -14,7 +14,7 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 - Qasper strict baseline (S05): Qasper dev, first 30 papers, arie.yaml llm = deepseek, embedder = fastembed (BAAI/bge-small-en-v1.5), reranker on, one run, 49 cases (46 fact, 3 abstain).
   passed 22/49 (0.449; 22/46 fact, 0/3 abstain), passed_written 15/46 (0.326), fact recall 0.438, fact recall prose 0.297, grounded 1.0, evidence hit n/a (0 by design), median 4.41 s.
   fallbacks 9: entailment_rejected 5, incomplete_coverage 2, question_not_answered 2. Embedder was fastembed, not Gemini, so compare later runs only with the same embedder.
-- Latest gate numbers: none
+- Latest gate numbers: gate 1 (S11) passed on both sets, with first token measured on a Mac, not the 2-vCPU host. Explain vs strict, prose fact recall: paper 2610.40325 0.625 vs 0.562 (strict rerun in S11; 11 cases each); Qasper 30 0.391 vs 0.297 (S05). Explain fallbacks 0/11 and 0/49. Median first token 2.75 s and 1.20 s. Cache hit from the second question of each paper on: 0.998 and 0.974.
 
 ## Open issues
 
@@ -41,14 +41,18 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 - Gaps in `eligible`, which the pack inherits (found in the S06 review, not fixed because widening it also changes strict retrieval and needs an `arie-eval` run): a section headed "Bibliography", "Literature Cited" or "Reference" is kept; author, affiliation and e-mail blocks are kept unless they contain "equal contribution", "listing order is random" or "work performed while"; a chunk containing one of those phrases is dropped whole, body text included. Revisit after the pack-size measurement above shows real papers with these headings.
 - The pack adds no `paper_id` itself (tested), but a paper's own text can carry its arXiv id in a page stamp. It is left in: the quote check needs the chunk text unchanged, and the invariant is about the id binding, not the paper's words.
 - The kit re-added `AGENTS.md` (CLAUDE.md imports it) although the README had become the canonical doc. Decide later whether to keep both.
-- Explain mode's saved history comes from the server's saved turns (`explain_turns`), so the request's `history` and `context` are ignored in explain mode. S11 should not send them for explain, and a chat the user cleared or that was never saved gives the model no history.
-- `answer` is sent after the `delta` events (not before, as the session file listed), because the trace is complete only at the end. `progress` is sent first and not saved; the saved turn is `delta` (all text as one), `answer`, `citations` or `abstention`, `done`. S11 renders from that order.
+- Explain mode's saved history comes from the server's saved turns (`explain_turns`), so the request's `history` and `context` are ignored in explain mode (the web sends none since S11). A chat the user cleared or that was never saved gives the model no history.
+- `answer` is sent after the `delta` events (not before, as the session file listed), because the trace is complete only at the end. `progress` is sent first and not saved; the saved turn is `delta` (all text as one), `answer`, `citations` or `abstention`, `done`.
 - Citations in the `citations` event still carry the whole chunk's page and offsets: an explain answer cites chunks, not quotes, so S10 set `checked` (true when a sentence cites the marker and none of those is flagged) and did not narrow the span. S11 can show each sentence's `text` and `reasons` from `checks`; narrowing a citation to the source sentence would reuse the aligner in `citations.py` and was left out because the alignment is a heuristic.
 - An explain eval run cannot pass a refusal case by explaining that the paper does not say something: no text counts as abstained, so any written answer fails it. Three fixed refusal cases per paper make this visible; the judge (S13) is the fix.
 - `api/tests/test_api_and_mcp.py` has its own `_StreamingLLM` beside `ScriptedModel` in `core/tests/conftest.py`. The API suite cannot import core's conftest (separate pytest roots and a name clash), so sharing them needs a test-support module both can import. Do it when a third file needs a streaming double.
 - Do not run `ruff format` on the tree: the repo is not formatted with it, and with Python 3.14 as the target it rewrites `except (A, B):` to `except A, B:` and reflows unrelated code. `make lint` runs only `ruff check`.
-- The manual SSE check against a real provider was not run (it sends paper text to an external service, and no server was started). Run one `curl -N` with `mode: "explain"` before relying on the live path, and the Gemini `alt=sse` check above at the same time.
+- The live DeepSeek stream has now run (S11's gate 1 evals, through `ChatHistory.explain_paper_question`), but the HTTP SSE route has not been called against a real provider and no server was started. Run one `curl -N` with `mode: "explain"`, plus the Gemini `alt=sse` check above, before relying on the route. OpenAI and Gemini streaming have never run live.
 - S10's checks were tested on scripted answers only. Their false-positive rate on real answers is not measured: `lost_qualifier` reuses the strict verifier's word lists ("small", "limited" count as qualifiers), alignment uses crude stems (final `s` dropped, five letters), and a claim with fewer than 3 content stems or no source sentence sharing half of them is not judged. Read a few real explain answers' `checks` events (with the manual SSE check above) before S11 shows flags to readers, and before S12 decides what the grounding checker must add.
+- S11 shows S10's flags to readers. Mean `citation_valid_rate` on real answers is 0.877 (paper) and 0.885 (Qasper), so about 1 cited sentence in 9 gets an amber flag. The eval saves only the rate, not which sentences were flagged, so the false-positive rate is still unread. Save `checks` per eval case, or read a few saved chat turns, before S12 or S13 relies on the flags.
+- Qasper explain run 2 of 2 (same code, same day) had 25 `first_token_timeout` and 1 `ConnectError` out of 49. Even cached 41K-token prompts took 4 to 7 s to first text, against about 1 to 2 s in the clean run. That is provider latency, but it means the fixed 10 s first-token budget fails half the answers on a slow provider day. Gate 1 counts the clean run; recheck first token on the 2-vCPU host.
+- The web always sends `mode`, and `DEFAULT_MODE` in `web/src/paperSessions.ts` is `strict`. When S13 switches the default, change it there as well as `answer.default_mode`. A paper whose mode was already chosen keeps its choice.
+- Explain answers render no math. `web/src/workers/markdown.worker.ts` (markdown-it plus KaTeX) is not imported anywhere, and the chat renders explanations synchronously without KaTeX. Wire KaTeX into `src/explanation.ts` if papers' `$...$` shows up in answers.
 - `valid_rate` counts only sentences that carry a marker, as the session file defined it, so an uncited number (`uncited_number`) shows in `flagged` but does not lower the rate. A writer that cites nothing gets `valid_rate: null`. If that hides too much, count `uncited_number` sentences as invalid in the rate.
 
 ## Log
@@ -170,3 +174,15 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 - Numbers: core 323 (+25: 21 citations, 3 explain, 1 eval), api 32 (assertions added to 5), contracts 55. No eval run and no live provider call.
 - Open: see Open issues (false-positive rate unmeasured, `valid_rate` definition, citation spans still whole chunks).
 - Next: S11 (web, gate 1).
+
+### S11: Explain mode in the web chat, gate 1 (2026-11-04)
+- Done: Explain / Strict switch per chat, kept per paper in `paperSessions.modes` (`setMode`, capped at 50). `src/explanation.ts` renders streamed `delta` Markdown with markdown-it (raw HTML escaped; links, images, autolinks and references off), turns `[cN]` into `p. N` chips and wraps each sentence in a `status-<status>` span with its reasons as the tooltip. Any event with `sentences` merges by offsets, and a flag is never cleared. A chip opens `EvidenceDrawer`, which highlights a quote-less chunk range cut at the page end. Saved turns replay. `eval_qasper --mode` added (`make eval-qasper ARGS=...`).
+- Fix found by gate 1: all three LLM plugins' `stream` sent `complete`'s JSON response format and its 700-token cap. DeepSeek returned `provider_http_400` on 9/11 paper cases and 47/49 Qasper cases, and only prompts containing "json" passed. `stream` now asks for prose with `max_output_tokens` unchanged. Strict's `complete` is unchanged. There is no contract field, only a docstring on the `LLM` protocol.
+- Decisions: chips stay disabled and show `cN` until `citations` arrives (or when a marker has no chunk). Table rows are wrapped per cell and blockquote `>` stays outside the span. Strict follow-up history now also sends explain turns' cited chunk ids. The UI default is `strict`, and `mode` is always sent.
+- Files: web/src/{explanation (new),explanation.test (new),paperSessions,paperSessions.test,App,index.css}.ts(x), web/src/components/{ChatWorkspace,ChatWorkspace.test,EvidenceDrawer,EvidenceDrawer.test}.tsx, plugins/llm-{deepseek,openai-compatible,gemini}/…/plugin.py, core/arie_core/plugin_api/__init__.py, contract_tests/test_llm_plugins.py, api/arie_api/eval_qasper.py, api/tests/test_eval_qasper.py, Makefile, docs/SPEC.md (§4, §8.9, §11), README.md
+- Checks: make check ✓ (core 323, api 33, contracts 58) · make web-check ✓ (54 vitest, +11)
+- Numbers, gate 1 (deepseek-flash, one Mac, explain vs strict): paper 2610.40325, 11 cases: passed 8 vs 9, prose fact recall 0.625 vs 0.562 ✓, fallbacks 0/11 vs 2/11 ✓, first token median 2.75 s ✓, cache hit from the second question on 0.998 ✓, citation valid 0.877, background share 0.235, abstain 2/3.
+- Numbers, Qasper 30 (23 evaluated, 49 cases): passed 20 vs 22, prose fact recall 0.391 vs 0.297 ✓, fallbacks 0/49 vs 9/49 ✓, first token median 1.20 s ✓, cache hit from the second question on 0.974 ✓, citation valid 0.885, abstain 0/3 (known: explain cannot abstain). An earlier run with the same code (run 2) failed 26/49 on provider latency (see Open issues).
+- Gate 1: pass on all four criteria. First token was measured on a Mac, not the 2-vCPU host. Default stays `strict`.
+- Open: see Open issues (flag false-positive rate, first-token budget on slow provider days, `DEFAULT_MODE` for S13, no math in answers, SSE route never run live).
+- Next: S12.

@@ -31,7 +31,7 @@ Size: S fits easily in one sitting, M is a normal session, L may need a second s
 | S08 | Explain harness core | S06, S07 | L | **plan first** | done |
 | S09 | Explain route, SSE events, eval variant | S08 | M | | done |
 | S10 | Deterministic citation checks | S09 | M | | done |
-| S11 | Explain mode in the web chat, gate 1 | S10 | L | web | todo |
+| S11 | Explain mode in the web chat, gate 1 | S10 | L | web | done |
 | S12 | Background grounding checker | S10 | L | Measure first | todo |
 | S13 | LLM judge, eval metrics, default switch, gate 2 | S12, S05 | M | | todo |
 | S14 | Paper guide and section summaries, gate 3 | S10 | L | API + web | todo |

@@ -7,7 +7,8 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
-from arie_api.eval_qasper import import_paper, load_dev
+import pytest
+from arie_api.eval_qasper import import_paper, load_dev, parse_args
 from arie_api.runtime import ResearchRuntime
 from arie_core.harness.paper_eval import PaperEvalCase
 from arie_core.registry.manager import ArieConfig
@@ -103,3 +104,10 @@ def test_the_dev_split_is_read_from_the_cache_without_downloading(tmp_path: Path
     (tmp_path / "qasper-dev-v0.3.json").write_text(json.dumps(dev), encoding="utf-8")
     papers = asyncio.run(load_dev(tmp_path))
     assert list(papers) == ["1503.00841"] and papers["1503.00841"].title == "T"
+
+
+def test_the_command_scores_strict_by_default_and_explain_on_request() -> None:
+    assert parse_args(["30"]).mode == "strict"
+    assert parse_args(["5", "--mode", "explain"]).mode == "explain"
+    with pytest.raises(SystemExit):
+        parse_args(["5", "--mode", "loud"])

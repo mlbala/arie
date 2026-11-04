@@ -2573,6 +2573,29 @@ html, body { overflow: hidden; }
 .answer-evaluation p { margin: 7px 0; font-size: 10px; line-height: 1.7; }
 @media (max-width: 720px) { .grounded-answer { margin-left: 0; } }
 
+/* Explain mode: streamed Markdown, page chips, and each sentence styled by its check. */
+.composer-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.answer-mode { display: inline-flex; padding: 2px; border: 1px solid var(--line); border-radius: 7px; }
+.answer-mode button { padding: 3px 9px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font-size: 10px; cursor: pointer; }
+.answer-mode button[aria-pressed="true"] { background: var(--green-soft); color: var(--green); font-weight: 600; }
+.answer-mode button:disabled { cursor: default; }
+.explained-answer { margin-left: 35px; }
+.explanation-text { margin: 12px 0 18px; color: var(--ink); font-size: 14px; line-height: 1.85; overflow-wrap: anywhere; }
+.explanation-text :is(p, ul, ol, blockquote, pre, table) { margin: 0 0 12px; }
+.explanation-text :is(h1, h2, h3, h4) { margin: 16px 0 8px; font-size: 14px; }
+.explanation-text :is(ul, ol) { padding-left: 20px; }
+.explanation-text blockquote { padding-left: 12px; border-left: 2px solid var(--line); color: var(--muted); }
+.explanation-text pre { overflow-x: auto; padding: 10px; border-radius: 6px; background: var(--canvas); font-size: 12px; }
+.explanation-text table { border-collapse: collapse; font-size: 12px; }
+.explanation-text :is(th, td) { padding: 4px 8px; border: 1px solid var(--line); text-align: left; }
+.citation-chip { display: inline; margin-left: 3px; padding: 0 4px; border: 1px solid var(--line); border-radius: 4px; background: transparent; color: var(--green); font-size: 10px; font-weight: 600; line-height: 1.5; vertical-align: 1px; cursor: pointer; }
+.citation-chip:hover:not(:disabled) { border-color: var(--green); }
+.citation-chip.unchecked { border-style: dashed; }
+.citation-chip.missing { color: var(--muted); cursor: default; }
+.answer-sentence.status-flagged { background: var(--amber-soft); text-decoration: underline wavy var(--amber); text-decoration-thickness: 1px; text-underline-offset: 3px; cursor: help; }
+.answer-sentence.status-background { color: var(--muted); }
+@media (max-width: 720px) { .explained-answer { margin-left: 0; } }
+
 /* Answer feedback and per-paper evaluation */
 .answer-feedback { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 10px; color: var(--muted); font-size: 10px; }
 .answer-feedback .icon-button { width: 28px; height: 28px; }

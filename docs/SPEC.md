@@ -150,7 +150,11 @@ iterator, not a coroutine, and the `LLM` protocol types it as a plain `def`. It 
 `LLMDelta`s with the text as it arrives,
 then one final delta with `finish=True`, no text and `usage` (a `TokenUsage`). `usage` is
 `None` when the provider sent none (for example a compatible server that ignores
-`stream_options`). `complete` returns the same `TokenUsage` on its `LLMResponse`. The three
+`stream_options`). `complete` returns the same `TokenUsage` on its `LLMResponse`.
+`complete` asks for JSON (`response_format: json_object`, Gemini `responseMimeType`) and
+caps the output at 700 tokens. `stream` asks for prose with no response format and sends
+`max_output_tokens` as the output limit unchanged: explain mode writes Markdown with up to
+2,500 tokens. The three
 bundled providers fill `cache_hit` and `cache_miss` from their own fields, and leave both at
 0 when the provider reports no cache numbers:
 
@@ -412,7 +416,7 @@ A Tier 3 fallback logs one WARNING line, `Tier 3 <reason> trace=<id> ...`, for
 
 Explain mode ([ADR 0010](adr/0010-explain-mode-paper-in-the-prompt.md)) is reached with
 `mode: "explain"` on `POST /v1/papers/{id}/questions` (or `answer.default_mode: explain`);
-the web workspace does not offer it yet. `explain_answer` in
+the web chat has an Explain / Strict switch (section 11). `explain_answer` in
 [core/arie_core/harness/explain.py](../core/arie_core/harness/explain.py) is an async
 generator. It yields text deltas (`str`), then one `ExplainResult`:
 
@@ -714,10 +718,28 @@ instead of "Healthy" while either model is degraded.
 **Web** (`web/`, React 19, TanStack Query, Vite): `App.tsx` holds the library,
 filters and layout. `ChatWorkspace` streams answers over SSE and keeps recent paper
 sessions in memory (`paperSessions.ts`). `EvidenceDrawer` shows the PDF page (pdf.js in a worker) with the
-quoted span highlighted. `EvaluationPanel`, `SyncControls`, `ImportPaper`,
+quoted span highlighted; a citation without a quote (explain mode) highlights its chunk's
+offsets on its first page, cut at the page end. `EvaluationPanel`, `SyncControls`, `ImportPaper`,
 `SystemPane` (storage and health), `SettingsDialog` (LLM and embedder) and
 `SkippedDrawer` cover the rest. Types in `src/api/generated.ts` come from
 `web/openapi.json` (`npm run generate:api` after route changes).
+
+**Explain mode in the chat.** Each chat has an Explain / Strict switch, kept per paper in
+`paperSessions` (`modes`, the 50 papers set most recently; `strict` when unset) and sent as
+`mode` on every question. An explain question sends no `history` or `context`: the server
+uses its saved turns (8.9). `src/explanation.ts` renders the joined `delta` text after
+each event as Markdown with markdown-it: raw HTML is escaped, and links, images, autolinks
+and reference definitions are off, so model text cannot load or link to another host.
+Each `[cN]` becomes a page chip (`p. 4`) once the `citations` event names its chunk;
+before that, or for a marker with no chunk, the chip is disabled and shows `cN`. A click
+opens `EvidenceDrawer` at the chunk's page and offsets. Any event with a `sentences` list
+(`checks` today) sets each sentence's status by its `start`/`end`; a later event replaces
+a status but never clears `flagged`, and reasons accumulate. A sentence is wrapped in a
+`status-<status>` span with its reasons as the tooltip (unknown reason codes are shown as
+words), so a new status or reason needs no web change. Table rows are wrapped cell by
+cell and a quote's `>` stays outside the span. `flagged` is underlined in amber,
+`background` is muted. An answer whose `evaluation.complete` is false says it stopped
+early. Saved explain turns replay through the same event handling.
 
 **CI** (`.github/workflows/ci.yml`): `make check` (ruff, import-linter, strict
 pyright, core/API/contract tests), web lint, types, tests and build, and both Docker

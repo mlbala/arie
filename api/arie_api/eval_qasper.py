@@ -41,6 +41,7 @@ from arie_core.harness.qasper import (
     parse_dev,
 )
 
+from arie_api.paper_eval import MODES
 from arie_api.runtime import ResearchRuntime
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -113,7 +114,7 @@ async def build_vectors(runtime: ResearchRuntime, paper_id: str) -> bool:
     return False
 
 
-async def evaluate(papers: int) -> bool:
+async def evaluate(papers: int, mode: str = "strict") -> bool:
     dev = await load_dev()
     selected = first_papers(dev, papers)
     runtime = ResearchRuntime(ROOT)
@@ -154,7 +155,7 @@ async def evaluate(papers: int) -> bool:
                 counts["vectors_failed"] += 1
                 continue
             await evaluations.save_cases(paper_id, cases)
-            run = await evaluations.run_to_completion(paper_id, mode="strict")
+            run = await evaluations.run_to_completion(paper_id, mode=mode)
             settings = run["settings"]
             if run["status"] != "complete":
                 counts["run_failed"] += 1
@@ -175,7 +176,7 @@ async def evaluate(papers: int) -> bool:
         json.dumps(
             {
                 "status": "complete" if ok else "incomplete",
-                "message": f"Qasper dev, first {len(selected)} papers, strict mode",
+                "message": f"Qasper dev, first {len(selected)} papers, {mode} mode",
                 "settings": settings,
                 "papers": dict(sorted(counts.items())),
                 "conversion": dict(sorted(conversion.items())),
@@ -186,13 +187,19 @@ async def evaluate(papers: int) -> bool:
     return ok
 
 
-def main() -> None:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate answers on a Qasper dev slice.")
     parser.add_argument("papers", type=int, help="how many papers, taken in id order")
-    args = parser.parse_args()
+    parser.add_argument("--mode", choices=MODES, default="strict", help="answer path to score")
+    args = parser.parse_args(argv)
     if args.papers < 1:
         parser.exit(2, "error: papers must be at least 1\n")
-    raise SystemExit(0 if asyncio.run(evaluate(args.papers)) else 1)
+    return args
+
+
+def main() -> None:
+    args = parse_args()
+    raise SystemExit(0 if asyncio.run(evaluate(args.papers, args.mode)) else 1)
 
 
 if __name__ == "__main__":

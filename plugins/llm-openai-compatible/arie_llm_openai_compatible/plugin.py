@@ -90,6 +90,10 @@ class OpenAICompatibleLLM:
             **sampling,
         }
         if stream:
+            # A stream is prose (explain mode's Markdown) with the caller's own output budget;
+            # JSON mode would also be refused without the word "json" in the messages.
+            del payload["response_format"]
+            payload[token_field] = request.max_output_tokens
             payload["stream"] = True
             # Without this the stream carries no usage at all.
             payload["stream_options"] = {"include_usage": True}

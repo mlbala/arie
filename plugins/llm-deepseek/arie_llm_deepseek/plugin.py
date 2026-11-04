@@ -68,6 +68,10 @@ class DeepSeekLLM:
             "thinking": {"type": "disabled"},
         }
         if stream:
+            # A stream is prose (explain mode's Markdown) with the caller's own output budget.
+            # JSON mode would also be refused: DeepSeek wants the word "json" in the prompt.
+            del payload["response_format"]
+            payload["max_tokens"] = request.max_output_tokens
             payload["stream"] = True
             payload["stream_options"] = {"include_usage": True}
         return payload

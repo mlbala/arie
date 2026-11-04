@@ -274,3 +274,45 @@ async def test_a_stream_without_usage_ends_with_none(
     deltas = await collect(llm(name))
     assert deltas[-1].finish is True
     assert deltas[-1].usage is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "events", "json_body"),
+    [
+        ("deepseek", [chat_chunk("Hi"), "[DONE]"], {"choices": [{"message": {"content": "{}"}}]}),
+        (
+            "openai",
+            [chat_chunk("Hi"), "[DONE]"],
+            {"choices": [{"message": {"content": "{}"}}], "usage": {"prompt_tokens": 1}},
+        ),
+        ("gemini", [gemini_chunk("Hi")], gemini_chunk("{}", {"promptTokenCount": 1})),
+    ],
+)
+async def test_a_stream_asks_for_prose_with_the_whole_output_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    events: list[dict[str, Any] | str],
+    json_body: Any,
+) -> None:
+    # Explain mode streams Markdown with up to 2,500 output tokens; JSON mode would make
+    # DeepSeek and OpenAI refuse a prompt that never says "json".
+    request = LLMRequest(prompt="Explain the paper.", max_output_tokens=2500)
+    seen = serve(monkeypatch, body=sse(*events))
+    plugin = llm(name)
+    _ = [delta async for delta in plugin.stream(Ctx(), request)]
+    streamed = sent(seen[0])
+    completed = serve(monkeypatch, json_body=json_body)
+    await plugin.complete(Ctx(), request)
+    answered = sent(completed[0])
+    if name == "gemini":
+        assert "responseMimeType" not in streamed["generationConfig"]
+        assert streamed["generationConfig"]["maxOutputTokens"] == 2500
+        assert answered["generationConfig"]["responseMimeType"] == "application/json"
+        assert answered["generationConfig"]["maxOutputTokens"] == 700
+    else:
+        tokens = "max_completion_tokens" if name == "openai" else "max_tokens"
+        assert "response_format" not in streamed
+        assert streamed[tokens] == 2500
+        assert answered["response_format"] == {"type": "json_object"}
+        assert answered[tokens] == 700

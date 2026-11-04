@@ -1,7 +1,9 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { useReducer } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { ChatWorkspace } from "./ChatWorkspace";
-import { getChat, type PaperSummary } from "../api/client";
+import { getChat, type CitationRange, type PaperSummary } from "../api/client";
+import { EMPTY_SESSIONS, paperSessionsReducer } from "../paperSessions";
 
 // Saved history is fetched separately from the answer stream these tests script.
 vi.mock("../api/client", async (importOriginal) => ({
@@ -286,7 +288,7 @@ it("sends paper-specific question history for follow-ups and renders detailed pa
   fireEvent.click(screen.getByRole("button", { name: "Send question" }));
   await screen.findByRole("heading", { name: "Detailed explanation" });
   const body = JSON.parse(String(fetcher.mock.calls[1]![1].body));
-  expect(body).toEqual({ question: "explain. more detail", history: [{ question: "What is this paper about?", source_ids: ["paper-1:first"] }] });
+  expect(body).toEqual({ question: "explain. more detail", mode: "strict", history: [{ question: "What is this paper about?", source_ids: ["paper-1:first"] }] });
   expect(JSON.stringify(body)).not.toContain(quote);
   const lastTurn = screen.getAllByRole("article").at(-1)!;
   expect(lastTurn.querySelectorAll(".answer-summary")).toHaveLength(2);
@@ -304,7 +306,7 @@ it("sends paper-specific question history for follow-ups and renders detailed pa
   rerender(<ChatWorkspace {...props} activePaperId="paper-2" />);
   fireEvent.click(screen.getByRole("button", { name: "What is this paper about?" }));
   await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(6));
-  expect(JSON.parse(String(fetcher.mock.calls[5]![1].body))).toEqual({ question: "What is this paper about?" });
+  expect(JSON.parse(String(fetcher.mock.calls[5]![1].body))).toEqual({ question: "What is this paper about?", mode: "strict" });
 });
 
 it("restores saved turns as verified answers and uses them as follow-up context", async () => {
@@ -365,4 +367,94 @@ it("rates a saved answer and restores the rating, with a note for a down rating"
   expect(String(url)).toContain("/v1/papers/paper-1/chat/turn-1/feedback");
   expect(init.method).toBe("PUT");
   expect(JSON.parse(String(init.body))).toEqual({ rating: "down", note: "Missed the method" });
+});
+
+describe("explain answers", () => {
+  const event = (kind: string, data: object) => `event: ${kind}\ndata: ${JSON.stringify(data)}\n\n`;
+  const text = "**Method.** Workers read isolated processes [c3]. Transformers are common. The gain is 9.1 points [c3].";
+  const at = (part: string) => ({ start: text.indexOf(part), end: text.indexOf(part) + part.length, text: part });
+  const tail = [
+    event("answer", { paper_id: "paper-1", mode: "explained_answer", heading: "Explanation", evaluation: { complete: true, fallback_reason: "" } }),
+    event("citations", { paper_id: "paper-1", citations: [{ marker: 3, chunk_id: "paper-1:3", page: 2, char_start: 10, char_end: 90, checked: false }] }),
+    event("checks", { paper_id: "paper-1", sentences: [
+      { ...at("**Method.** Workers read isolated processes [c3]."), status: "cited_ok", markers: [3], reasons: [] },
+      { ...at("Transformers are common."), status: "background", markers: [], reasons: [] },
+      { ...at("The gain is 9.1 points [c3]."), status: "flagged", markers: [3], reasons: ["number_not_in_source"] },
+    ] }),
+    event("done", { paper_id: "paper-1", mode: "explained_answer", status: "complete", turn_id: "turn-9" }),
+  ];
+
+  /** The chat with its modes held by the real session reducer, as App holds them. */
+  function Chat({ onCitation }: { onCitation: (citation: CitationRange) => void }) {
+    const [sessions, dispatch] = useReducer(paperSessionsReducer, EMPTY_SESSIONS);
+    return <ChatWorkspace papers={papers} activePaperId="paper-1" onSelectPaper={vi.fn()} onClosePaper={vi.fn()}
+      onCitation={onCitation} modes={sessions.modes} onModeChange={(id, mode) => dispatch({ type: "setMode", id, mode })} />;
+  }
+
+  it("streams Markdown as it arrives, then opens cited chunks and styles checked sentences", async () => {
+    const encoder = new TextEncoder();
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    const push = (chunk: string) => stream.enqueue(encoder.encode(chunk));
+    const fetcher = vi.fn().mockResolvedValue(new Response(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } })));
+    vi.stubGlobal("fetch", fetcher);
+    const onCitation = vi.fn();
+    const { container } = render(<Chat onCitation={onCitation} />);
+    expect(screen.getByRole("button", { name: "Strict" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Explain" }));
+    expect(screen.getByRole("button", { name: "Explain" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.change(screen.getByLabelText("Ask about Evidence and Verification"), { target: { value: "How does it work?" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send question" }));
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(String(fetcher.mock.calls[0]![1].body))).toEqual({ question: "How does it work?", mode: "explain" });
+
+    push(event("progress", { paper_id: "paper-1", status: "reading", message: "Reading the whole paper" }));
+    push(event("delta", { paper_id: "paper-1", text: text.slice(0, 24) }));
+    expect(await screen.findByText("Method.")).toBeInTheDocument();
+    expect(screen.queryByText(/isolated processes/)).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Reading the whole paper");
+    push(event("delta", { paper_id: "paper-1", text: text.slice(24) }));
+    expect(await screen.findByText(/isolated processes/)).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Source c3, page not known yet" })[0]).toBeDisabled();
+    for (const item of tail) push(item);
+    stream.close();
+
+    const chips = await screen.findAllByRole("button", { name: "Source c3, page 2" });
+    expect(chips.map((chip) => chip.textContent)).toEqual(["p. 2", "p. 2"]);
+    fireEvent.click(chips[1]!);
+    expect(onCitation).toHaveBeenCalledWith({ page_start: 2, char_start: 10, char_end: 90, chunk_id: "paper-1:3" });
+    expect(container.querySelector(".status-flagged")).toHaveTextContent("The gain is 9.1 points");
+    expect(container.querySelector(".status-flagged")).toHaveAttribute("title", "A number is not in the cited passage");
+    expect(container.querySelector(".status-background")).toHaveTextContent("Transformers are common.");
+    expect(await screen.findByRole("button", { name: "Helpful" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Explanation" })).toBeInTheDocument();
+  });
+
+  it("re-renders a saved explanation from its events and escapes raw HTML in it", async () => {
+    const saved = `${text} <img src=x onerror="alert(1)"><script>alert(2)</script>`;
+    const events = [`event: delta\ndata: ${JSON.stringify({ paper_id: "paper-1", text: saved })}\n\n`, ...tail].map((block) => {
+      const [kind, data] = block.trim().split("\n");
+      return { event: kind!.slice(7), data: JSON.parse(data!.slice(6)) as Record<string, unknown> };
+    });
+    vi.mocked(getChat).mockResolvedValueOnce({ turns: [{ turn_id: "turn-9", question: "How does it work?", rating: "down", events }] });
+    const onCitation = vi.fn();
+    const { container } = render(<Chat onCitation={onCitation} />);
+    const chips = await screen.findAllByRole("button", { name: "Source c3, page 2" });
+    fireEvent.click(chips[0]!);
+    expect(onCitation).toHaveBeenCalledWith(expect.objectContaining({ page_start: 2, chunk_id: "paper-1:3" }));
+    expect(container.querySelector(".status-flagged")).toHaveTextContent("The gain is 9.1 points");
+    expect(container.querySelector(".explanation-text img, .explanation-text script")).toBeNull();
+    expect(screen.getByText(/<img src=x onerror="alert\(1\)">/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Not helpful" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("says when an explanation stopped early", async () => {
+    vi.mocked(getChat).mockResolvedValueOnce({ turns: [{ question: "Explain it", events: [
+      { event: "delta", data: { paper_id: "paper-1", text: "Part of an answer [c3]." } },
+      { event: "answer", data: { paper_id: "paper-1", mode: "explained_answer", heading: "Explanation", evaluation: { complete: false, fallback_reason: "stall_timeout" } } },
+      { event: "done", data: { paper_id: "paper-1", mode: "explained_answer", status: "partial" } },
+    ] }] });
+    render(<Chat onCitation={vi.fn()} />);
+    expect(await screen.findByText("This explanation stopped before it finished.")).toBeInTheDocument();
+    expect(screen.getByText(/Part of an answer/)).toBeInTheDocument();
+  });
 });
