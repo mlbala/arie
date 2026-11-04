@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from arie_core.budget import BudgetHandle
+from arie_core.harness.session import EXPLAIN_SECONDS
 from arie_core.plugin_api import (
     Database,
     PaperURLSource,
@@ -50,6 +51,15 @@ class CallContext:
 
 def context(trace_id: str, seconds: float = 120.0) -> CallContext:
     return CallContext(time.monotonic() + seconds, trace_id, BudgetHandle(max_wall_sec=seconds))
+
+
+def explain_context(trace_id: str, context_tokens: int) -> CallContext:
+    """A context for one explain request: tokens up to the model's window, 95 s of wall time.
+
+    ``context()`` gives 12,000 tokens, which a paper pack alone would exceed.
+    """
+    budget = BudgetHandle(max_tokens=context_tokens, max_wall_sec=EXPLAIN_SECONDS)
+    return CallContext(time.monotonic() + EXPLAIN_SECONDS, trace_id, budget)
 
 
 class RuntimeBase:
@@ -93,10 +103,15 @@ class RuntimeBase:
         self.vector_wakeup = asyncio.Event()
         self.vector_errors: dict[str, str] = {}
 
+    def llm_provider(self) -> str:
+        """The name of the configured LLM plugin."""
+        settings = cast(dict[str, object], self.config.plugins.get("llm", {}))
+        return str(settings.get("use") or DEFAULT_LLM)
+
     def instance(self, slot: str, name: str | None = None) -> object:
         settings = cast(dict[str, object], self.config.plugins.get(slot, {}))
         if slot == "llm":
-            provider = name or str(settings.get("use") or DEFAULT_LLM)
+            provider = name or self.llm_provider()
             return self.manager.instantiate_plugin(
                 slot, provider, **self.providers.settings(provider)
             )

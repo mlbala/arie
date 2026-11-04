@@ -10,6 +10,7 @@ import pytest
 from arie_api.runtime import context
 from arie_core.contracts import LLMRequest, LLMResponse, TokenUsage
 from arie_core.harness.answer import AnswerResult
+from arie_core.harness.explain import ExplainCitation, ExplainResult
 from arie_core.harness.paper_eval import (
     PaperEvalCase,
     catalog,
@@ -18,6 +19,7 @@ from arie_core.harness.paper_eval import (
     fixed_cases,
     generate_cases,
     score_case,
+    score_explained,
     summarize,
 )
 from arie_core.harness.reader import EvidenceChunk, Excerpt
@@ -330,3 +332,112 @@ def test_a_feedback_case_with_key_facts_is_scored_like_a_fact_case() -> None:
 def test_the_unanswerable_case_is_skipped_when_the_paper_reports_energy() -> None:
     energy = EvidenceChunk("p1", "p1:e", "Training used 42 kWh of energy.", 9, 0, 31, "Results")
     assert len(fixed_cases("p1", [*ROWS, energy])) == 2
+
+
+CACHED = TokenUsage(1000, 50, 800, 200)
+
+
+def explained(
+    text: str,
+    *,
+    mode: str = "explain",
+    cited: tuple[int, ...] = (),
+    unknown: tuple[int, ...] = (),
+    usage: TokenUsage = CACHED,
+    first_token: float | None = 1.5,
+    reason: str = "",
+) -> ExplainResult:
+    return ExplainResult(
+        text=text,
+        mode=mode,
+        depth="standard",
+        citations=tuple(ExplainCitation(number, f"p1:{number}") for number in cited),
+        unknown_markers=unknown,
+        usage=usage,
+        fallback_reason=reason,
+        trace=AnswerTrace(tokens=usage, mode=mode, fallback_reason=reason),
+        first_token_seconds=first_token,
+    )
+
+
+def test_an_explained_answer_is_scored_on_its_text_and_the_chunks_it_cites() -> None:
+    answer = explained("Accuracy rose from 62% to 68% [c2].", cited=(2,))
+    scored = score_explained(fact_case(), ROWS, answer, seconds=4.2)
+    assert scored.requested_mode == "explain" and scored.mode == "explain"
+    assert scored.passed is True and scored.passed_written is True
+    assert scored.grounded and scored.evidence_hit and scored.answer_written
+    assert scored.fact_recall == scored.fact_recall_prose == 1.0
+    assert scored.cited_pages == [3] and scored.claims == 1 and scored.model_calls == 1
+    assert scored.cache_hit_rate == 0.8 and scored.first_token_seconds == 1.5
+    assert scored.answer.startswith("Accuracy rose") and scored.trace.tokens.cache_hit == 800
+
+    # Right facts but no citation of the source chunk: the old pass needs the facts alone.
+    uncited = score_explained(fact_case(), ROWS, explained("It went from 62% to 68%."), seconds=1)
+    assert uncited.evidence_hit is False and uncited.passed is True
+    # Neither the facts nor the source chunk: not passed.
+    wrong = score_explained(
+        fact_case(), ROWS, explained("It improved a lot [c0]", cited=(0,)), seconds=1
+    )
+    assert wrong.passed is False and wrong.passed_written is False and wrong.fact_recall == 0.0
+
+
+def test_an_invented_marker_or_a_foreign_chunk_makes_an_explained_answer_ungrounded() -> None:
+    invented = score_explained(
+        fact_case(), ROWS, explained("It rose from 62% to 68% [c99].", unknown=(99,)), seconds=1
+    )
+    assert invented.grounded is False and invented.passed is False
+    foreign = score_explained(
+        fact_case(), ROWS, explained("It rose from 62% to 68% [c7].", cited=(7,)), seconds=1
+    )
+    assert foreign.grounded is False and foreign.passed_written is False
+
+
+def test_failed_partial_and_refused_explanations_are_scored_by_what_arrived() -> None:
+    failed = explained("", mode="explain_failed", reason="model_unavailable", first_token=None)
+    result = score_explained(fact_case(), ROWS, failed, seconds=0.2)
+    assert result.passed is False and result.abstained and not result.answer_written
+    assert result.fallback_reason == "model_unavailable" and result.first_token_seconds is None
+    abstain = fixed_cases("p1", ROWS)[0]
+    # A call that failed is not an abstention; a refusal by the guard is.
+    assert score_explained(abstain, ROWS, failed, seconds=0.2).passed is False
+    refused = explained("", mode="abstention", reason="prompt_injection", first_token=None)
+    assert score_explained(abstain, ROWS, refused, seconds=0.2).passed is True
+    answered = explained("Cedar is a model [c0].", cited=(0,))
+    assert score_explained(abstain, ROWS, answered, seconds=0.2).passed is False
+
+    partial = explained("Accuracy rose", mode="explain_partial", reason="stall_timeout")
+    kept = score_explained(fact_case(), ROWS, partial, seconds=3)
+    assert kept.answer_written and kept.passed_written is False and kept.fallback_reason
+    review = PaperEvalCase(case_id="f", question="Why?", kind="feedback", origin="feedback")
+    assert score_explained(review, ROWS, answered, seconds=1).passed is None
+
+
+def test_the_summary_reports_first_token_seconds_and_cache_hit_rate_for_explain_runs() -> None:
+    results = [
+        score_explained(fact_case(), ROWS, explained("62% and 68% [c2]", cited=(2,)), seconds=3),
+        score_explained(
+            fact_case(),
+            ROWS,
+            explained(
+                "62% and 68% [c2]",
+                cited=(2,),
+                usage=TokenUsage(1000, 50, 400, 600),
+                first_token=3.5,
+            ),
+            seconds=5,
+        ),
+        score_explained(
+            fact_case(),
+            ROWS,
+            explained(
+                "", mode="explain_failed", reason="x", first_token=None, usage=TokenUsage(0, 0)
+            ),
+            seconds=1,
+        ),
+    ]
+    summary = summarize(results)
+    assert summary["median_first_token_seconds"] == 3.5
+    assert summary["mean_cache_hit_rate"] == 0.6 and summary["passed_written"] == 2
+    assert summary["fallbacks"] == {"x": 1}
+    strict = summarize([score_case(fact_case(), ROWS, AnswerResult([], "abstention"), seconds=1)])
+    assert strict["median_first_token_seconds"] is None and strict["mean_cache_hit_rate"] is None

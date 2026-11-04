@@ -485,7 +485,8 @@ evidence, unless it passes the verifier.
 | `plugins` | Which plugin fills each slot, plus constructor keys. |
 | `llm_providers` | Default model, key variable, optional `base_url` and optional `context_tokens` (the context window explain mode plans for; defaults are 64,000 for DeepSeek and 128,000 for OpenAI and Gemini, and 32,000 for any other plugin or one with a `base_url`; they are conservative guesses, so set the real window) per LLM plugin. |
 | `embedding_providers` | Default model, similarity floor and key variable per embedder. |
-| `explain` | `max_pack_share` (default 0.6): the whole paper goes in the prompt only if its estimated tokens are at most this share of the model's `context_tokens` ([ADR 0010](docs/adr/0010-explain-mode-paper-in-the-prompt.md)). Explain mode itself is not built yet. |
+| `explain` | `max_pack_share` (default 0.6): the whole paper goes in the prompt only if its estimated tokens are at most this share of the model's `context_tokens` ([ADR 0010](docs/adr/0010-explain-mode-paper-in-the-prompt.md)). |
+| `answer` | `default_mode` (`strict`, the default, or `explain`): the answer path of a question whose request sets no `mode`. |
 | `sync` | Default sync window and limits (see [Sync](#sync)). |
 | `runtime_qos` | `utility_worker_processes` (PDF workers, capped to the CPUs), `slow_callback_threshold_ms` (event-loop lag warning) and `shared_model_worker` (default `true`: the claim checker and reranker share one process; `false` gives each its own). Older files may still carry `use_uvloop`, `user_initiated_override_concurrency`, `background_pdf_stream_concurrency` and `arxiv_rate_limit_delay_sec`; they are ignored and logged as deprecated. uvloop is chosen by the uvicorn `--loop` flag and arXiv spacing is fixed at 3 s. |
 
@@ -662,7 +663,7 @@ downloaded once into `data/eval/qasper/`. Needs network and an LLM key.
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /v1/papers`, `GET /v1/papers/{id}` | Library and one paper |
-| `POST /v1/papers/{id}/questions` | Ask a question; answers stream as server-sent events (`progress`, `answer`, `claim`, `abstention`, `done`, `error`) |
+| `POST /v1/papers/{id}/questions` | Ask a question; answers stream as server-sent events (`progress`, `answer`, `claim`, `abstention`, `done`, `error`). Body `mode` is `strict` (default) or `explain`, which streams `delta` text and a `citations` event instead of `claim`s |
 | `GET /v1/papers/{id}/pdf`, `.../pages/{n}`, `.../chat` | Original PDF, extracted page, chat history |
 | `PUT /v1/papers/{id}/chat/{turn_id}/feedback` | Rate a saved answer `up`, `down` or `null`, with an optional note |
 | `PUT /v1/papers/{id}/chat/{turn_id}/feedback/facts` | Attach 1-3 key facts (and the paper sentence that holds them) to an answer rated down, so its question is scored in evaluations |

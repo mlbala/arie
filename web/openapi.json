@@ -194,6 +194,21 @@
             "title": "History",
             "type": "array"
           },
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "strict",
+                  "explain"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
           "question": {
             "maxLength": 2000,
             "minLength": 1,

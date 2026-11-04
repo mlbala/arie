@@ -29,7 +29,7 @@ Size: S fits easily in one sitting, M is a normal session, L may need a second s
 | S06 | ADR 0010, paper pack, context limits | S04 | M | **plan first** | done |
 | S07 | Streaming usage and cache stats in LLM plugins | S01 | M | | done |
 | S08 | Explain harness core | S06, S07 | L | **plan first** | done |
-| S09 | Explain route, SSE events, eval variant | S08 | M | | todo |
+| S09 | Explain route, SSE events, eval variant | S08 | M | | done |
 | S10 | Deterministic citation checks | S09 | M | | todo |
 | S11 | Explain mode in the web chat, gate 1 | S10 | L | web | todo |
 | S12 | Background grounding checker | S10 | L | Measure first | todo |

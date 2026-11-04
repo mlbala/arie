@@ -107,6 +107,7 @@ async def test_deltas_arrive_in_order_and_provider_usage_reaches_the_trace() -> 
     assert deltas == script
     assert final.text == "".join(deltas) and final.mode == "explain"
     assert final.fallback_reason == "" and final.depth == "standard" and not final.paged
+    assert final.first_token_seconds is not None and 0 <= final.first_token_seconds < 5
     assert final.usage == TokenUsage(900, 40, 700, 200)
     assert final.trace.tokens == TokenUsage(900, 40, 700, 200)
     assert final.trace.prompt_version == "explain.v1" and final.trace.mode == "explain"
@@ -231,6 +232,7 @@ async def test_budget_stops_happen_before_any_model_call() -> None:
     deltas, final = await run(model, context_tokens=1300)
     assert deltas == [] and model.requests == []
     assert final.mode == "explain_failed" and final.fallback_reason == "input_budget"
+    assert final.first_token_seconds is None
 
     deltas, final = await run(None)
     assert deltas == [] and final.fallback_reason == "model_unavailable"

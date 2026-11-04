@@ -569,6 +569,8 @@ export interface components {
              * @default []
              */
             history: components["schemas"]["QuestionTurn"][];
+            /** Mode */
+            mode?: ("strict" | "explain") | null;
             /** Question */
             question: string;
         };

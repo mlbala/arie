@@ -33,8 +33,8 @@ from that paper. Five invariants hold for all code, plugins included:
 | ID | Invariant | Where it is enforced |
 | --- | --- | --- |
 | I1 | **Paper isolation.** No other paper's text can reach an answer. | `paper_id` is bound in Python and never appears in model input or tool schemas. Every row from chunks, vectors, the reranker pool and history is filtered by `paper_id` again (`research.py`, `rerank.py`, `answer.py`, `vectors.semantic_search`). |
-| I2 | **No unverified claims.** Strict mode: every shown claim cites a quote that passes the verifier, or the answer abstains or falls back to exact excerpts. Explain mode ([ADR 0010](adr/0010-explain-mode-paper-in-the-prompt.md)) amends this: every sentence is cited or marked background, and every citation is checked. An unsupported sentence is flagged, not hidden. | Strict: `compose_answer` in `core/arie_core/harness/answer.py`. Explain: `explain_answer` in `core/arie_core/harness/explain.py` maps `[cN]` markers to chunks (no route yet, and the citation checks come in S10). |
-| I3 | **Bounded execution.** Per question in strict mode: 3 reading steps, 3 model calls, 12,000 input tokens, 700 output tokens, 25 s. Explain mode has its own budgets (ADR 0010): one streaming call, first text within 10 s, at most 15 s between texts, 90 s in all, 600, 1,200 or 2,500 output tokens (8.9). | `BudgetHandle`, `ModelSession` (`call`, and `stream` for explain mode), the route's `asyncio.timeout(25.0)` |
+| I2 | **No unverified claims.** Strict mode: every shown claim cites a quote that passes the verifier, or the answer abstains or falls back to exact excerpts. Explain mode ([ADR 0010](adr/0010-explain-mode-paper-in-the-prompt.md)) amends this: every sentence is cited or marked background, and every citation is checked. An unsupported sentence is flagged, not hidden. | Strict: `compose_answer` in `core/arie_core/harness/answer.py`. Explain: `explain_answer` in `core/arie_core/harness/explain.py` maps `[cN]` markers to chunks; the route reports each citation with `checked: false` until the citation checks come in S10. |
+| I3 | **Bounded execution.** Per question in strict mode: 3 reading steps, 3 model calls, 12,000 input tokens, 700 output tokens, 25 s. Explain mode has its own budgets (ADR 0010): one streaming call, first text within 10 s, at most 15 s between texts, 90 s in all, 600, 1,200 or 2,500 output tokens (8.9). | `BudgetHandle`, `ModelSession` (`call`, and `stream` for explain mode), the route's `asyncio.timeout(25.0)`; explain requests use `explain_context` and `EXPLAIN_SECONDS` (8.9) |
 | I4 | **Clean ingestion.** Source records are validated, downloads go only to declared hosts, PDFs are size- and type-checked, and writes are atomic. | `normalize_scraper_output`, `IngestionPipeline.download_pdf` |
 | I5 | **No vendor code in the core.** `arie_core` imports no SDK or plugin; plugins import only `arie_core.plugin_api` and `arie_core.contracts`. | `lint-imports` in `make check` |
 
@@ -105,7 +105,8 @@ deprecation warning per file that still has them.
 | `plugins.<slot>` | `RuntimeBase.instance`, `AnswerModels`, `ExtractionPool`, `VectorIndex` | `use` names the plugin. Other keys go to its constructor, except the keys ARIE reads itself: `parser.timeout_sec/max_rss_mb/tasks_per_worker` (`ExtractionLimits`) and `entailment.min_score`. `path` and `root` are resolved against the project root. |
 | `llm_providers` | `LLMProviders` | Model, key variable and `base_url` per LLM plugin, and `context_tokens` (the window explain mode plans for; at least 4,096). Without it, `ArieConfig.context_tokens_for` uses deepseek 64,000, openai 128,000, gemini 128,000 and 32,000 for any other plugin, or for a provider that sets `base_url` (the endpoint may serve any model). The defaults are conservative guesses, not checked against provider documentation. The repo's `arie.yaml` sets the windows the providers' docs state for its models: deepseek-flash 1,000,000, gpt-5.4-mini 400,000, gemini-3.5-flash-lite 1,048,576. |
 | `embedding_providers` | `resolve_embedder` | Model, cosine floor `min_score` and key variable per embedder. `embedder.use: auto` follows the LLM provider if it offers embeddings and its key is set, and otherwise uses `fastembed`. |
-| `explain` | `ExplainConfig`, `pack_fits` | `max_pack_share` (default 0.6, above 0 and at most 1): the whole paper pack is used when its estimated tokens are at most this share of `context_tokens` (ADR 0010). Nothing reads it yet. |
+| `explain` | `ExplainConfig`, `pack_fits` | `max_pack_share` (default 0.6, above 0 and at most 1): the whole paper pack is used when its estimated tokens are at most this share of `context_tokens` (ADR 0010). |
+| `answer` | `AnswerConfig` | `default_mode` (`strict` or `explain`, default `strict`): the answer path of a question whose request sets no `mode`. A request's `mode` always wins (8.9). |
 | `sync` | `SyncConfig` | Default window (`relative`, `year`, `month`, `since`, `range`), `batch_size`, `max_papers`. |
 | `runtime_qos` | `RuntimeBase`, `AnswerModels`, `routes.py` | `utility_worker_processes`, `slow_callback_threshold_ms` and `shared_model_worker`. arXiv spacing is fixed at 3 s in `wait_for_source_host`, and uvloop is chosen by the uvicorn `--loop` flag (section 12). |
 
@@ -409,8 +410,9 @@ A Tier 3 fallback logs one WARNING line, `Tier 3 <reason> trace=<id> ...`, for
 
 ### 8.9 Explain mode
 
-Explain mode ([ADR 0010](adr/0010-explain-mode-paper-in-the-prompt.md)) is built in core,
-with no route or UI yet. `explain_answer` in
+Explain mode ([ADR 0010](adr/0010-explain-mode-paper-in-the-prompt.md)) is reached with
+`mode: "explain"` on `POST /v1/papers/{id}/questions` (or `answer.default_mode: explain`);
+the web workspace does not offer it yet. `explain_answer` in
 [core/arie_core/harness/explain.py](../core/arie_core/harness/explain.py) is an async
 generator. It yields text deltas (`str`), then one `ExplainResult`:
 
@@ -464,6 +466,36 @@ generator. It yields text deltas (`str`), then one `ExplainResult`:
 | `model_unavailable`, `call_budget` | No model is set, or this session already streamed. |
 | `unexpected_tools` | A delta carried tool calls. |
 | A `failure_reason` | A provider error, for example `provider_http_429`. |
+
+**Route.** `ChatHistory.explain_paper_question` is what the route and the evaluation call.
+It binds `paper["id"]`, loads the stored pack (`ensure_pack`) and gives the request its own
+budget, `explain_context`: `BudgetHandle(max_tokens=context_tokens)` and a deadline of
+`EXPLAIN_SECONDS` (the 90 s stream budget plus 5 s), where `context()` would allow 12,000
+tokens. The route's own timeout is the same `EXPLAIN_SECONDS`, not strict mode's 25 s.
+`context_tokens` is `ArieConfig.context_tokens_for` of the configured LLM.
+
+The history is the paper's last 6 saved turns, read from the server (`explain_turns`), never
+from the request: the request's `history` and `context` are ignored in explain mode, so a
+client cannot write ARIE's side of the conversation. A saved turn's answer is its `delta`
+text, or the claim texts of a strict turn. With no LLM key the stream ends in an
+`abstention` that says to add one.
+
+**Events** (`explain_events` in
+[api/arie_api/explain_stream.py](../api/arie_api/explain_stream.py)). They come in this order
+because the trace is complete only when the stream has ended:
+
+| Event | Payload |
+| --- | --- |
+| `progress` | `status: "reading"`, `message`. Not saved. |
+| `delta` | `text`: one piece of the answer, as the provider sent it. Saved as one `delta` holding all the text. |
+| `answer` | `mode`: `explained_answer`, or `abstention` when no text arrived. `heading`, `prompt_version` (`explain.v1`) and `evaluation`: `task: "explain"`, `depth`, `paged`, `guardrail`, `complete` (false for a partial answer), `fallback_reason`, `unknown_markers`, `first_token_seconds` and the `trace` (8.8). |
+| `citations` | Only if text arrived. `citations`: one `{marker, chunk_id, page, char_start, char_end, checked}` per marker that names a chunk of this paper, in order of first use. `page` and the offsets are the whole chunk's; `checked` is `false` until the quote check (S10) narrows the span. |
+| `abstention` | Only if no text arrived. `message` says why (no key, a timeout, a blocked question). |
+| `done` | `turn_id`, `status` (`complete`, `partial` or `failed`), `mode`, `claims_count` (citations), `tool_calls` 0, `input_tokens`, `output_tokens`, `usage` (`prompt`, `completion`, `cache_hit`, `cache_miss`) and `first_token_seconds`. |
+
+`error` is sent instead for a request deadline or an unexpected exception, as in strict
+mode. The saved turn holds `delta`, `answer`, `citations` or `abstention`, and `done`, so a
+reload renders it like the live stream. Strict mode's events are unchanged.
 
 ## 9. Worker pools
 
@@ -562,13 +594,24 @@ reranker 2), `inter_op_num_threads` = 1, and the CPU memory arena off.
    - **Run summary** (per variant): the counts above plus `passed_written`,
      `pass_written_rate`, `mean_fact_recall_prose` (over fact cases, fallbacks count as 0),
      `fallbacks` (count per `fallback_reason`; an excerpt answer with no reason counts as
-     `unspecified`, a refusal's reason is not a fallback) and `median_stage_seconds` (the
-     upper median of each trace stage and `total` over answers that have a trace).
+     `unspecified`, a refusal's reason is not a fallback), `median_stage_seconds` (the
+     upper median of each trace stage and `total` over answers that have a trace) and, for
+     explain runs, `median_first_token_seconds` and `mean_cache_hit_rate` (`null` for
+     strict runs).
    - **Mode.** A run records the answer path it scored: `mode` (`strict` or `explain`) on
      the run and `requested_mode` on each result; `mode` on a result stays the answer's own
      result mode (8.8). `POST .../eval/runs` takes `mode`, the command line takes
-     `--mode strict|explain`. `explain` is refused (409, or exit 2 before the models warm
-     up) with "Explain mode is not available yet" until S09 adds the path.
+     `--mode strict|explain`.
+   - **Explain runs** answer each case through `explain_paper_question` with no history and
+     score it with `score_explained`. `fact_recall` and `fact_recall_prose` are both the share
+     of key facts found in the answer text. `grounded` means every cited chunk belongs to the
+     paper and no marker was invented (the stronger check is S10). `evidence_hit` means the
+     answer cited the chunk of the source sentence. `passed` and `passed_written` follow the
+     strict rules with those scores. An answer with no text counts as abstained, so a correct
+     "the paper does not say" explanation fails a refusal case until the judge exists (S13);
+     a failed call never passes. Each result stores `cache_hit_rate` (cache hits over cache
+     hits plus misses, `null` if the provider reported neither) and `first_token_seconds`.
+     `compare_reranker` is ignored: explain mode has no reranker, so there is one variant.
 5. **Qasper slice** (`make eval-qasper N=<papers>`,
    [api/arie_api/eval_qasper.py](../api/arie_api/eval_qasper.py), conversion in
    [core/arie_core/harness/qasper.py](../core/arie_core/harness/qasper.py)). An outside
@@ -612,7 +655,9 @@ synthetic cases (`api/arie_api/eval_answers.py`).
 
 ## 11. API, health and web workspace
 
-**Endpoints**: listed in the README's API table. Additional routes: `GET /v1/skips`
+**Endpoints**: listed in the README's API table. `POST /v1/papers/{id}/questions` takes
+`question`, `context`, `history` and `mode` (`strict` or `explain`; absent means
+`answer.default_mode`); explain mode's events are in 8.9. Additional routes: `GET /v1/skips`
 (skipped, failed and quarantined papers), `PUT /v1/sync/settings`,
 `GET /v1/imports/{job}`, and `POST /v1/papers/{id}/override`, which ignores its body and
 starts a sync of the paper's source.

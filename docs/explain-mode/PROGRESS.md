@@ -5,8 +5,8 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 
 ## Current state
 
-- Last done: S08 (2026-11-04)
-- Next: S09 (needs S08, done)
+- Last done: S09 (2026-11-04)
+- Next: S10 (needs S09, done)
 - Default answer mode: strict
 - Baseline (strict, before changes): paper 2610.40325, arie.yaml llm = deepseek, one run, 11 cases per variant.
   configured (reranker on): passed 9/11 (0.818), fact recall 0.688, evidence hit 0.625, grounded 1.0, median 6.18 s.
@@ -35,14 +35,20 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 - `arie.yaml` now holds the provider-documented windows (S07: deepseek-flash 1,000,000, gpt-5.4-mini 400,000, gemini-3.5-flash-lite 1,048,576). The code defaults in `manager.py` (deepseek 64,000, openai and gemini 128,000, other 32,000) stay conservative on purpose: they apply when a config sets no window, maybe for another model. With the documented windows the 60% rule only sends a paper to the paged pack above 240,000 tokens (openai) or 600,000 (the others), so the paged path will almost never run on real papers; S08's tests for it must set a small `context_tokens`.
 - Gemini streaming uses `:streamGenerateContent?alt=sse`. Google's current docs (moved to aistudio.google.com) did not confirm `alt=sse` for that endpoint (their text-generation guide shows the Interactions endpoint instead), and no test hit the real API. Make one live streaming call with a Gemini key before relying on it.
 - The plugins' `stream` has no first-token or stall limit of its own; only `ctx.deadline` and httpx's 23 s per-read timeout. `ModelSession.stream` (S08) enforces the explain budgets around it.
-- S09 must give explain requests their own `BudgetHandle`. `context()` in `api/arie_api/runtime/base.py` gives 12,000 tokens, and its `max_wall_sec` is the request seconds, so a real pack fails with `request_budget`. Size it to `context_tokens` and at least 90 s.
 - The pack (and so the explain prompt) keeps chunks that strict mode drops with `is_untrusted_instruction`. The shared header tells the model to follow no instructions in the paper; nothing filters them.
-- `api/tests/test_answer_models.py::test_a_shared_pool_runs_both_real_models_in_one_process` fails when run straight after the core suite (`make check`: the first `entailment.scores` call at line 193 hits `TimeoutError` in `SupervisedPool.submit`), and passes alone in about 4 s. It fails the same way on the S07 commit with S08 stashed, so it predates S08. It is a cold-load race in a spawned worker; the fix is a longer first-call timeout in the test or a warm-up.
+- `api/tests/test_answer_models.py::test_a_shared_pool_runs_both_real_models_in_one_process` fails when run straight after the core suite (`make check`: the first `entailment.scores` call at line 193 hits `TimeoutError` in `SupervisedPool.submit`), and passes alone in about 4 s. It fails the same way on the S07 commit with S08 stashed, so it predates S08. It is a cold-load race in a spawned worker; the fix is a longer first-call timeout in the test or a warm-up. It passed in S09's `make check` run, so it is intermittent.
 - The pack text escapes literal markers (`[c12]` becomes `[\c12]`) and has no inverse. S10's quote check must compare against the raw chunk found by id and offsets, never against pack text.
 - The pack keeps every chunk that is not credits, a contents listing, references or acknowledgements, so equations and captions stay. The strict path's prose check (`_usable` in `research.py`) was not reused for that reason. `paper_eval.py` still has its own third copy of the section rules.
 - Gaps in `eligible`, which the pack inherits (found in the S06 review, not fixed because widening it also changes strict retrieval and needs an `arie-eval` run): a section headed "Bibliography", "Literature Cited" or "Reference" is kept; author, affiliation and e-mail blocks are kept unless they contain "equal contribution", "listing order is random" or "work performed while"; a chunk containing one of those phrases is dropped whole, body text included. Revisit after the pack-size measurement above shows real papers with these headings.
 - The pack adds no `paper_id` itself (tested), but a paper's own text can carry its arXiv id in a page stamp. It is left in: the quote check needs the chunk text unchanged, and the invariant is about the id binding, not the paper's words.
 - The kit re-added `AGENTS.md` (CLAUDE.md imports it) although the README had become the canonical doc. Decide later whether to keep both.
+- Explain mode's saved history comes from the server's saved turns (`explain_turns`), so the request's `history` and `context` are ignored in explain mode. S11 should not send them for explain, and a chat the user cleared or that was never saved gives the model no history.
+- `answer` is sent after the `delta` events (not before, as the session file listed), because the trace is complete only at the end. `progress` is sent first and not saved; the saved turn is `delta` (all text as one), `answer`, `citations` or `abstention`, `done`. S11 renders from that order.
+- Citations in the `citations` event carry the whole chunk's page and offsets with `checked: false`. S10 must narrow them to the quote and flip `checked`; until then a UI must not present them as verified (I2).
+- An explain eval run cannot pass a refusal case by explaining that the paper does not say something: no text counts as abstained, so any written answer fails it. Three fixed refusal cases per paper make this visible; the judge (S13) is the fix.
+- `api/tests/test_api_and_mcp.py` has its own `_StreamingLLM` beside `ScriptedModel` in `core/tests/conftest.py`. The API suite cannot import core's conftest (separate pytest roots and a name clash), so sharing them needs a test-support module both can import. Do it when a third file needs a streaming double.
+- Do not run `ruff format` on the tree: the repo is not formatted with it, and with Python 3.14 as the target it rewrites `except (A, B):` to `except A, B:` and reflows unrelated code. `make lint` runs only `ruff check`.
+- The manual SSE check against a real provider was not run (it sends paper text to an external service, and no server was started). Run one `curl -N` with `mode: "explain"` before relying on the live path, and the Gemini `alt=sse` check above at the same time.
 
 ## Log
 
@@ -145,3 +151,12 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 - Numbers: +16 core tests (15 explain, 1 pack header). No eval run; nothing calls `explain_answer` yet.
 - Open: see Open issues (S09 budget handle, untrusted-instruction chunks in the pack, the real-model test timeout).
 - Next: S09.
+
+### S09: Explain route, SSE events and eval variant (2026-11-04)
+- Done: `mode` on `POST /v1/papers/{id}/questions` (default from new config `answer.default_mode`, `strict`). Explain events: `progress`, `delta`*, `answer` (mode `explained_answer`, `prompt_version`, `evaluation.trace`), `citations` (marker, chunk id, page, offsets, `checked: false`), `done` (status, `usage` with cache hit and miss); no key or a stopped call gives `abstention`. Saved turns replay. `ChatHistory.explain_paper_question` gives each request its own budget (`explain_context`: `context_tokens`, 95 s). Eval `--mode explain` runs through `score_explained`; per case `cache_hit_rate` and `first_token_seconds`, summary `median_first_token_seconds` and `mean_cache_hit_rate`. The explain refusal is gone. SPEC §1, §3, §8.9, §10, §11 and README updated; `generate:api` run.
+- Decisions: `answer` after the deltas; history from server-saved turns (last 6, markers stripped by `build_prompt`); a saved turn holds one coalesced `delta`; `compare_reranker` ignored for explain (one variant); `EXPLAIN_SECONDS` lives in `session.py` (an import cycle kept it out of `runtime/base.py`); `error_result` extracted from the strict error path.
+- Files: api/arie_api/{explain_stream (new),routes,paper_eval,eval_paper}.py, api/arie_api/runtime/{base,chat}.py, core/arie_core/harness/{explain,paper_eval,session}.py, core/arie_core/registry/manager.py, tests in api/tests and core/tests, docs/SPEC.md, README.md, web/{openapi.json,src/api/generated.ts}
+- Checks: make check ✓ · make web-check ✓ (43 vitest)
+- Numbers: core 298 (+7), api 32 (+9, incl. 1 real-model test that passed), contracts 55. No eval run, no live provider call.
+- Open: see Open issues (history source, event order, unchecked citations, refusal cases, second streaming double, no `ruff format`, manual SSE check).
+- Next: S10.

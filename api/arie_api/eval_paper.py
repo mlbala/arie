@@ -16,7 +16,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from arie_api.paper_eval import MODES, require_available_mode
+from arie_api.paper_eval import MODES
 from arie_api.runtime import ResearchRuntime
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -61,11 +61,6 @@ def main() -> None:
     )
     parser.add_argument("--mode", choices=MODES, default="strict", help="answer path to score")
     args = parser.parse_args()
-    try:
-        # Fail before the models warm up (up to 600 s) for a mode that cannot run.
-        require_available_mode(args.mode)
-    except ValueError as exc:
-        parser.exit(2, f"error: {exc}\n")
     ok = asyncio.run(
         evaluate(
             args.paper_id,

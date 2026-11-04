@@ -216,6 +216,8 @@ def test_a_custom_endpoint_without_a_window_gets_the_fallback(tmp_path: Path) ->
         ("explain:\n  max_pack_share: 0\n", "max_pack_share"),
         ("explain:\n  max_pack_share: 1.5\n", "max_pack_share"),
         ("explain:\n  budget: 3\n", "budget"),
+        ("answer:\n  default_mode: fast\n", "default_mode"),
+        ("answer:\n  mode: explain\n", "mode"),
         (
             "llm_providers:\n  x: {model: m, api_key_env: X_KEY, context_tokens: 100}\n",
             "context_tokens",
@@ -242,3 +244,12 @@ def test_repo_arie_yaml_states_the_context_windows_and_pack_share() -> None:
         "gemini": 1_048_576,
     }
     assert config.explain.max_pack_share == 0.6
+
+
+def test_the_default_answer_mode_is_strict_and_a_config_can_change_it(tmp_path: Path) -> None:
+    assert ArieConfig().answer.default_mode == "strict"
+    root = Path(__file__).resolve().parents[2]
+    assert ArieConfig.from_yaml(root / "arie.yaml").answer.default_mode == "strict"
+    path = tmp_path / "arie.yaml"
+    path.write_text("answer:\n  default_mode: explain\n", encoding="utf-8")
+    assert ArieConfig.from_yaml(path).answer.default_mode == "explain"

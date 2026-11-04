@@ -46,6 +46,9 @@ class StreamBudget(msgspec.Struct, frozen=True):
 
 # Explain mode's writer call (ADR 0010).
 EXPLAIN_BUDGET = StreamBudget()
+# An explain request's deadline: the streaming budget plus a few seconds for the guard, the
+# pack and the paged-pack choice. Strict mode's request deadline is 25 s.
+EXPLAIN_SECONDS = EXPLAIN_BUDGET.total + 5.0
 
 
 class StreamStopped(Exception):

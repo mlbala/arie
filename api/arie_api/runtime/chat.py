@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, Sequence
+from contextlib import aclosing
 from datetime import UTC, datetime
 from typing import cast
 
+from arie_core.harness.explain import HISTORY_TURNS, ExplainResult, ExplainTurn, explain_answer
 from arie_core.harness.intent import DialogueTurn
 from arie_core.harness.orchestrator import ResearchAnswer, answer_question
 from arie_core.harness.reader import EvidenceChunk
@@ -22,8 +24,22 @@ from arie_api.runtime.base import (
     CallContext,
     Document,
     context,
+    explain_context,
 )
 from arie_api.runtime.sync import SyncJobs
+
+
+def saved_answer_text(events: Sequence[Document]) -> str:
+    """The prose of a saved turn: an explain turn's text, or a strict turn's claim texts."""
+    deltas = [str(event["data"].get("text", "")) for event in events if event["event"] == "delta"]
+    if deltas:
+        return "".join(deltas)
+    claims = [
+        str(event["data"].get("claim", {}).get("text", ""))
+        for event in events
+        if event["event"] == "claim"
+    ]
+    return " ".join(text for text in claims if text)
 
 
 class ChatHistory(SyncJobs):
@@ -129,6 +145,59 @@ class ChatHistory(SyncJobs):
             entail_floor=self.entail_floor,
             rerank=self.rerank_scores if rerank and self.models.get("reranker") else None,
         )
+
+    async def explain_turns(self, paper_id: str) -> list[ExplainTurn]:
+        """The last ``HISTORY_TURNS`` saved turns of this paper, as context for an explanation.
+
+        Read from the server's own history, never from the request, so a client cannot write
+        ARIE's side of the conversation. They are context for the question, not evidence.
+        """
+        saved = await self.chat_history(paper_id)
+        return [
+            ExplainTurn(str(turn["question"]), saved_answer_text(turn["events"]))
+            for turn in saved[-HISTORY_TURNS:]
+        ]
+
+    async def explain_paper_question(
+        self,
+        trace_id: str,
+        paper: Document,
+        question: str,
+        turns: Sequence[ExplainTurn] = (),
+    ) -> AsyncGenerator[str | ExplainResult]:
+        """Explain one indexed paper: text deltas as ``str``, then one ``ExplainResult``.
+
+        Chat and the per-paper evaluation both call this. The request gets its own budget
+        (``explain_context``): the model's whole context window and at least 90 seconds. With no
+        LLM key the result is ``explain_failed`` with reason ``model_unavailable``.
+        ``paper["id"]`` is bound here, never sent to the model (I1).
+        """
+        paper_id = str(paper["id"])
+        context_tokens = self.config.context_tokens_for(self.llm_provider())
+        ctx = explain_context(trace_id, context_tokens)
+        rows = [
+            EvidenceChunk(**row)
+            for row in paper.get("chunks", [])
+            if row.get("paper_id") == paper_id
+        ]
+        llm: LLM | None = cast(LLM, self.instance("llm"))
+        if not getattr(llm, "api_key", None):
+            llm = None
+        pack = await self.ensure_pack(paper)
+        stream = explain_answer(
+            ctx,
+            paper_id,
+            question,
+            pack,
+            rows,
+            llm,
+            context_tokens=context_tokens,
+            pack_share=self.config.explain.max_pack_share,
+            turns=turns,
+        )
+        async with aclosing(stream) as items:
+            async for item in items:
+                yield item
 
     async def entailment_scores(self, pairs: Sequence[tuple[str, str]]) -> Sequence[float]:
         """Tier 3 scores for (quote, claim) pairs; raises while the model is unavailable."""
