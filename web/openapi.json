@@ -76,6 +76,23 @@
               }
             ],
             "title": "Rating"
+          },
+          "reasons": {
+            "default": [],
+            "items": {
+              "enum": [
+                "wrong",
+                "not_in_paper",
+                "too_shallow",
+                "too_long",
+                "missing_citation",
+                "did_not_answer"
+              ],
+              "type": "string"
+            },
+            "maxItems": 6,
+            "title": "Reasons",
+            "type": "array"
           }
         },
         "required": [
@@ -494,6 +511,27 @@
           }
         },
         "summary": "Stream Events"
+      }
+    },
+    "/v1/feedback/agreement": {
+      "get": {
+        "description": "How often the judge's verdict matched the reader's ratings, overall and per task.",
+        "operationId": "feedback_agreement_v1_feedback_agreement_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Feedback Agreement V1 Feedback Agreement Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Feedback Agreement"
       }
     },
     "/v1/health": {

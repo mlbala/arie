@@ -93,6 +93,7 @@ async def explain_events(
         mode=mode,
         heading="Explanation",
         prompt_version=result.trace.prompt_version,
+        trace_id=trace_id,
         evaluation={
             "source_of_truth": "saved_pdf_text",
             "task": "explain",

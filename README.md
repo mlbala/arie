@@ -624,8 +624,13 @@ ready.
   size, free disk and vector index coverage.
 - **Delete PDF** keeps the extracted text for chat; **Delete paper** removes the PDF,
   metadata and evidence. Pause sync before deleting.
-- Rate any answer with the thumbs under it. A thumbs-down can carry a short note, and
-  that question joins the paper's evaluation for review.
+- Rate any answer with the thumbs under it. A thumbs-down is saved at once and can then
+  carry reasons (wrong, not in the paper, too shallow, too long, missing citation, did
+  not answer) and a short note. That question joins the paper's evaluation for review; add
+  1-3 key facts there to make it a scored case. A follow-up that says the answer was wrong,
+  asks for it again or repeats the question marks the answer before it as questioned, and
+  the panel shows how often the judge's verdict matched your ratings. Ratings find
+  failures; they are not a quality score.
 
 ### Evaluate answers on one paper
 
@@ -674,9 +679,10 @@ downloaded once into `data/eval/qasper/`. Needs network and an LLM key.
 | `POST /v1/papers/{id}/questions` | Ask a question; answers stream as server-sent events (`progress`, `answer`, `claim`, `abstention`, `done`, `error`). Body `mode` is `strict` (default) or `explain`, which streams `delta` text, then `citations`, `checks` (a verdict per sentence) and `judge` (the model's verdict per cited sentence, unless `judge.chat` is `off`) instead of `claim`s |
 | `GET /v1/papers/{id}/pdf`, `.../pages/{n}`, `.../chat` | Original PDF, extracted page, chat history |
 | `GET /v1/papers/{id}/guide` | The paper's cited reading guide (`ready`, `pending` or `missing`), shown as the chat's opening message |
-| `PUT /v1/papers/{id}/chat/{turn_id}/feedback` | Rate a saved answer `up`, `down` or `null`, with an optional note |
+| `PUT /v1/papers/{id}/chat/{turn_id}/feedback` | Rate a saved answer `up`, `down` or `null`, with an optional note and, for `down`, `reasons` |
 | `PUT /v1/papers/{id}/chat/{turn_id}/feedback/facts` | Attach 1-3 key facts (and the paper sentence that holds them) to an answer rated down, so its question is scored in evaluations |
 | `GET /v1/papers/{id}/eval`, `POST .../eval/runs`, `GET .../eval/runs/{run}` | A paper's evaluation questions, runs and feedback; start a run (`mode` is `strict` or `explain`) |
+| `GET /v1/feedback/agreement` | How often the judge's verdict matched your ratings (overall, per task), with the count of answers a follow-up questioned |
 | `POST /v1/sync`, `GET /v1/sync/{job}`, `POST /v1/sync/{job}/pause` | Run and control syncs |
 | `POST /v1/imports` | Import one paper by URL |
 | `GET /v1/plugins`, `PUT /v1/plugins/{slot}`, `POST /v1/plugins/{slot}/test` | List, switch and test plugins |

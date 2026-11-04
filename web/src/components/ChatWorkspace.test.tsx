@@ -370,6 +370,42 @@ it("rates a saved answer and restores the rating, with a note for a down rating"
   expect(JSON.parse(String(init.body))).toEqual({ rating: "down", note: "Missed the method" });
 });
 
+it("saves a down rating at once, then sends the reasons the reader picks with the note", async () => {
+  vi.mocked(getChat).mockResolvedValueOnce({ turns: [{
+    turn_id: "turn-1",
+    question: "How does the method work?",
+    rating: null,
+    events: [
+      { event: "answer", data: { paper_id: "paper-1", mode: "source_excerpts", heading: "Answer" } },
+      { event: "done", data: { paper_id: "paper-1", mode: "source_excerpts", turn_id: "turn-1" } },
+    ],
+  }] });
+  const fetcher = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ turn_id: "turn-1", rating: "down" })));
+  vi.stubGlobal("fetch", fetcher);
+  render(<ChatWorkspace papers={papers} activePaperId="paper-1" onSelectPaper={vi.fn()} onClosePaper={vi.fn()} onCitation={vi.fn()} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Not helpful" }));
+  // The rating is saved before any reason is chosen, so a reader who stops here still counts.
+  await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+  expect(JSON.parse(String(fetcher.mock.calls[0]![1].body))).toEqual({ rating: "down", note: "" });
+
+  const chips = within(screen.getByRole("group", { name: "What was wrong with it?" }));
+  expect(chips.getAllByRole("button").map((chip) => chip.textContent)).toEqual([
+    "Wrong", "Not in the paper", "Too shallow", "Too long", "Missing citation", "Did not answer",
+  ]);
+  fireEvent.click(chips.getByRole("button", { name: "Wrong" }));
+  fireEvent.click(chips.getByRole("button", { name: "Too long" }));
+  fireEvent.click(chips.getByRole("button", { name: "Wrong" }));
+  fireEvent.click(chips.getByRole("button", { name: "Missing citation" }));
+  expect(chips.getByRole("button", { name: "Wrong" })).toHaveAttribute("aria-pressed", "false");
+  expect(chips.getByRole("button", { name: "Too long" })).toHaveAttribute("aria-pressed", "true");
+  fireEvent.change(screen.getByLabelText("What was wrong?"), { target: { value: "Too much" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+  expect(JSON.parse(String(fetcher.mock.calls[1]![1].body))).toEqual({
+    rating: "down", note: "Too much", reasons: ["too_long", "missing_citation"],
+  });
+});
+
 describe("explain answers", () => {
   const event = (kind: string, data: object) => `event: ${kind}\ndata: ${JSON.stringify(data)}\n\n`;
   const text = "**Method.** Workers read isolated processes [c3]. Transformers are common. The gain is 9.1 points [c3].";

@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any, ClassVar, Literal, cast
+from typing import Annotated, Any, ClassVar, Literal, cast, get_args
 from urllib.parse import quote
 
 import msgspec
@@ -54,11 +54,25 @@ class QuestionRequest(BaseModel):
     mode: Literal["strict", "explain"] | None = None
 
 
+# Why an answer was rated down; ``arie_core.harness.feedback.REASONS`` lists the same names.
+Reason = Literal[
+    "wrong",
+    "not_in_paper",
+    "too_shallow",
+    "too_long",
+    "missing_citation",
+    "did_not_answer",
+]
+
+
 class FeedbackRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     # null clears the rating.
     rating: Literal["up", "down"] | None
+    # The reader's comment on a down rating.
     note: str = Field(default="", max_length=500)
+    # Why it was rated down; only with a down rating.
+    reasons: tuple[Reason, ...] = Field(default=(), max_length=len(get_args(Reason)))
 
 
 class FeedbackFactsRequest(BaseModel):
@@ -208,10 +222,17 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
         await document(paper_id)
         try:
             return await active().evaluations.save_feedback(
-                paper_id, turn_id, request.rating, request.note
+                paper_id, turn_id, request.rating, request.note, request.reasons
             )
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/v1/feedback/agreement")
+    async def feedback_agreement() -> Document:
+        """How often the judge's verdict matched the reader's ratings, overall and per task."""
+        return await active().evaluations.agreement()
 
     @app.put("/v1/papers/{paper_id:path}/chat/{turn_id}/feedback/facts")
     async def add_feedback_facts(
@@ -326,6 +347,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
                         "answer",
                         paper_id=paper_id,
                         mode=mode,
+                        trace_id=ctx.trace_id,
                         context_question=plan.topic_question,
                         heading="Paper summary"
                         if plan.overview and not plan.follow_up

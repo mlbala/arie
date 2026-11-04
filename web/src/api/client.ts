@@ -175,16 +175,47 @@ export interface SavedChatTurn {
 
 export type AnswerRating = "up" | "down" | null;
 
+/** Why a reader rated an answer down, as the API names them, with the label the chips show. */
+export const FEEDBACK_REASONS = [
+  ["wrong", "Wrong"],
+  ["not_in_paper", "Not in the paper"],
+  ["too_shallow", "Too shallow"],
+  ["too_long", "Too long"],
+  ["missing_citation", "Missing citation"],
+  ["did_not_answer", "Did not answer"],
+] as const;
+
+export type FeedbackReason = (typeof FEEDBACK_REASONS)[number][0];
+
+/** What a reader adds to a down rating: the reasons that apply and a comment. */
+export interface RatingDetail {
+  note?: string;
+  reasons?: readonly FeedbackReason[];
+}
+
 /** Rate a saved answer; `null` clears it. Answers rated down join the paper's evaluation. */
 export function rateAnswer(
   paperId: string,
   turnId: string,
   rating: AnswerRating,
-  note = "",
+  { note = "", reasons = [] }: RatingDetail = {},
 ): Promise<{ turn_id: string; rating: AnswerRating }> {
   return requestJson(
     `/v1/papers/${encodeURIComponent(paperId)}/chat/${encodeURIComponent(turnId)}/feedback`,
-    { method: "PUT", body: JSON.stringify({ rating, note }) },
+    { method: "PUT", body: JSON.stringify({ rating, note, ...(reasons.length ? { reasons } : {}) }) },
+  );
+}
+
+/** Make an answer rated down a scored case: 1-3 key facts and, optionally, the paper's own sentence that holds them. */
+export function addFeedbackFacts(
+  paperId: string,
+  turnId: string,
+  keyFacts: readonly string[],
+  sourceSentence = "",
+): Promise<{ turn_id: string; key_facts: string[]; source_sentence: string }> {
+  return requestJson(
+    `/v1/papers/${encodeURIComponent(paperId)}/chat/${encodeURIComponent(turnId)}/feedback/facts`,
+    { method: "PUT", body: JSON.stringify({ key_facts: keyFacts, source_sentence: sourceSentence }) },
   );
 }
 
@@ -265,12 +296,53 @@ export interface EvalRun {
   results: EvalResult[];
 }
 
+/** An answer the reader rated, with what the answer recorded about itself; the new fields are absent on ratings saved before S15. */
+export interface FeedbackItem {
+  turn_id: string;
+  question: string;
+  rating: string;
+  note: string;
+  created_at: string;
+  reasons?: FeedbackReason[];
+  mode?: string;
+  task?: string;
+  prompt_version?: string;
+  trace_id?: string;
+  key_facts?: string[];
+  source_sentence?: string;
+}
+
+/** A follow-up that read as a negative rating of the answer before it; never shown in chat. */
+export interface ImplicitFeedback {
+  turn_id: string;
+  question: string;
+  signal: "said_wrong" | "asked_again" | "repeated_question";
+  follow_up: string;
+  created_at: string;
+}
+
+/** How often the judge's verdict matched the reader's rating; `rate` is `agreed / judged`. */
+export interface FeedbackAgreement {
+  rated: number;
+  judged: number;
+  agreed: number;
+  rate: number | null;
+  /** True once 30 answers are rated (gate 4). */
+  ready: boolean;
+  /** Unrated answers a follow-up questioned; not part of the agreement. */
+  implicit: number;
+  by_task: { task: string; rated: number; judged: number; agreed: number; rate: number | null }[];
+}
+
 export interface PaperEvaluation {
   paper_id: string;
   cases: EvalCase[];
   runs: Omit<EvalRun, "results">[];
   latest: EvalRun | null;
-  feedback: { turn_id: string; question: string; rating: string; note: string; created_at: string }[];
+  feedback: FeedbackItem[];
+  implicit_feedback?: ImplicitFeedback[];
+  /** Library-wide, not this paper's: gate 4 counts every rated answer. */
+  agreement?: FeedbackAgreement;
 }
 
 export function getPaperEvaluation(paperId: string): Promise<PaperEvaluation> {

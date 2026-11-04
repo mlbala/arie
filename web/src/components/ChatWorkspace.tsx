@@ -14,7 +14,7 @@ import {
   ThumbsUp,
   X,
 } from "lucide-react";
-import { apiUrl, getChat, getGuide, rateAnswer, type AnswerRating, type CitationRange, type PaperGuideView, type PaperSummary } from "../api/client";
+import { FEEDBACK_REASONS, apiUrl, getChat, getGuide, rateAnswer, type AnswerRating, type CitationRange, type FeedbackReason, type PaperGuideView, type PaperSummary, type RatingDetail } from "../api/client";
 import {
   mergeSentences,
   normalizeCitations,
@@ -244,13 +244,13 @@ function ChatPanel({
   const readyGuide = guide?.status === "ready" && guide.paper_id === paper.id ? guide.guide : undefined;
   const ready = paper.status === "INDEXED";
   const [showEvaluation, setShowEvaluation] = useState(false);
-  const rate = (entry: ChatEntry, rating: AnswerRating, note = "") => {
+  const rate = (entry: ChatEntry, rating: AnswerRating, detail: RatingDetail = {}) => {
     if (!entry.turnId) return;
     const previous = entry.rating ?? null;
     const patch = (value: AnswerRating) => setEntries((current) =>
       current.map((item) => item.id === entry.id ? { ...item, rating: value } : item));
     patch(rating);
-    rateAnswer(paper.id, entry.turnId, rating, note).catch(() => patch(previous));
+    rateAnswer(paper.id, entry.turnId, rating, detail).catch(() => patch(previous));
   };
 
   const submitQuestion = async (suggestion?: string) => {
@@ -647,20 +647,28 @@ function ExplainedAnswer({ entry, onCitation }: { entry: ChatEntry; onCitation: 
   </div>;
 }
 
-/** Thumbs up or down on a saved answer; a down rating can carry a short note. */
-function AnswerFeedback({ entry, onRate }: { entry: ChatEntry; onRate: (entry: ChatEntry, rating: AnswerRating, note?: string) => void }) {
+/** Thumbs up or down on a saved answer; a down rating is saved at once and can then carry reasons and a short note. */
+function AnswerFeedback({ entry, onRate }: { entry: ChatEntry; onRate: (entry: ChatEntry, rating: AnswerRating, detail?: RatingDetail) => void }) {
   const [note, setNote] = useState("");
+  const [reasons, setReasons] = useState<FeedbackReason[]>([]);
   const [noting, setNoting] = useState(false);
   const toggle = (rating: "up" | "down") => {
     const next = entry.rating === rating ? null : rating;
     setNoting(next === "down");
+    setReasons([]);
     onRate(entry, next);
   };
+  const flip = (reason: FeedbackReason) =>
+    setReasons((current) => current.includes(reason) ? current.filter((item) => item !== reason) : [...current, reason]);
   return <div className="answer-feedback">
     <span>Was this answer helpful?</span>
     <button className="icon-button" aria-label="Helpful" aria-pressed={entry.rating === "up"} onClick={() => toggle("up")}><ThumbsUp size={13} /></button>
     <button className="icon-button" aria-label="Not helpful" aria-pressed={entry.rating === "down"} onClick={() => toggle("down")}><ThumbsDown size={13} /></button>
-    {noting && entry.rating === "down" && <form onSubmit={(event) => { event.preventDefault(); onRate(entry, "down", note.trim()); setNoting(false); }}>
+    {noting && entry.rating === "down" && <form onSubmit={(event) => { event.preventDefault(); onRate(entry, "down", { note: note.trim(), reasons }); setNoting(false); }}>
+      <div className="feedback-reasons" role="group" aria-label="What was wrong with it?">
+        {FEEDBACK_REASONS.map(([reason, label]) =>
+          <button key={reason} type="button" className="reason-chip" aria-pressed={reasons.includes(reason)} onClick={() => flip(reason)}>{label}</button>)}
+      </div>
       <input aria-label="What was wrong?" placeholder="What was wrong? (optional)" maxLength={500} value={note} onChange={(event) => setNote(event.target.value)} />
       <button className="text-button" type="submit">Save</button>
     </form>}

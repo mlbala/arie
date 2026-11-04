@@ -9,6 +9,7 @@ import {
   type EvalSummary,
   type PaperEvaluation,
 } from "../api/client";
+import { FeedbackPanel } from "./FeedbackPanel";
 
 const ACTIVE = new Set(["queued", "running"]);
 const VARIANT_LABEL: Record<EvalResult["variant"], string> = {
@@ -142,6 +143,18 @@ export function EvaluationPanel({ paperId, ready }: { paperId: string; ready: bo
             </ol>
           )}
         </div>
+      )}
+      {overview && (
+        <FeedbackPanel
+          paperId={paperId}
+          feedback={overview.feedback}
+          implicit={overview.implicit_feedback ?? []}
+          agreement={overview.agreement}
+          onChanged={() => {
+            // A saved case changes the next run, not the one on screen.
+            void getPaperEvaluation(paperId).then(setOverview).catch(() => undefined);
+          }}
+        />
       )}
     </section>
   );
