@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Generator
+from contextlib import contextmanager
 from typing import cast
 
-from arie_core.contracts import LLMRequest
+from arie_core.contracts import LLMRequest, TokenUsage
+from arie_core.harness.trace import STAGES, AnswerTrace, StageSeconds
 from arie_core.plugin_api import LLM, Ctx
 
 # I3: at most 12,000 input tokens per answer. A call is admitted on an estimate of 3 UTF-8
@@ -25,6 +28,12 @@ def failure_reason(exc: Exception) -> str:
     return f"provider_http_{status}" if isinstance(status, int) else type(exc).__name__
 
 
+def model_name(llm: LLM | None) -> str:
+    """The provider model the plugin was configured with, or "" when it does not say."""
+    name: object = getattr(llm, "model", "")
+    return name if isinstance(name, str) else ""
+
+
 class ModelSession:
     """Share hard limits across planning, writing and review; no executable model tools.
 
@@ -37,7 +46,37 @@ class ModelSession:
         self.ctx = ctx
         self.llm = llm
         self.calls = self.input_bytes = self.input_tokens = self.output_tokens = 0
+        self.cache_hit = self.cache_miss = 0
         self.unavailable_reason = ""
+        # For the answer trace: the configured model (kept even if the LLM is later
+        # switched off), the prompt file version in use, and seconds per pipeline stage.
+        self.model = model_name(llm)
+        self.prompt_version = ""
+        self.stages: dict[str, float] = {}
+
+    @contextmanager
+    def stage(self, name: str) -> Generator[None]:
+        """Add the time spent inside the block to ``name``, even if the block raises."""
+        started = time.monotonic()
+        try:
+            yield
+        finally:
+            self.stages[name] = self.stages.get(name, 0.0) + time.monotonic() - started
+
+    def trace(self, mode: str, fallback_reason: str, total: float) -> AnswerTrace:
+        """The trace so far; ``total`` is never less than the sum of the stages that ran."""
+        seconds = {name: round(self.stages.get(name, 0.0), 3) for name in STAGES}
+        seconds["total"] = round(max(total, sum(seconds.values())), 3)
+        return AnswerTrace(
+            seconds=StageSeconds(**seconds),
+            tokens=TokenUsage(
+                self.input_tokens, self.output_tokens, self.cache_hit, self.cache_miss
+            ),
+            prompt_version=self.prompt_version,
+            model=self.model,
+            mode=mode,
+            fallback_reason=fallback_reason,
+        )
 
     def remaining_input(self, system: str, payload: object) -> int:
         """Bytes still admissible after sending ``system`` and ``payload`` (negative if over)."""
@@ -66,6 +105,8 @@ class ModelSession:
                 self.ctx,
                 LLMRequest(prompt=prompt, system_prompt=system, tools=[], max_output_tokens=limit),
             )
+        self.cache_hit += response.usage.cache_hit
+        self.cache_miss += response.usage.cache_miss
         undercount = max(0, response.usage.prompt - estimate)
         if response.usage.prompt > 0:
             self.input_tokens += response.usage.prompt - estimate

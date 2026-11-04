@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Annotated, Any, ClassVar, Literal, cast
 from urllib.parse import quote
 
+import msgspec
 from arie_core.harness.intent import DialogueTurn
 from arie_core.registry.sync import SyncConfig
 from arie_core.sched import EventLoopLagMonitor, supervised
@@ -306,6 +307,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
                             "accepted_claims": len(excerpts),
                             "answer_relevant": result.answer_relevant,
                             "fallback_reason": result.fallback_reason,
+                            "trace": msgspec.to_builtins(result.trace),
                         },
                     )
                     for excerpt in excerpts:

@@ -7,6 +7,7 @@ import msgspec
 from arie_core.harness.answer import AnswerResult
 from arie_core.harness.intent import DialogueTurn
 from arie_core.harness.reader import EvidenceChunk
+from arie_core.harness.trace import AnswerTrace
 
 
 class EvaluationCase(msgspec.Struct, frozen=True):
@@ -41,6 +42,7 @@ class EvaluationScore(msgspec.Struct, frozen=True):
     task: str = ""
     planner: str = ""
     guardrail: str = ""
+    trace: AnswerTrace = AnswerTrace()
 
 
 def source_truth_cases() -> list[EvaluationCase]:
@@ -302,4 +304,5 @@ def score_answer(
         task,
         planner,
         guardrail,
+        answer.trace,
     )
