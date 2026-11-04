@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,10 +63,12 @@ ANSWER_SLOTS: tuple[AnswerSlot, ...] = (
 )
 
 RETRY_SEC = 300.0
+# A loaded model that times out or fails this many calls in a row reports ``degraded``.
+FAILURE_LIMIT = 3
 
 
 class AnswerModel:
-    """One configured answer-path model: readiness, warm-up and status."""
+    """One configured answer-path model: readiness, warm-up, call outcomes and status."""
 
     def __init__(self, spec: AnswerSlot, model: LocalModel, options: Mapping[str, object]):
         self.spec = spec
@@ -73,6 +76,10 @@ class AnswerModel:
         self.options = dict(options)
         self.ready = False
         self.error = ""
+        # Outcome of the calls made since warm-up, for ``status``.
+        self.failures = 0
+        self.last_error = ""
+        self.last_latency: float | None = None
 
     async def warm(self) -> None:
         """Load the model so the first answer need not download it; retry every 5 minutes."""
@@ -88,19 +95,57 @@ class AnswerModel:
                 await asyncio.sleep(RETRY_SEC)
 
     async def scores(self, *args: object, count: int) -> list[float]:
-        """One score per input; raises while the model is unavailable."""
+        """One score per input; raises while the model is unavailable.
+
+        A failed call counts toward ``FAILURE_LIMIT``. A call the caller abandons at its own
+        deadline counts too: the worker keeps running it, but its result is lost (a
+        cancelled call also arrives here when the request itself is cancelled).
+        """
         if not self.ready:
             raise RuntimeError(f"The {self.spec.slot} model is not ready")
-        return await self.model.scores(self.spec.method, *args, count=count)
+        started = time.monotonic()
+        try:
+            result = await self.model.scores(self.spec.method, *args, count=count)
+        except (TimeoutError, asyncio.CancelledError):
+            self._record(started, f"timed out after {time.monotonic() - started:.1f} s")
+            raise
+        except Exception as exc:
+            self._record(started, str(exc) or type(exc).__name__)
+            raise
+        self._record(started, "")
+        return result
+
+    def _record(self, started: float, error: str) -> None:
+        """Note one call's latency and outcome; an empty ``error`` means it succeeded."""
+        self.last_latency = time.monotonic() - started
+        self.failures = self.failures + 1 if error else 0
+        self.last_error = error
 
     def status(self) -> Document:
-        status = "healthy" if self.ready else "degraded" if self.error else "loading"
-        detail = {
-            "healthy": self.spec.healthy,
-            "loading": f"Loading {self.model.name}; {self.spec.fallback} until then.",
-            "degraded": f"{self.model.name} unavailable ({self.error}); {self.spec.fallback}.",
-        }[status]
-        return {"plugin": self.model.name, "status": status, "detail": detail}
+        name, fallback = self.model.name, self.spec.fallback
+        if not self.ready:
+            if self.error:
+                status, detail = "degraded", f"{name} unavailable ({self.error}); {fallback}."
+            else:
+                status, detail = "loading", f"Loading {name}; {fallback} until then."
+        elif self.failures >= FAILURE_LIMIT:
+            status = "degraded"
+            detail = (
+                f"{name} failed its last {self.failures} calls "
+                f"(last: {self.last_error}); {fallback}."
+            )
+        else:
+            status, detail = "healthy", self.spec.healthy
+        return {
+            "plugin": name,
+            "status": status,
+            "detail": detail,
+            "consecutive_failures": self.failures,
+            "last_error": self.last_error,
+            "last_latency_seconds": None
+            if self.last_latency is None
+            else round(self.last_latency, 3),
+        }
 
 
 class AnswerModels:

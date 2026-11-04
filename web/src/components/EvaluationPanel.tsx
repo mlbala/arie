@@ -16,8 +16,28 @@ const VARIANT_LABEL: Record<EvalResult["variant"], string> = {
   no_reranker: "Without reranker",
 };
 
+/** Answer stages in pipeline order; `total` is left out because it contains the others. */
+const STAGES = ["plan", "vector", "read", "rerank", "write", "tier3", "review"];
+
 function percent(value: number | null | undefined): string {
   return value === null || value === undefined ? "–" : `${Math.round(value * 100)}%`;
+}
+
+/** The stage that took longest, or null when the result has no trace (runs saved before traces existed). */
+function slowestStage(result: EvalResult): { stage: string; seconds: number } | null {
+  const seconds = result.trace?.seconds;
+  if (!seconds) return null;
+  let slowest: { stage: string; seconds: number } | null = null;
+  for (const stage of STAGES) {
+    const value = seconds[stage] ?? 0;
+    if (value > (slowest?.seconds ?? 0)) slowest = { stage, seconds: value };
+  }
+  return slowest;
+}
+
+/** Fell back to excerpts, as opposed to a refusal, which can also carry a reason. */
+function fellBack(result: EvalResult): boolean {
+  return Boolean(result.fallback_reason) && result.mode !== "abstention";
 }
 
 /**
@@ -107,7 +127,10 @@ export function EvaluationPanel({ paperId, ready }: { paperId: string; ready: bo
             </small>
           </p>
           {variants.map((variant) => (
-            <SummaryRow key={variant} label={VARIANT_LABEL[variant]} summary={run.summary[variant]} />
+            <div key={variant}>
+              <SummaryRow label={VARIANT_LABEL[variant]} summary={run.summary[variant]} />
+              <FallbackCounts label={VARIANT_LABEL[variant]} results={run.results.filter((result) => result.variant === variant)} />
+            </div>
           ))}
           {run.results.length > 0 && (
             <ol className="evaluation-results">
@@ -134,7 +157,24 @@ function SummaryRow({ label, summary }: { label: string; summary: EvalSummary | 
   );
 }
 
+/** How many answers fell back to excerpts, by reason; says so when the run did not record reasons. */
+function FallbackCounts({ label, results }: { label: string; results: EvalResult[] }) {
+  if (results.length === 0) return null;
+  const counts = new Map<string, number>();
+  for (const result of results) {
+    if (fellBack(result)) counts.set(result.fallback_reason!, (counts.get(result.fallback_reason!) ?? 0) + 1);
+  }
+  const total = [...counts.values()].reduce((sum, count) => sum + count, 0);
+  const text = results.every((result) => result.fallback_reason === undefined)
+    ? "Fallback reasons were not recorded for this run."
+    : total === 0
+      ? "No answer fell back to excerpts."
+      : `${total} of ${results.length} fell back to excerpts: ${[...counts].map(([reason, count]) => `${reason} ×${count}`).join(", ")}`;
+  return <p className="evaluation-fallbacks" aria-label={`${label} fallbacks`}>{text}</p>;
+}
+
 function ResultRow({ result, showVariant }: { result: EvalResult; showVariant: boolean }) {
+  const slowest = slowestStage(result);
   const icon = result.passed === null ? <ThumbsDown size={13} /> : result.passed ? <CircleCheck size={13} /> : result.kind === "abstain" ? <CircleSlash size={13} /> : <CircleX size={13} />;
   const state = result.passed === null ? "review" : result.passed ? "passed" : "failed";
   const detail = result.error
@@ -153,7 +193,14 @@ function ResultRow({ result, showVariant }: { result: EvalResult; showVariant: b
         <strong>{result.question}</strong>
         {showVariant && <span className="evaluation-variant">{VARIANT_LABEL[result.variant]}</span>}
       </div>
-      <p>{detail}{result.seconds ? ` · ${result.seconds} s` : ""}{result.cited_pages.length ? ` · p. ${result.cited_pages.join(", ")}` : ""}</p>
+      <p>{detail}{result.cited_pages.length ? ` · p. ${result.cited_pages.join(", ")}` : ""}</p>
+      <p className="evaluation-meta">
+        {result.mode && <span>{result.mode}</span>}
+        {result.fallback_reason && <span className="evaluation-fallback">{`${fellBack(result) ? "fallback" : "reason"}: ${result.fallback_reason}`}</span>}
+        <span>{result.reranked ? "reranked" : "not reranked"}</span>
+        {result.seconds ? <span>{`${result.seconds} s`}</span> : null}
+        {slowest && <span>{`slowest: ${slowest.stage} ${slowest.seconds.toFixed(1)} s`}</span>}
+      </p>
       {result.answer && <details><summary>Answer</summary><p>{result.answer}</p></details>}
     </li>
   );

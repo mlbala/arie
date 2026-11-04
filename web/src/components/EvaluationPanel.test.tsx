@@ -39,3 +39,49 @@ it("shows the latest run's scores and starts a comparison run", async () => {
   expect(JSON.parse(String(init?.body))).toEqual({ regenerate: false, compare_reranker: true });
   expect(await screen.findByRole("button", { name: "Evaluating…" })).toBeDisabled();
 });
+
+const slowTrace = (tier3: number, rerank = 0.4) => ({
+  seconds: { plan: 0.5, vector: 0.1, read: 0.2, rerank, write: 2, tier3, review: 0, total: 3 + tier3 },
+  prompt_version: "qa.v1", model: "deepseek-chat",
+});
+
+it("shows why each case fell back, counts the reasons per variant and names the slowest stage", async () => {
+  const base = run.results[0]!;
+  const fellBackCase = (case_id: string, reason: string, tier3: number, variant: "configured" | "no_reranker", reranked: boolean) => ({
+    ...base, variant, case_id, question: `Question ${case_id}`, mode: "source_excerpts", reranked, seconds: 9,
+    fallback_reason: reason, trace: slowTrace(tier3),
+  });
+  const fallbackRun = {
+    ...run,
+    compare_reranker: true,
+    summary: { configured: summary, no_reranker: summary },
+    results: [
+      fellBackCase("a", "entailment_timeout", 6.5, "configured", true),
+      fellBackCase("b", "entailment_timeout", 6.5, "configured", true),
+      fellBackCase("c", "entailment_rejected", 1.2, "configured", true),
+      { ...base, case_id: "d", question: "Question d", mode: "reviewed_answer", fallback_reason: "", reranked: true, seconds: 4, trace: slowTrace(1, 0.1) },
+      { ...base, variant: "no_reranker" as const, case_id: "e", question: "Question e", mode: "abstention", fallback_reason: "not_in_paper", reranked: false, seconds: 2, trace: slowTrace(0, 0) },
+      { ...base, variant: "no_reranker" as const, case_id: "f", question: "Question f", mode: "reviewed_answer", fallback_reason: "", reranked: false, seconds: 4, trace: slowTrace(0.2, 0) },
+    ],
+  };
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ paper_id: "paper-1", cases: [{ case_id: "c1" }], runs: [], latest: fallbackRun, feedback: [] }))));
+  render(<EvaluationPanel paperId="paper-1" ready />);
+  expect(await screen.findByLabelText("As configured fallbacks")).toHaveTextContent("3 of 4 fell back to excerpts: entailment_timeout ×2, entailment_rejected ×1");
+  // A refusal with a reason is not a fallback.
+  expect(screen.getByLabelText("Without reranker fallbacks")).toHaveTextContent("No answer fell back to excerpts.");
+  expect(screen.getAllByText("fallback: entailment_timeout")).toHaveLength(2);
+  expect(screen.getByText("fallback: entailment_rejected")).toBeInTheDocument();
+  expect(screen.getByText("reason: not_in_paper")).toBeInTheDocument();
+  expect(screen.getAllByText("slowest: tier3 6.5 s")).toHaveLength(2);
+  expect(screen.getAllByText("source_excerpts")).toHaveLength(3);
+  expect(screen.getAllByText("not reranked")).toHaveLength(2);
+  // Both variants ran, so each row names its variant.
+  expect(screen.getAllByText("Without reranker", { selector: ".evaluation-variant" })).toHaveLength(2);
+});
+
+it("says so when a run saved before traces existed has no fallback reasons", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ paper_id: "paper-1", cases: [{ case_id: "c1" }], runs: [], latest: run, feedback: [] }))));
+  render(<EvaluationPanel paperId="paper-1" ready />);
+  expect(await screen.findByLabelText("As configured fallbacks")).toHaveTextContent("Fallback reasons were not recorded for this run.");
+  expect(screen.queryByText(/slowest:/)).not.toBeInTheDocument();
+});
