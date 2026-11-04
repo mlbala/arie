@@ -269,7 +269,7 @@ class PaperEvaluations:
 
     async def _execute(self, run: Document, paper: Document, regenerate: bool) -> None:
         paper_id = str(paper["id"])
-        rows = self._chunks(paper)
+        rows = self.chunks(paper)
         cases = [] if regenerate else await self.cases(paper_id)
         if not cases:
             run.update(status="running", message="Writing questions from the paper's own sentences")
@@ -319,6 +319,11 @@ class PaperEvaluations:
             project_root=self.runtime.root,
         )
         cases = [*generated, *fixed_cases(paper_id, rows)]
+        await self.save_cases(paper_id, cases)
+        return cases
+
+    async def save_cases(self, paper_id: str, cases: Sequence[PaperEvalCase]) -> None:
+        """Replace the paper's saved cases; later runs reuse them instead of writing new ones."""
         ctx = self._ctx(f"eval-save:{paper_id}")
         await self.runtime.db.execute(
             ctx, "DELETE FROM arie_eval_cases WHERE paper_id = ?", (paper_id,)
@@ -329,10 +334,9 @@ class PaperEvaluations:
                 "INSERT OR REPLACE INTO arie_eval_cases VALUES (?, ?, ?, ?)",
                 (case.case_id, paper_id, msgspec.json.encode(case).decode(), _now()),
             )
-        return cases
 
     @staticmethod
-    def _chunks(paper: Document) -> list[EvidenceChunk]:
+    def chunks(paper: Document) -> list[EvidenceChunk]:
         paper_id = str(paper["id"])
         return [
             EvidenceChunk(**row)
@@ -470,7 +474,7 @@ class PaperEvaluations:
         if rated[0]["rating"] != "down":
             raise ValueError("Only answers rated down become evaluation cases")
         facts, source = check_feedback_facts(
-            self._chunks(paper), paper_id, key_facts, source_sentence
+            self.chunks(paper), paper_id, key_facts, source_sentence
         )
         sentence = source.text if source else ""
         await self.runtime.db.execute(

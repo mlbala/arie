@@ -1,4 +1,4 @@
-.PHONY: check lint boundaries types test test-unit test-api test-contracts web-check eval-llm eval-paper
+.PHONY: check lint boundaries types test test-unit test-api test-contracts web-check eval-llm eval-paper eval-qasper
 
 # Everything CI runs for Python: lint, import boundaries, strict types, all test suites.
 check: lint boundaries types test
@@ -36,3 +36,9 @@ eval-llm:
 # make eval-paper PAPER=2610.40325 [ARGS="--compare-reranker --regenerate"]
 eval-paper:
 	uv run python -m arie_api.eval_paper $(PAPER) $(ARGS)
+
+# Evaluates answers on the first N papers of Qasper's dev split (imports them from arXiv):
+# make eval-qasper N=30
+N ?= 5
+eval-qasper:
+	uv run python -m arie_api.eval_qasper $(N)

@@ -648,6 +648,14 @@ questions needs an LLM key; answering does not (answers then fall back to excerp
 The last 10 runs per paper are kept. From a terminal:
 `make eval-paper PAPER=<paper_id> ARGS="--compare-reranker"`.
 
+For questions ARIE did not write, `make eval-qasper N=30` imports the first N papers of
+[Qasper](https://allenai.org/data/qasper)'s dev split from arXiv (they join your library)
+and scores strict answers to its questions: extractive-span answers become key facts
+(a span is found in the paper's extracted text ignoring case, punctuation and spacing, and the
+paper's own wording is kept), unanswerable questions must be
+refused, and yes/no and free-form answers are skipped and counted. The dev file is
+downloaded once into `data/eval/qasper/`. Needs network and an LLM key.
+
 ### API
 
 | Endpoint | Purpose |
@@ -673,6 +681,7 @@ The last 10 runs per paper are kept. From a terminal:
 | `make web-check` | `oxlint`, TypeScript and Vitest for `web/` |
 | `make eval-llm` | Source-grounding evaluation against the configured LLM |
 | `make eval-paper PAPER=<id>` | Evaluate answers on one ingested paper (see [Evaluate answers on one paper](#evaluate-answers-on-one-paper)) |
+| `make eval-qasper N=<papers>` | Import the first N Qasper dev papers and score strict answers to their questions |
 
 `make check` covers typo search, exact source offsets, cross-paper isolation,
 fabricated quotes, changed numbers, missing negation, unsupported paraphrases and
