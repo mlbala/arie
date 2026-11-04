@@ -18,7 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Protocol, TypeVar, cast
+from typing import Literal, Protocol, TypeVar, cast
 
 import yaml
 from dotenv import load_dotenv
@@ -153,6 +153,13 @@ class ExplainConfig(BaseModel):
     max_pack_share: float = Field(default=0.6, gt=0.0, le=1.0)
 
 
+class AnswerConfig(BaseModel):
+    """Which answer path a question takes when the request does not say."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    default_mode: Literal["strict", "explain"] = "strict"
+
+
 class ArieConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -165,6 +172,7 @@ class ArieConfig(BaseModel):
     )
     sync: SyncConfig = Field(default_factory=lambda: SyncConfig())
     explain: ExplainConfig = Field(default_factory=ExplainConfig)
+    answer: AnswerConfig = Field(default_factory=AnswerConfig)
 
     def context_tokens_for(self, provider: str) -> int:
         """The context window to plan for with this LLM plugin."""

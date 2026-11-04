@@ -27,6 +27,7 @@ import msgspec
 import yaml
 
 from arie_core.harness.answer import AnswerResult
+from arie_core.harness.explain import ExplainResult
 from arie_core.harness.reader import (
     EvidenceChunk,
     annotate_sections,
@@ -100,6 +101,10 @@ class PaperEvalResult(msgspec.Struct, frozen=True, kw_only=True):
     # The mode the run asked for (``strict`` or ``explain``); ``mode`` above is what the
     # answer turned out to be.
     requested_mode: str = "strict"
+    # Explain mode only (S09): the share of prompt tokens the provider served from its cache
+    # (None when it reported none) and seconds to the first text (None if none arrived).
+    cache_hit_rate: float | None = None
+    first_token_seconds: float | None = None
 
 
 def _normalize(text: str) -> str:
@@ -421,6 +426,95 @@ def score_case(
     )
 
 
+def error_result(
+    case: PaperEvalCase, requested_mode: str, seconds: float, error: str
+) -> PaperEvalResult:
+    """The result of a case whose answer raised or timed out: not passed, nothing shown."""
+    return PaperEvalResult(
+        case_id=case.case_id,
+        question=case.question,
+        kind=case.kind,
+        passed=False if case.kind != "feedback" else None,
+        grounded=False,
+        evidence_hit=False,
+        fact_recall=0.0,
+        abstained=True,
+        mode="error",
+        claims=0,
+        model_calls=0,
+        seconds=round(seconds, 2),
+        error=error,
+        passed_written=False if case.kind == "fact" else None,
+        requested_mode=requested_mode,
+    )
+
+
+def score_explained(
+    case: PaperEvalCase,
+    rows: Sequence[EvidenceChunk],
+    result: ExplainResult,
+    *,
+    seconds: float,
+) -> PaperEvalResult:
+    """Score one explain-mode answer against the paper text; no model judges the result.
+
+    ``fact_recall`` and ``fact_recall_prose`` are both the share of key facts found in the
+    written text, since an explanation has no separate quote. ``grounded`` means every
+    cited chunk is a chunk of this paper and no marker was invented; the citation check that
+    makes it stronger comes with S10. ``evidence_hit`` means the answer cited the chunk that
+    holds the source sentence. An answer counts as abstained when it has no text, so a
+    correct "the paper does not say" explanation fails an abstain case until the judge (S13).
+    """
+    by_id = {row.chunk_id: row for row in rows}
+    cited = [by_id[item.chunk_id] for item in result.citations if item.chunk_id in by_id]
+    grounded = len(cited) == len(result.citations) and not result.unknown_markers
+    failed = result.mode == "explain_failed"
+    written = result.mode in {"explain", "explain_partial"} and bool(result.text.strip())
+    abstained = not written
+    evidence_hit = any(
+        row.chunk_id == case.chunk_id
+        and row.char_start < case.char_end
+        and case.char_start < row.char_end
+        for row in cited
+    )
+    facts = [fact for fact in case.key_facts if fact]
+    text = _normalize(result.text)
+    recall = sum(_normalize(fact) in text for fact in facts) / len(facts) if facts else 0.0
+    if case.kind == "abstain":
+        passed: bool | None = abstained and not failed
+    elif case.kind == "fact":
+        passed = grounded and written and (evidence_hit or recall >= PASS_RECALL)
+    else:
+        passed = None
+    passed_written = grounded and written and recall >= PASS_RECALL if case.kind == "fact" else None
+    tokens = result.trace.tokens
+    served = tokens.cache_hit + tokens.cache_miss
+    return PaperEvalResult(
+        case_id=case.case_id,
+        question=case.question,
+        kind=case.kind,
+        passed=passed,
+        grounded=grounded,
+        evidence_hit=evidence_hit,
+        fact_recall=round(recall, 3),
+        abstained=abstained,
+        mode=result.mode,
+        claims=len(result.citations),
+        model_calls=int(tokens.prompt > 0),
+        seconds=round(seconds, 2),
+        fallback_reason=result.fallback_reason,
+        answer=result.text[:1200],
+        cited_pages=sorted({row.page_start for row in cited}),
+        trace=result.trace,
+        answer_written=written,
+        fact_recall_prose=round(recall, 3),
+        passed_written=passed_written,
+        requested_mode="explain",
+        cache_hit_rate=round(tokens.cache_hit / served, 3) if served else None,
+        first_token_seconds=result.first_token_seconds,
+    )
+
+
 def summarize(results: Sequence[PaperEvalResult]) -> dict[str, object]:
     """Aggregate scored results; feedback cases are counted but never scored."""
     scored = [item for item in results if item.passed is not None]
@@ -439,6 +533,10 @@ def summarize(results: Sequence[PaperEvalResult]) -> dict[str, object]:
         if item.mode in _EXCERPT_MODES
         or (item.fallback_reason and item.mode not in _UNWRITTEN_MODES)
     )
+    first_tokens = sorted(
+        item.first_token_seconds for item in results if item.first_token_seconds is not None
+    )
+    hit_rates = [item.cache_hit_rate for item in results if item.cache_hit_rate is not None]
     traced = [item.trace.seconds for item in results if not item.error and item.trace.seconds.total]
     stage_medians = {
         stage: sorted(getattr(seconds, stage) for seconds in traced)[len(traced) // 2]
@@ -471,6 +569,11 @@ def summarize(results: Sequence[PaperEvalResult]) -> dict[str, object]:
         else None,
         "fallbacks": dict(sorted(fallbacks.items())),
         "median_stage_seconds": stage_medians,
+        # Explain mode only; None for a strict run.
+        "median_first_token_seconds": first_tokens[len(first_tokens) // 2]
+        if first_tokens
+        else None,
+        "mean_cache_hit_rate": round(sum(hit_rates) / len(hit_rates), 3) if hit_rates else None,
         "citation_support": None,
         "win_rate": None,
     }
@@ -482,10 +585,12 @@ __all__ = [
     "PaperEvalResult",
     "catalog",
     "check_feedback_facts",
+    "error_result",
     "feedback_case",
     "fixed_cases",
     "generate_cases",
     "locate_sentence",
     "score_case",
+    "score_explained",
     "summarize",
 ]

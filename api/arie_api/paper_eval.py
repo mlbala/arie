@@ -16,22 +16,27 @@ import logging
 import time
 import uuid
 from collections.abc import Sequence
+from contextlib import aclosing
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 import msgspec
+from arie_core.harness.explain import ExplainResult
 from arie_core.harness.paper_eval import (
     PaperEvalCase,
     PaperEvalResult,
     check_feedback_facts,
+    error_result,
     feedback_case,
     fixed_cases,
     generate_cases,
     locate_sentence,
     score_case,
+    score_explained,
     summarize,
 )
 from arie_core.harness.reader import EvidenceChunk
+from arie_core.harness.session import EXPLAIN_SECONDS
 from arie_core.plugin_api import LLM
 
 if TYPE_CHECKING:
@@ -48,15 +53,6 @@ MODES = ("strict", "explain")
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
-
-
-def require_available_mode(mode: str) -> None:
-    """Raise ``ValueError`` for a mode an evaluation cannot run yet."""
-    if mode not in MODES:
-        raise ValueError(f"mode must be one of {', '.join(MODES)}")
-    if mode == "explain":
-        # Explain mode has no answer path until S09; refuse instead of scoring strict answers.
-        raise ValueError("Explain mode is not available yet")
 
 
 class PaperEvaluations:
@@ -229,7 +225,8 @@ class PaperEvaluations:
     async def _new_run(
         self, paper_id: str, compare_reranker: bool, mode: str
     ) -> tuple[Document, Document]:
-        require_available_mode(mode)
+        if mode not in MODES:
+            raise ValueError(f"mode must be one of {', '.join(MODES)}")
         paper = await self.runtime.get_paper(paper_id)
         if paper is None:
             raise LookupError("Paper not found")
@@ -288,7 +285,12 @@ class PaperEvaluations:
             if item["rating"] == "down"
         ]
         variants = [("configured", True)]
-        if run["compare_reranker"] and self.runtime.models.get("reranker"):
+        # Explain mode has no reranker, so a second variant would repeat the first.
+        if (
+            run["mode"] == "strict"
+            and run["compare_reranker"]
+            and self.runtime.models.get("reranker")
+        ):
             variants.append(("no_reranker", False))
         work = [
             (case, variant, rerank) for case in [*cases, *review] for variant, rerank in variants
@@ -353,6 +355,8 @@ class PaperEvaluations:
         mode: str,
     ) -> PaperEvalResult:
         started = time.monotonic()
+        if mode == "explain":
+            return await self._explain(paper, rows, case, started)
         try:
             async with asyncio.timeout(ANSWER_SECONDS):
                 run = await self.runtime.answer_paper_question(
@@ -362,24 +366,11 @@ class PaperEvaluations:
                     rerank=rerank,
                 )
         except Exception as exc:
-            return PaperEvalResult(
-                case_id=case.case_id,
-                question=case.question,
-                kind=case.kind,
-                passed=False if case.kind != "feedback" else None,
-                grounded=False,
-                evidence_hit=False,
-                fact_recall=0.0,
-                abstained=True,
-                mode="error",
-                claims=0,
-                model_calls=0,
-                seconds=round(time.monotonic() - started, 2),
-                error="Timed out after 25 s"
-                if isinstance(exc, TimeoutError)
-                else type(exc).__name__,
-                passed_written=False if case.kind == "fact" else None,
-                requested_mode=mode,
+            return error_result(
+                case,
+                mode,
+                time.monotonic() - started,
+                "Timed out after 25 s" if isinstance(exc, TimeoutError) else type(exc).__name__,
             )
         return score_case(
             case,
@@ -389,6 +380,27 @@ class PaperEvaluations:
             reranked=run.reading.reranked,
             requested_mode=mode,
         )
+
+    async def _explain(
+        self, paper: Document, rows: Sequence[EvidenceChunk], case: PaperEvalCase, started: float
+    ) -> PaperEvalResult:
+        """Answer one case in explain mode, without chat history, and score the written text."""
+        result: ExplainResult | None = None
+        error = ""
+        try:
+            async with asyncio.timeout(EXPLAIN_SECONDS):
+                stream = self.runtime.explain_paper_question(
+                    f"eval:{case.case_id}", paper, case.question
+                )
+                async with aclosing(stream) as items:
+                    async for item in items:
+                        if isinstance(item, ExplainResult):
+                            result = item
+        except Exception as exc:
+            error = "Timed out" if isinstance(exc, TimeoutError) else type(exc).__name__
+        if result is None:
+            return error_result(case, "explain", time.monotonic() - started, error)
+        return score_explained(case, rows, result, seconds=time.monotonic() - started)
 
     async def _save_run(self, run: Document) -> None:
         ctx = self._ctx(f"eval-run:{run['run_id']}")
@@ -495,4 +507,4 @@ class PaperEvaluations:
             )
 
 
-__all__ = ["MODES", "PaperEvaluations", "require_available_mode"]
+__all__ = ["MODES", "PaperEvaluations"]

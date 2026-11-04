@@ -99,6 +99,8 @@ class ExplainResult(msgspec.Struct, frozen=True, kw_only=True):
     fallback_reason: str = ""
     message: str = ""
     trace: AnswerTrace = AnswerTrace()
+    # Seconds from the start of the answer to the first text; ``None`` if no text arrived.
+    first_token_seconds: float | None = None
 
 
 def load_explain_prompts(project_root: Path) -> ExplainPrompts:
@@ -277,11 +279,14 @@ async def explain_answer(
 
     texts: list[str] = []
     reason = ""
+    first_token: float | None = None
     with session.stage("write"):
         try:
             stream = session.stream(request, input_limit=context_tokens - limit, budget=budget)
             async with aclosing(stream) as deltas:
                 async for text in deltas:
+                    if first_token is None:
+                        first_token = round(time.monotonic() - started, 3)
                     texts.append(text)
                     yield text
         except StreamStopped as exc:
@@ -306,4 +311,5 @@ async def explain_answer(
         paged=paged,
         fallback_reason=reason,
         trace=session.trace(mode, reason, time.monotonic() - started),
+        first_token_seconds=first_token,
     )

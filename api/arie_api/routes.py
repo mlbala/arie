@@ -15,12 +15,14 @@ from urllib.parse import quote
 
 import msgspec
 from arie_core.harness.intent import DialogueTurn
+from arie_core.harness.session import EXPLAIN_SECONDS
 from arie_core.registry.sync import SyncConfig
 from arie_core.sched import EventLoopLagMonitor, supervised
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from arie_api.explain_stream import explain_events
 from arie_api.mcp_server import MCPStatelessServer, verify_scope_handle
 from arie_api.monitor import StorageMonitor
 from arie_api.providers import embedder_options
@@ -47,6 +49,9 @@ class QuestionRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     context: str | None = Field(default=None, max_length=2000)
     history: tuple[QuestionTurn, ...] = Field(default=(), max_length=4)
+    # None takes config ``answer.default_mode``. Explain mode reads the paper's saved chat for
+    # its history and ignores ``history`` and ``context``.
+    mode: Literal["strict", "explain"] | None = None
 
 
 class FeedbackRequest(BaseModel):
@@ -70,7 +75,7 @@ class EvalRunRequest(BaseModel):
     regenerate: bool = False
     # Also answer every question without the reranker, to measure what it changes.
     compare_reranker: bool = False
-    # Which answer path to score. "explain" is refused until it exists.
+    # Which answer path to score.
     mode: Literal["strict", "explain"] = "strict"
 
 
@@ -400,8 +405,38 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
                     message="The answer could not be completed. Please try again.",
                 )
 
+        async def explain_stream() -> AsyncIterator[str]:
+            # The events as streamed (the text saved as one delta), kept for a reload.
+            saved: list[Document] = []
+            turn_id = uuid.uuid4().hex
+            try:
+                async with asyncio.timeout(EXPLAIN_SECONDS):
+                    async for kind, payload in explain_events(
+                        active(), paper, request.question, turn_id, saved
+                    ):
+                        yield _event(kind, **payload)
+                    try:
+                        await active().save_chat_turn(paper_id, request.question, saved, turn_id)
+                    except Exception:
+                        # History is a convenience; the answer was already delivered.
+                        logger.warning("Could not save chat turn for %s", paper_id, exc_info=True)
+            except TimeoutError:
+                yield _event(
+                    "error",
+                    paper_id=paper_id,
+                    message="The explanation deadline was reached. Try a narrower question.",
+                )
+            except Exception:
+                logger.exception("Paper explanation failed for %s", paper_id)
+                yield _event(
+                    "error",
+                    paper_id=paper_id,
+                    message="The answer could not be completed. Please try again.",
+                )
+
+        mode = request.mode or active().config.answer.default_mode
         return StreamingResponse(
-            stream(),
+            explain_stream() if mode == "explain" else stream(),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
