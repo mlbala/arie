@@ -146,6 +146,25 @@ async def test_backfill_search_reembed_and_delete(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_one_paper_is_embedded_only_when_its_vectors_are_not_current(
+    tmp_path: Path,
+) -> None:
+    runtime, embedding = runtime_at(tmp_path)
+    await runtime.initialize()
+    try:
+        await runtime.save_paper(paper("a", PASSAGES))
+        await runtime.ensure_paper_vectors("a")
+        assert len(embedding.calls) == 1
+        await runtime.ensure_paper_vectors("a")
+        assert len(embedding.calls) == 1
+        runtime.embedder_id = "concept:v2"
+        await runtime.ensure_paper_vectors("a")
+        assert len(embedding.calls) == 2
+    finally:
+        runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_embedder_failure_is_reported_and_keyword_search_remains(tmp_path: Path) -> None:
     runtime, embedding = runtime_at(tmp_path)
     await runtime.initialize()

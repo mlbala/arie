@@ -9,7 +9,7 @@ any coding agent. `docs/SPEC.md` describes what the code does; `docs/adr/` says 
 | Path | Holds |
 | --- | --- |
 | `core/arie_core/` | Vendor-free kernel: `harness/` (answer path), `pipeline/` (chunking), `plugin_api/` (slot protocols), `contracts/dtos.py`, `registry/` (config + plugin discovery), `budget/`, `sched/` |
-| `api/arie_api/` | FastAPI app (`routes.py`), runtime layers in `runtime/`, answer models (`models.py`), evals (`paper_eval.py`, `eval_paper.py`, `eval_answers.py`) |
+| `api/arie_api/` | FastAPI app (`routes.py`), runtime layers in `runtime/`, answer models (`models.py`), evals (`paper_eval.py`, `eval_paper.py`, `eval_qasper.py`, `eval_answers.py`) |
 | `worker/arie_worker/` | `SupervisedPool` and spawned worker processes |
 | `plugins/<slot>-<name>/arie_*/` | One package per plugin (LLM, embedder, parser, source, entailment, reranker, db, files, vectors) |
 | `contract_tests/` | Slot compliance tests for every plugin, no network |
@@ -25,6 +25,7 @@ any coding agent. `docs/SPEC.md` describes what the code does; `docs/adr/` says 
 - `make web-check`: oxlint, typecheck, vitest
 - After any route or response-model change: `cd web && npm run generate:api`
 - `make eval-paper PAPER=<id> ARGS="--compare-reranker"` runs the per-paper eval
+- `make eval-qasper N=30` imports Qasper dev papers and runs the outside benchmark (network + LLM key)
 
 ## Invariants (never break; see SPEC section 1)
 

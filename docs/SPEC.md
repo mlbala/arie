@@ -487,6 +487,38 @@ reranker 2), `inter_op_num_threads` = 1, and the CPU memory arena off.
      result mode (8.8). `POST .../eval/runs` takes `mode`, the command line takes
      `--mode strict|explain`. `explain` is refused (409, or exit 2 before the models warm
      up) with "Explain mode is not available yet" until S09 adds the path.
+5. **Qasper slice** (`make eval-qasper N=<papers>`,
+   [api/arie_api/eval_qasper.py](../api/arie_api/eval_qasper.py), conversion in
+   [core/arie_core/harness/qasper.py](../core/arie_core/harness/qasper.py)). An outside
+   benchmark: Qasper's dev split (`qasper-dev-v0.3.json`, from the `.tgz` that the
+   `allenai/qasper` loader names) is downloaded once into `data/eval/qasper/`. The first N
+   paper ids in sorted order are imported as `https://arxiv.org/pdf/<id>` through
+   `start_import` (skipped if already `INDEXED`; a failed import is counted, not replaced),
+   their vectors are built if not current (3 tries, 20 s apart, else the paper is skipped as
+   `vectors_failed` rather than scored on keyword-only retrieval), and the converted cases are saved with `origin: "qasper"`
+   (`save_cases` replaces the paper's cases; a paper that already has cases of another
+   origin is skipped). Then each paper runs once in strict mode, as in item 3.
+   - Conversion (`convert_questions`, pure) looks at all annotators of a question. All
+     `unanswerable`: an `abstain` case. Otherwise the first answer with `extractive_spans`
+     gives a `fact` case whose key facts are its first 3 distinct spans. A span is matched
+     against one chunk of the paper as ARIE extracted it on letters and digits only (case,
+     punctuation, whitespace and ligatures ignored) and must have 3 or more of them; the key
+     fact stored is the paper's own text from the first to the last matched character
+     (whitespace collapsed), so `fact_recall` finds it verbatim in an answer that quotes the
+     paper. A span with no match drops the case. Citation markers Qasper leaves in its spans
+     (`BIBREF13`, `lang2011unsupervised`) never match. Yes/no, free-form and empty answers are
+     skipped. The counts are `questions`, `fact`, `abstain`, `skipped_yes_no`,
+     `skipped_free_form`, `skipped_empty`, `dropped_span_too_short` and
+     `dropped_span_not_in_text`.
+   - Qasper cases carry no source sentence (`chunk_id` empty), so `evidence_hit` is always
+     false for them and `passed` rests on fact recall; read `passed_written` and
+     `fact_recall_prose` for the answer-level result.
+   - Output: one JSON line per answer (with `paper_id`), then a last line shaped like
+     `eval_paper`'s (`status`, `settings`, `summary` keyed by variant) plus `papers`
+     (`evaluated`, `import_failed`, `vectors_failed`, `no_cases`, `has_other_cases`,
+     `run_failed`) and
+     `conversion`. Exit 1 if no paper was evaluated or a run did not complete; failed
+     cases do not change the exit code, since this is a baseline, not a gate.
 
 A fallback answer made of exact excerpts can still pass: excerpts are grounded and may
 quote the source sentence. So a run where Tier 3 always times out still scores whether

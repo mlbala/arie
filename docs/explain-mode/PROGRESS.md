@@ -5,12 +5,15 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 
 ## Current state
 
-- Last done: S04 (2026-11-04)
-- Next: S05
+- Last done: S05 (2026-11-04)
+- Next: S06
 - Default answer mode: strict
 - Baseline (strict, before changes): paper 2610.40325, arie.yaml llm = deepseek, one run, 11 cases per variant.
   configured (reranker on): passed 9/11 (0.818), fact recall 0.688, evidence hit 0.625, grounded 1.0, median 6.18 s.
   no_reranker: passed 11/11, fact recall 1.0, evidence hit 1.0, grounded 1.0, median 3.35 s.
+- Qasper strict baseline (S05): Qasper dev, first 30 papers, arie.yaml llm = deepseek, embedder = fastembed (BAAI/bge-small-en-v1.5), reranker on, one run, 49 cases (46 fact, 3 abstain).
+  passed 22/49 (0.449; 22/46 fact, 0/3 abstain), passed_written 15/46 (0.326), fact recall 0.438, fact recall prose 0.297, grounded 1.0, evidence hit n/a (0 by design), median 4.41 s.
+  fallbacks 9: entailment_rejected 5, incomplete_coverage 2, question_not_answered 2. Embedder was fastembed, not Gemini, so compare later runs only with the same embedder.
 - Latest gate numbers: none
 
 ## Open issues
@@ -24,6 +27,10 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 - `EvaluationPanel` shows only the latest run (or the one just started). `overview.runs` lists earlier runs without results; a run picker would need `getEvalRun` per run.
 - Eval results have two `mode` fields: `mode` is the answer's own result mode (`source_excerpts`, ...) and `requested_mode` is the run's `strict|explain`. The session file said "store `mode` per result", which would have overwritten the first. Old saved runs lack the S04 fields (`answer_written`, `fact_recall_prose`, `passed_written`, `requested_mode`) and the panel does not show them yet.
 - The panel's fallback count (S03) needs a `fallback_reason`; `summarize` also counts excerpt answers without one as `unspecified`, so the two can differ on runs where the reason was not recorded.
+- A worker exception that cannot be unpickled (for example `httpx.HTTPStatusError`) reaches the caller as `BrokenProcessPool` and hides the real cause; the Gemini 429 in S05 was only found by calling the embedder in-process. Make plugin errors picklable or wrap them in the pool.
+- Qasper spans now match on letters and digits (case, punctuation, spacing, ligatures ignored) and the paper's own text becomes the key fact. 13 of 94 questions are still dropped; in the N=5 sample those held Qasper citation markers (`BIBREF13`, `lang2011unsupervised`) that never match PDF text. Stripping `BIBREF\d+` before matching would keep more; not done because it was not asked for.
+- Qasper fact recall is exact text containment of the span, so a correct answer worded differently scores 0. Read `fact_recall_prose` as a lower bound; the judge (S13) is the fix. Only 3 abstain cases (all answered), too few to read.
+- The embedder is now fastembed in `arie.yaml` (Gemini free tier hit 1000 requests a day). That made every library paper stale: about 2 of 420 were re-embedded before the API was stopped, at about 1 paper a minute on 1 thread (about 7 hours in all; `threads: 8` under `embedders.fastembed` would be faster). Until the API runs its backfill, chat on those papers is keyword-only. The 30 Qasper papers have fastembed vectors and joined the library.
 - The kit re-added `AGENTS.md` (CLAUDE.md imports it) although the README had become the canonical doc. Decide later whether to keep both.
 
 ## Log
@@ -84,3 +91,12 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 - Numbers: 246 core (+5) + 19 api (+2) + 44 contract tests pass; 43 web tests. No eval run (needs a key); S05 records the first answer-level numbers.
 - Open: see Open issues (two `mode` fields, panel does not show the new scores).
 - Next: S05.
+
+### S05: Qasper slice and strict baseline (2026-11-04)
+- Done: `make eval-qasper N=<papers>` (`api/arie_api/eval_qasper.py`, pure conversion in `core/arie_core/harness/qasper.py`): downloads Qasper dev once, imports the first N papers, converts questions to `origin: "qasper"` cases, runs them in strict mode. Spans match on letters and digits only and the key fact is the paper's own text. `save_cases`, `chunks` (public) and `ensure_paper_vectors` added; a paper whose vectors fail 3 times is skipped as `vectors_failed`. Embedder switched to fastembed in `arie.yaml` (separate commit).
+- Decisions: abstain only if every annotator says unanswerable; fact case from the first extractive answer (3 spans, 3+ letters or digits); no evidence offsets, so `evidence_hit` is 0 and `passed` rests on recall; exit 0 once a paper is evaluated (a baseline, not a gate). The session file said `source`; the struct field is `origin`.
+- Files: core/arie_core/harness/qasper.py, api/arie_api/{eval_qasper,paper_eval,runtime/vectors}.py, tests in core/tests/{test_qasper,test_vector_search}.py and api/tests/test_eval_qasper.py, Makefile, README.md, AGENTS.md, arie.yaml, docs/SPEC.md §10, .claude/skills/arie-session/reference.md
+- Checks: make check ✓ (252 core, 23 api, 44 contract) · make web-check n/a
+- Numbers: 30 papers: 23 evaluated, 7 had no cases, 0 import or vector failures. 94 questions: 46 fact, 3 abstain, 13 dropped (span not in text), 16 yes/no and 16 free-form skipped. Results under Current state.
+- Open: see Open issues (worker errors that cannot be unpickled, remaining dropped spans, exact-match recall, library re-embedding).
+- Next: S06.

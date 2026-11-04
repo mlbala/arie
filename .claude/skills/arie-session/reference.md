@@ -47,6 +47,7 @@ drift; grep the symbol, then read a range.
 - Runner and storage: `PaperEvaluations` (`serve`, `save_feedback`) in `api/arie_api/paper_eval.py`
 - Question catalog and scoring: `catalog` and scorers in `core/arie_core/harness/paper_eval.py`
 - CLI: `api/arie_api/eval_paper.py`; fixed synthetic cases: `api/arie_api/eval_answers.py`
+- Qasper slice: CLI `api/arie_api/eval_qasper.py`; pure conversion (`convert_questions`) in `core/arie_core/harness/qasper.py`
 - Rating route: `PUT /v1/papers/{id}/chat/{turn_id}/feedback` in `routes.py`
 
 ## Web

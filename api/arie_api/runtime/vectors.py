@@ -132,6 +132,12 @@ class VectorIndex(LibraryStore):
                 pending.append(str(row["paper_id"]))
         return pending, len(rows)
 
+    async def ensure_paper_vectors(self, paper_id: str) -> None:
+        """Index one paper's vectors unless they are already current for this embedder."""
+        pending, _ = await self._vector_backlog(context("vector-backlog", 10.0))
+        if paper_id in pending:
+            await self.index_paper_vectors(paper_id)
+
     async def index_paper_vectors(self, paper_id: str) -> None:
         """Replace one paper's vectors in batches, then record the embedder and revision.
 
