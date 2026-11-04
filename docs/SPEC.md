@@ -33,7 +33,7 @@ from that paper. Five invariants hold for all code, plugins included:
 | ID | Invariant | Where it is enforced |
 | --- | --- | --- |
 | I1 | **Paper isolation.** No other paper's text can reach an answer. | `paper_id` is bound in Python and never appears in model input or tool schemas. Every row from chunks, vectors, the reranker pool and history is filtered by `paper_id` again (`research.py`, `rerank.py`, `answer.py`, `vectors.semantic_search`). |
-| I2 | **No unverified claims.** Strict mode: every shown claim cites a quote that passes the verifier, or the answer abstains or falls back to exact excerpts. Explain mode ([ADR 0010](adr/0010-explain-mode-paper-in-the-prompt.md)) amends this: every sentence is cited or marked background, and every citation is checked. An unsupported sentence is flagged, not hidden. | Strict: `compose_answer` in `core/arie_core/harness/answer.py`. Explain: `explain_answer` in `core/arie_core/harness/explain.py` maps `[cN]` markers to chunks; the route reports each citation with `checked: false` until the citation checks come in S10. |
+| I2 | **No unverified claims.** Strict mode: every shown claim cites a quote that passes the verifier, or the answer abstains or falls back to exact excerpts. Explain mode ([ADR 0010](adr/0010-explain-mode-paper-in-the-prompt.md)) amends this: every sentence is cited or marked background, and every citation is checked. An unsupported sentence is flagged, not hidden. | Strict: `compose_answer` in `core/arie_core/harness/answer.py`. Explain: `explain_answer` in `core/arie_core/harness/explain.py` maps `[cN]` markers to chunks; `check_answer` in `core/arie_core/harness/citations.py` judges every sentence (8.9), and the route reports each citation with `checked` true only if no sentence that cites it is flagged. |
 | I3 | **Bounded execution.** Per question in strict mode: 3 reading steps, 3 model calls, 12,000 input tokens, 700 output tokens, 25 s. Explain mode has its own budgets (ADR 0010): one streaming call, first text within 10 s, at most 15 s between texts, 90 s in all, 600, 1,200 or 2,500 output tokens (8.9). | `BudgetHandle`, `ModelSession` (`call`, and `stream` for explain mode), the route's `asyncio.timeout(25.0)`; explain requests use `explain_context` and `EXPLAIN_SECONDS` (8.9) |
 | I4 | **Clean ingestion.** Source records are validated, downloads go only to declared hosts, PDFs are size- and type-checked, and writes are atomic. | `normalize_scraper_output`, `IngestionPipeline.download_pdf` |
 | I5 | **No vendor code in the core.** `arie_core` imports no SDK or plugin; plugins import only `arie_core.plugin_api` and `arie_core.contracts`. | `lint-imports` in `make check` |
@@ -447,6 +447,8 @@ generator. It yields text deltas (`str`), then one `ExplainResult`:
      listed in `unknown_markers`.
    - The trace records stages `plan`, `read` (paged pack only) and `write` (the stream, as
      wall time), with `prompt_version` `explain.v1`.
+   - `checks` is the citation check below, run once the stream has ended and empty when no
+     text arrived.
 
 | `mode` | Meaning |
 | --- | --- |
@@ -466,6 +468,36 @@ generator. It yields text deltas (`str`), then one `ExplainResult`:
 | `model_unavailable`, `call_budget` | No model is set, or this session already streamed. |
 | `unexpected_tools` | A delta carried tool calls. |
 | A `failure_reason` | A provider error, for example `provider_http_429`. |
+
+**Citation checks** (`check_answer` in
+[core/arie_core/harness/citations.py](../core/arie_core/harness/citations.py)). Free and
+instant, no model call. They compare each sentence with the raw text of the chunks it cites,
+never the pack text (which escapes literal markers). Only chunks of the bound paper that the
+model saw are sources (I1), so in a paged pack a marker for a chunk left out is invalid.
+
+- **Sentences.** The answer is Markdown. Fenced code blocks, headings, rules and table
+  separators are skipped. Each list item and table row is its own block, a paragraph is its
+  consecutive lines. A sentence ends at `.`, `!` or `?` before a space unless the word before
+  is an abbreviation (`e.g.`, `Fig.`, `et al.`) or the next word is lowercase. Markers after
+  the full stop stay with the sentence before. Each one records its character offsets.
+- **Status.** `cited_ok` (has markers, no flag), `flagged` (one or more reasons) or
+  `background` (no marker and no number).
+
+| Reason | Flagged when |
+| --- | --- |
+| `invalid_marker` | A marker names no chunk in the pack the model saw. |
+| `number_not_in_source` | A number in the sentence is in none of the cited chunks (`92.10` and `92.1` are equal; thousands commas are ignored). |
+| `lost_qualifier` | The cited sentence the claim restates has a negation, hedge or "only" word that the claim lacks. Same word lists as `preserves_anchors` (`lost_qualifier` in `verifier.py`). The restated sentence is the one holding at least half of the claim's content stems, at least 3; with none, the check is skipped, so a claim that is too short or too free is not judged. |
+| `uncited_number` | The sentence has no marker and states a number. |
+
+- **Summary.** `cited_ok`, `flagged`, `background`, `cited` (sentences with a marker),
+  `valid_rate` (`cited_ok / cited`, `null` if none are cited) and `background_share`
+  (`background` over all sentences, `null` if none). An `uncited_number` sentence counts in
+  `flagged` but not in `cited`, so it lowers neither rate.
+- **Limits.** The checks are deterministic evidence, not proof. A paraphrase can be flagged
+  (an "only" word in the paper's sentence and a different one in the answer), a sentence can
+  pass with the right numbers and a wrong claim, and new absolutes ("always") are not
+  looked for. The entailment grounding check (S12) and the judge (S13) cover that.
 
 **Route.** `ChatHistory.explain_paper_question` is what the route and the evaluation call.
 It binds `paper["id"]`, loads the stored pack (`ensure_pack`) and gives the request its own
@@ -489,13 +521,14 @@ because the trace is complete only when the stream has ended:
 | `progress` | `status: "reading"`, `message`. Not saved. |
 | `delta` | `text`: one piece of the answer, as the provider sent it. Saved as one `delta` holding all the text. |
 | `answer` | `mode`: `explained_answer`, or `abstention` when no text arrived. `heading`, `prompt_version` (`explain.v1`) and `evaluation`: `task: "explain"`, `depth`, `paged`, `guardrail`, `complete` (false for a partial answer), `fallback_reason`, `unknown_markers`, `first_token_seconds` and the `trace` (8.8). |
-| `citations` | Only if text arrived. `citations`: one `{marker, chunk_id, page, char_start, char_end, checked}` per marker that names a chunk of this paper, in order of first use. `page` and the offsets are the whole chunk's; `checked` is `false` until the quote check (S10) narrows the span. |
+| `citations` | Only if text arrived. `citations`: one `{marker, chunk_id, page, char_start, char_end, checked}` per marker that names a chunk of this paper, in order of first use. `page` and the offsets are the whole chunk's (the answer cites chunks, not quotes). `checked` is `true` when at least one sentence cites the marker and none of them is flagged. |
+| `checks` | Only if text arrived, after `citations`. `sentences`: one `{start, end, text, status, markers, reasons}` per sentence (`start` and `end` are character offsets into the joined `delta` text), plus `cited_ok`, `flagged`, `background`, `cited`, `valid_rate` and `background_share` (the citation checks above). |
 | `abstention` | Only if no text arrived. `message` says why (no key, a timeout, a blocked question). |
 | `done` | `turn_id`, `status` (`complete`, `partial` or `failed`), `mode`, `claims_count` (citations), `tool_calls` 0, `input_tokens`, `output_tokens`, `usage` (`prompt`, `completion`, `cache_hit`, `cache_miss`) and `first_token_seconds`. |
 
 `error` is sent instead for a request deadline or an unexpected exception, as in strict
-mode. The saved turn holds `delta`, `answer`, `citations` or `abstention`, and `done`, so a
-reload renders it like the live stream. Strict mode's events are unchanged.
+mode. The saved turn holds `delta`, `answer`, `citations` and `checks`, or `abstention`, and
+`done`, so a reload renders it like the live stream. Strict mode's events are unchanged.
 
 ## 9. Worker pools
 
@@ -596,8 +629,9 @@ reranker 2), `inter_op_num_threads` = 1, and the CPU memory arena off.
      `fallbacks` (count per `fallback_reason`; an excerpt answer with no reason counts as
      `unspecified`, a refusal's reason is not a fallback), `median_stage_seconds` (the
      upper median of each trace stage and `total` over answers that have a trace) and, for
-     explain runs, `median_first_token_seconds` and `mean_cache_hit_rate` (`null` for
-     strict runs).
+     explain runs, `median_first_token_seconds`, `mean_cache_hit_rate`,
+     `mean_citation_valid_rate` and `mean_background_share` (all `null` for strict runs, and
+     the last two ignore answers where the rate is undefined).
    - **Mode.** A run records the answer path it scored: `mode` (`strict` or `explain`) on
      the run and `requested_mode` on each result; `mode` on a result stays the answer's own
      result mode (8.8). `POST .../eval/runs` takes `mode`, the command line takes
@@ -605,12 +639,15 @@ reranker 2), `inter_op_num_threads` = 1, and the CPU memory arena off.
    - **Explain runs** answer each case through `explain_paper_question` with no history and
      score it with `score_explained`. `fact_recall` and `fact_recall_prose` are both the share
      of key facts found in the answer text. `grounded` means every cited chunk belongs to the
-     paper and no marker was invented (the stronger check is S10). `evidence_hit` means the
+     paper and no marker was invented. `citation_valid_rate` and `background_share` come from
+     the citation checks (8.9) and do not change `passed`. `evidence_hit` means the
      answer cited the chunk of the source sentence. `passed` and `passed_written` follow the
      strict rules with those scores. An answer with no text counts as abstained, so a correct
      "the paper does not say" explanation fails a refusal case until the judge exists (S13);
      a failed call never passes. Each result stores `cache_hit_rate` (cache hits over cache
-     hits plus misses, `null` if the provider reported neither) and `first_token_seconds`.
+     hits plus misses, `null` if the provider reported neither), `first_token_seconds`,
+     `citation_valid_rate` (the share of sentences with a marker that have no flag, `null` if
+     none has one) and `background_share`.
      `compare_reranker` is ignored: explain mode has no reranker, so there is one variant.
 5. **Qasper slice** (`make eval-qasper N=<papers>`,
    [api/arie_api/eval_qasper.py](../api/arie_api/eval_qasper.py), conversion in

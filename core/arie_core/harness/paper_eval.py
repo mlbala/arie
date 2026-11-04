@@ -105,6 +105,11 @@ class PaperEvalResult(msgspec.Struct, frozen=True, kw_only=True):
     # (None when it reported none) and seconds to the first text (None if none arrived).
     cache_hit_rate: float | None = None
     first_token_seconds: float | None = None
+    # Explain mode only (S10), from the deterministic citation checks: the share of sentences
+    # with a marker that have no flag, and the share of all sentences that are background.
+    # None when the answer has no cited sentence or no sentence at all.
+    citation_valid_rate: float | None = None
+    background_share: float | None = None
 
 
 def _normalize(text: str) -> str:
@@ -460,10 +465,12 @@ def score_explained(
 
     ``fact_recall`` and ``fact_recall_prose`` are both the share of key facts found in the
     written text, since an explanation has no separate quote. ``grounded`` means every
-    cited chunk is a chunk of this paper and no marker was invented; the citation check that
-    makes it stronger comes with S10. ``evidence_hit`` means the answer cited the chunk that
-    holds the source sentence. An answer counts as abstained when it has no text, so a
-    correct "the paper does not say" explanation fails an abstain case until the judge (S13).
+    cited chunk is a chunk of this paper and no marker was invented; the sentence checks
+    (S10) are reported apart as ``citation_valid_rate`` and ``background_share`` and do not
+    change ``passed``, because a paraphrase can be flagged. ``evidence_hit`` means the answer
+    cited the chunk that holds the source sentence. An answer counts as abstained when it has
+    no text, so a correct "the paper does not say" explanation fails an abstain case until the
+    judge (S13).
     """
     by_id = {row.chunk_id: row for row in rows}
     cited = [by_id[item.chunk_id] for item in result.citations if item.chunk_id in by_id]
@@ -512,6 +519,8 @@ def score_explained(
         requested_mode="explain",
         cache_hit_rate=round(tokens.cache_hit / served, 3) if served else None,
         first_token_seconds=result.first_token_seconds,
+        citation_valid_rate=result.checks.valid_rate,
+        background_share=result.checks.background_share,
     )
 
 
@@ -537,6 +546,10 @@ def summarize(results: Sequence[PaperEvalResult]) -> dict[str, object]:
         item.first_token_seconds for item in results if item.first_token_seconds is not None
     )
     hit_rates = [item.cache_hit_rate for item in results if item.cache_hit_rate is not None]
+    valid_rates = [
+        item.citation_valid_rate for item in results if item.citation_valid_rate is not None
+    ]
+    background = [item.background_share for item in results if item.background_share is not None]
     traced = [item.trace.seconds for item in results if not item.error and item.trace.seconds.total]
     stage_medians = {
         stage: sorted(getattr(seconds, stage) for seconds in traced)[len(traced) // 2]
@@ -574,6 +587,12 @@ def summarize(results: Sequence[PaperEvalResult]) -> dict[str, object]:
         if first_tokens
         else None,
         "mean_cache_hit_rate": round(sum(hit_rates) / len(hit_rates), 3) if hit_rates else None,
+        "mean_citation_valid_rate": round(sum(valid_rates) / len(valid_rates), 3)
+        if valid_rates
+        else None,
+        "mean_background_share": round(sum(background) / len(background), 3)
+        if background
+        else None,
         "citation_support": None,
         "win_rate": None,
     }

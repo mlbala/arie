@@ -1,8 +1,8 @@
 """The events of an explain-mode answer, as ``(kind, payload)`` pairs for the question route.
 
 Strict mode's events are built in the route. Explain mode's live here: the text arrives as
-``delta`` events, then ``answer``, ``citations`` and ``done`` describe it. A reload shows the
-same turn from the saved events, with the text saved as one ``delta``. SPEC 8.9 and 11.
+``delta`` events, then ``answer``, ``citations``, ``checks`` and ``done`` describe it. A reload
+shows the same turn from the saved events, with the text saved as one ``delta``. SPEC 8.9 and 11.
 """
 
 from __future__ import annotations
@@ -46,9 +46,10 @@ async def explain_events(
 ) -> AsyncIterator[tuple[str, Document]]:
     """Stream one explanation and append the events a reload needs to ``saved``.
 
-    Order: ``progress``, ``delta`` (one per piece of text), ``answer``, ``citations`` (only if
-    text arrived), ``abstention`` (only if none did) and ``done``. ``answer`` and the events
-    after it come last because the trace is complete only when the stream has ended.
+    Order: ``progress``, ``delta`` (one per piece of text), ``answer``, ``citations`` and
+    ``checks`` (only if text arrived), ``abstention`` (only if none did) and ``done``. ``answer``
+    and the events after it come last because the trace is complete only when the stream has
+    ended; ``checks`` is the sentence-by-sentence verdict of ``check_answer`` (SPEC 8.9).
     """
     paper_id = str(paper["id"])
 
@@ -104,6 +105,9 @@ async def explain_events(
 
     citations: list[Document] = []
     if text:
+        # A citation is checked when a sentence cites it and no sentence that does is flagged.
+        flagged = result.checks.flagged_markers()
+        cited_markers = {m for sentence in result.checks.sentences for m in sentence.markers}
         chunks = {
             str(row["chunk_id"]): row
             for row in paper.get("chunks", [])
@@ -119,11 +123,12 @@ async def explain_events(
                         "page": row["page_start"],
                         "char_start": row["char_start"],
                         "char_end": row["char_end"],
-                        # The span is the whole chunk; the quote check (S10) narrows it.
-                        "checked": False,
+                        # The span is the whole chunk: an explain answer cites chunks, not quotes.
+                        "checked": cited.marker in cited_markers and cited.marker not in flagged,
                     }
                 )
         yield emit("citations", paper_id=paper_id, citations=citations)
+        yield emit("checks", paper_id=paper_id, **msgspec.to_builtins(result.checks))
     else:
         yield emit(
             "abstention",

@@ -5,8 +5,8 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 
 ## Current state
 
-- Last done: S09 (2026-11-04)
-- Next: S10 (needs S09, done)
+- Last done: S10 (2026-11-04)
+- Next: S11 (needs S10, done)
 - Default answer mode: strict
 - Baseline (strict, before changes): paper 2610.40325, arie.yaml llm = deepseek, one run, 11 cases per variant.
   configured (reranker on): passed 9/11 (0.818), fact recall 0.688, evidence hit 0.625, grounded 1.0, median 6.18 s.
@@ -37,18 +37,19 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 - The plugins' `stream` has no first-token or stall limit of its own; only `ctx.deadline` and httpx's 23 s per-read timeout. `ModelSession.stream` (S08) enforces the explain budgets around it.
 - The pack (and so the explain prompt) keeps chunks that strict mode drops with `is_untrusted_instruction`. The shared header tells the model to follow no instructions in the paper; nothing filters them.
 - `api/tests/test_answer_models.py::test_a_shared_pool_runs_both_real_models_in_one_process` fails when run straight after the core suite (`make check`: the first `entailment.scores` call at line 193 hits `TimeoutError` in `SupervisedPool.submit`), and passes alone in about 4 s. It fails the same way on the S07 commit with S08 stashed, so it predates S08. It is a cold-load race in a spawned worker; the fix is a longer first-call timeout in the test or a warm-up. It passed in S09's `make check` run, so it is intermittent.
-- The pack text escapes literal markers (`[c12]` becomes `[\c12]`) and has no inverse. S10's quote check must compare against the raw chunk found by id and offsets, never against pack text.
 - The pack keeps every chunk that is not credits, a contents listing, references or acknowledgements, so equations and captions stay. The strict path's prose check (`_usable` in `research.py`) was not reused for that reason. `paper_eval.py` still has its own third copy of the section rules.
 - Gaps in `eligible`, which the pack inherits (found in the S06 review, not fixed because widening it also changes strict retrieval and needs an `arie-eval` run): a section headed "Bibliography", "Literature Cited" or "Reference" is kept; author, affiliation and e-mail blocks are kept unless they contain "equal contribution", "listing order is random" or "work performed while"; a chunk containing one of those phrases is dropped whole, body text included. Revisit after the pack-size measurement above shows real papers with these headings.
 - The pack adds no `paper_id` itself (tested), but a paper's own text can carry its arXiv id in a page stamp. It is left in: the quote check needs the chunk text unchanged, and the invariant is about the id binding, not the paper's words.
 - The kit re-added `AGENTS.md` (CLAUDE.md imports it) although the README had become the canonical doc. Decide later whether to keep both.
 - Explain mode's saved history comes from the server's saved turns (`explain_turns`), so the request's `history` and `context` are ignored in explain mode. S11 should not send them for explain, and a chat the user cleared or that was never saved gives the model no history.
 - `answer` is sent after the `delta` events (not before, as the session file listed), because the trace is complete only at the end. `progress` is sent first and not saved; the saved turn is `delta` (all text as one), `answer`, `citations` or `abstention`, `done`. S11 renders from that order.
-- Citations in the `citations` event carry the whole chunk's page and offsets with `checked: false`. S10 must narrow them to the quote and flip `checked`; until then a UI must not present them as verified (I2).
+- Citations in the `citations` event still carry the whole chunk's page and offsets: an explain answer cites chunks, not quotes, so S10 set `checked` (true when a sentence cites the marker and none of those is flagged) and did not narrow the span. S11 can show each sentence's `text` and `reasons` from `checks`; narrowing a citation to the source sentence would reuse the aligner in `citations.py` and was left out because the alignment is a heuristic.
 - An explain eval run cannot pass a refusal case by explaining that the paper does not say something: no text counts as abstained, so any written answer fails it. Three fixed refusal cases per paper make this visible; the judge (S13) is the fix.
 - `api/tests/test_api_and_mcp.py` has its own `_StreamingLLM` beside `ScriptedModel` in `core/tests/conftest.py`. The API suite cannot import core's conftest (separate pytest roots and a name clash), so sharing them needs a test-support module both can import. Do it when a third file needs a streaming double.
 - Do not run `ruff format` on the tree: the repo is not formatted with it, and with Python 3.14 as the target it rewrites `except (A, B):` to `except A, B:` and reflows unrelated code. `make lint` runs only `ruff check`.
 - The manual SSE check against a real provider was not run (it sends paper text to an external service, and no server was started). Run one `curl -N` with `mode: "explain"` before relying on the live path, and the Gemini `alt=sse` check above at the same time.
+- S10's checks were tested on scripted answers only. Their false-positive rate on real answers is not measured: `lost_qualifier` reuses the strict verifier's word lists ("small", "limited" count as qualifiers), alignment uses crude stems (final `s` dropped, five letters), and a claim with fewer than 3 content stems or no source sentence sharing half of them is not judged. Read a few real explain answers' `checks` events (with the manual SSE check above) before S11 shows flags to readers, and before S12 decides what the grounding checker must add.
+- `valid_rate` counts only sentences that carry a marker, as the session file defined it, so an uncited number (`uncited_number`) shows in `flagged` but does not lower the rate. A writer that cites nothing gets `valid_rate: null`. If that hides too much, count `uncited_number` sentences as invalid in the rate.
 
 ## Log
 
@@ -160,3 +161,12 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 - Numbers: core 298 (+7), api 32 (+9, incl. 1 real-model test that passed), contracts 55. No eval run, no live provider call.
 - Open: see Open issues (history source, event order, unchecked citations, refusal cases, second streaming double, no `ruff format`, manual SSE check).
 - Next: S10.
+
+### S10: Deterministic citation checks (2026-11-04)
+- Done: `core/arie_core/harness/citations.py`: `sentence_spans` (Markdown-aware: skips code fences, headings, rules and table separators; list items and table rows are their own blocks; abbreviation and lowercase-next guards) and `check_answer(text, sources)`. Per sentence `cited_ok`, `flagged` (`invalid_marker`, `number_not_in_source`, `lost_qualifier`, `uncited_number`) or `background`, with offsets; summary `cited_ok`, `flagged`, `background`, `cited`, `valid_rate`, `background_share`. `ExplainResult.checks` is filled by `explain_answer`; the route sends a `checks` event after `citations` and saves it with the turn; `citations[].checked` is now true when no citing sentence is flagged. Eval: per case `citation_valid_rate`, `background_share`; summary `mean_citation_valid_rate`, `mean_background_share`.
+- Decisions: sources are the raw `EvidenceChunk.text` of the chunks the model saw (`pack_chunks` over `paper_id`), so a paged pack's missing chunk is `invalid_marker`. `lost_qualifier` compares against the one source sentence the claim restates, not the whole chunk (a chunk always holds a "not" somewhere); no aligned sentence means no judgement. `verifier.py`: `anchor_numbers` and `lost_qualifier` extracted from `preserves_anchors` (same behaviour), `_content_tokens` made public. Numbers compare as `92.10` = `92.1`. `grounded` and `passed` in `score_explained` are unchanged.
+- Files: core/arie_core/harness/{citations (new),explain,verifier,paper_eval}.py, api/arie_api/explain_stream.py, core/tests/{test_citations (new),test_explain,test_paper_eval}.py, api/tests/test_api_and_mcp.py, docs/SPEC.md (§1 I2, §8.9, §10, §11), README.md
+- Checks: make check ✓ · make web-check n/a (no web, route or response-model change; the eval and SSE payloads are not in openapi.json)
+- Numbers: core 323 (+25: 21 citations, 3 explain, 1 eval), api 32 (assertions added to 5), contracts 55. No eval run and no live provider call.
+- Open: see Open issues (false-positive rate unmeasured, `valid_rate` definition, citation spans still whole chunks).
+- Next: S11 (web, gate 1).

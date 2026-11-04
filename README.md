@@ -663,7 +663,7 @@ downloaded once into `data/eval/qasper/`. Needs network and an LLM key.
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /v1/papers`, `GET /v1/papers/{id}` | Library and one paper |
-| `POST /v1/papers/{id}/questions` | Ask a question; answers stream as server-sent events (`progress`, `answer`, `claim`, `abstention`, `done`, `error`). Body `mode` is `strict` (default) or `explain`, which streams `delta` text and a `citations` event instead of `claim`s |
+| `POST /v1/papers/{id}/questions` | Ask a question; answers stream as server-sent events (`progress`, `answer`, `claim`, `abstention`, `done`, `error`). Body `mode` is `strict` (default) or `explain`, which streams `delta` text, then `citations` and `checks` (a verdict per sentence) instead of `claim`s |
 | `GET /v1/papers/{id}/pdf`, `.../pages/{n}`, `.../chat` | Original PDF, extracted page, chat history |
 | `PUT /v1/papers/{id}/chat/{turn_id}/feedback` | Rate a saved answer `up`, `down` or `null`, with an optional note |
 | `PUT /v1/papers/{id}/chat/{turn_id}/feedback/facts` | Attach 1-3 key facts (and the paper sentence that holds them) to an answer rated down, so its question is scored in evaluations |

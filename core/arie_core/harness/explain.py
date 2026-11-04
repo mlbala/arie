@@ -2,7 +2,8 @@
 
 ADR 0010. The prompt is the shared header as system prompt, then the paper pack, the writer
 rules, the recent turns and the question, so every role and turn of a conversation reuses one
-cached prefix. Citation checks come later (S10); this module only maps ``[cN]`` markers.
+cached prefix. The answer's ``[cN]`` markers are mapped to chunks and every sentence is
+checked against the chunks it cites (``citations.py``, S10).
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ import yaml
 
 from arie_core.contracts import LLMRequest, TokenUsage
 from arie_core.harness.answer import PROJECT_ROOT
+from arie_core.harness.citations import CitationChecks, check_answer
 from arie_core.harness.guardrails import inspect_question
 from arie_core.harness.intent import AnswerPlan, DialogueTurn, plan_answer
 from arie_core.harness.reader import EvidenceChunk, retrieve
@@ -86,7 +88,8 @@ class ExplainResult(msgspec.Struct, frozen=True, kw_only=True):
     stopped), ``explain_failed`` (stopped before any text) or ``abstention`` (the guard
     blocked the question; ``message`` is for the reader). ``citations`` are unique, in order
     of first use; ``unknown_markers`` name no chunk in the pack the model saw. ``usage`` is
-    the provider's report, ``None`` when it sent none.
+    the provider's report, ``None`` when it sent none. ``checks`` judges each sentence against
+    the chunks it cites; it is empty when no text arrived.
     """
 
     text: str
@@ -101,6 +104,7 @@ class ExplainResult(msgspec.Struct, frozen=True, kw_only=True):
     trace: AnswerTrace = AnswerTrace()
     # Seconds from the start of the answer to the first text; ``None`` if no text arrived.
     first_token_seconds: float | None = None
+    checks: CitationChecks = CitationChecks()
 
 
 def load_explain_prompts(project_root: Path) -> ExplainPrompts:
@@ -214,6 +218,17 @@ def paged_pack(
     )
 
 
+def _check_sentences(
+    paper_id: str, rows: Sequence[EvidenceChunk], in_pack: set[int], text: str
+) -> CitationChecks:
+    """Check ``text`` against the raw chunks of ``paper_id`` that the model saw (I1).
+
+    The sources are the chunk texts, never the pack text, which escapes literal markers.
+    """
+    sources = {number: row.text for number, row in pack_chunks(paper_id, rows) if number in in_pack}
+    return check_answer(text, sources)
+
+
 async def explain_answer(
     ctx: Ctx,
     paper_id: str,
@@ -298,6 +313,11 @@ async def explain_answer(
     text = "".join(texts)
     in_pack = set(sent.chunk_numbers)
     cited = tuple(dict.fromkeys(marker_numbers(text)))
+    checks = (
+        await asyncio.to_thread(_check_sentences, paper_id, rows, in_pack, text)
+        if text
+        else CitationChecks()
+    )
     mode = "explain_partial" if reason and text else "explain_failed" if reason else "explain"
     yield ExplainResult(
         text=text,
@@ -312,4 +332,5 @@ async def explain_answer(
         fallback_reason=reason,
         trace=session.trace(mode, reason, time.monotonic() - started),
         first_token_seconds=first_token,
+        checks=checks,
     )
