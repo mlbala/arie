@@ -957,7 +957,9 @@ each event as Markdown with markdown-it: raw HTML is escaped, and links, images,
 and reference definitions are off, so model text cannot load or link to another host.
 Each `[cN]` becomes a page chip (`p. 4`) once the `citations` event names its chunk;
 before that, or for a marker with no chunk, the chip is disabled and shows `cN`. A click
-opens `EvidenceDrawer` at the chunk's page and offsets. The `judge` event (8.9) is not shown
+opens `EvidenceDrawer` at the chunk's page and offsets. Hover or focus shows a card with
+the page and the chunk text read from that page (`CitationPopover`); a strict answer's
+numbered chips show their quote the same way. The `judge` event (8.9) is not shown
 yet; it is saved with the turn and its `progress` message appears while it runs. Any event
 with a `sentences` list
 (`checks` today) sets each sentence's status by its `start`/`end`; a later event replaces

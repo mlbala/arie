@@ -2384,24 +2384,33 @@ button:disabled {
   --amber-soft: #fff2df;
   --red: #a03d35;
   --shadow: 0 12px 40px #10251920;
+  /* Green that means "verified" or "active"; it never decorates anything else. */
+  --ok: #376345;
+  --ok-soft: #e7f0e1;
+  --ok-strong: #315b41;
 }
+/* Dark mode is neutral grey. The --green* tokens are the generic accent (selection, primary
+   buttons, links) and turn grey here; only the --ok* tokens stay green. */
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --ink: #e8f0e9;
-  --muted: #b0c0b3;
-  --line: #34483a;
-  --paper: #1b2921;
-  --canvas: #111b15;
-  --sidebar: #152219;
-  --panel: #19271e;
-  --green: #a3d7ad;
-  --green-strong: #356849;
-  --green-soft: #263e2c;
-  --on-accent: #ffffff;
+  --ink: #ececec;
+  --muted: #a3a3a3;
+  --line: #333333;
+  --paper: #1b1b1b;
+  --canvas: #121212;
+  --sidebar: #161616;
+  --panel: #181818;
+  --green: #d6d6d6;
+  --green-strong: #e4e4e4;
+  --green-soft: #272727;
+  --on-accent: #121212;
   --amber: #f1c181;
   --amber-soft: #382b1c;
   --red: #ffaaa1;
-  --shadow: 0 12px 40px #00000055;
+  --shadow: 0 12px 40px #00000066;
+  --ok: #7fcf97;
+  --ok-soft: #1d2b22;
+  --ok-strong: #2f7a4d;
 }
 body, .research-shell { background: var(--canvas); color: var(--ink); }
 .research-shell .library-sidebar, .research-shell .sidebar-footer { background: var(--sidebar); }
@@ -2559,8 +2568,8 @@ html, body { overflow: hidden; }
 .grounded-answer { margin-left: 35px; }
 .answer-summary { margin: 12px 0 18px; color: var(--ink); font-size: 14px; line-height: 1.9; overflow-wrap: anywhere; }
 .answer-theme { font-weight: 600; color: var(--ink); }
-.inline-citation { display: inline; margin-left: 4px; padding: 1px; border: 0; background: transparent; color: var(--green); font-size: 10px; font-weight: 600; vertical-align: super; line-height: 1; }
-.inline-citation:hover { text-decoration: underline; }
+.inline-citation { display: inline-flex; min-width: 18px; height: 17px; align-items: center; justify-content: center; margin: 0 1px 0 4px; padding: 0 5px; border: 1px solid var(--line); border-radius: 5px; background: var(--ok-soft); color: var(--ok); font-size: 10px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1; vertical-align: 2px; cursor: pointer; }
+.inline-citation:hover, .inline-citation:focus-visible { border-color: var(--ok); }
 .answer-evidence { padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); }
 .answer-evidence-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11px; }
 .answer-evidence-heading > svg { color: var(--green); }
@@ -2588,10 +2597,10 @@ html, body { overflow: hidden; }
 .explanation-text pre { overflow-x: auto; padding: 10px; border-radius: 6px; background: var(--canvas); font-size: 12px; }
 .explanation-text table { border-collapse: collapse; font-size: 12px; }
 .explanation-text :is(th, td) { padding: 4px 8px; border: 1px solid var(--line); text-align: left; }
-.citation-chip { display: inline; margin-left: 3px; padding: 0 4px; border: 1px solid var(--line); border-radius: 4px; background: transparent; color: var(--green); font-size: 10px; font-weight: 600; line-height: 1.5; vertical-align: 1px; cursor: pointer; }
-.citation-chip:hover:not(:disabled) { border-color: var(--green); }
+.citation-chip { display: inline; margin-left: 3px; padding: 0 4px; border: 1px solid var(--line); border-radius: 4px; background: var(--ok-soft); color: var(--ok); font-size: 10px; font-weight: 600; line-height: 1.5; vertical-align: 1px; cursor: pointer; }
+.citation-chip:hover:not(:disabled), .citation-chip:focus-visible { border-color: var(--ok); }
 .citation-chip.unchecked { border-style: dashed; }
-.citation-chip.missing { color: var(--muted); cursor: default; }
+.citation-chip.missing { background: transparent; color: var(--muted); cursor: default; }
 .answer-sentence.status-flagged { background: var(--amber-soft); text-decoration: underline wavy var(--amber); text-decoration-thickness: 1px; text-underline-offset: 3px; cursor: help; }
 .answer-sentence.status-background { color: var(--muted); }
 @media (max-width: 720px) { .explained-answer { margin-left: 0; } }
@@ -2653,3 +2662,29 @@ html, body { overflow: hidden; }
 .evaluation-meta .evaluation-fallback { color: var(--amber); font-weight: 650; }
 .evaluation-variant { margin-left: auto; color: var(--muted); font-size: 9px; white-space: nowrap; }
 .supporting-passages blockquote.table-quote { overflow-x: auto; white-space: pre; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; line-height: 1.5; }
+
+/* Green marks only verified and active states, in both themes. */
+.live-dot, .status-strip .live-dot, .local-label .live-dot, .pipeline-state.active::before { background: var(--ok-strong); }
+:root[data-theme="dark"] .live-dot { box-shadow: 0 0 0 3px var(--ok-soft); }
+.pipeline-steps .done .pipeline-node, .pipeline-steps .current .pipeline-node { background: var(--ok-soft); color: var(--ok); }
+.health-pill.healthy, .health-pill.running, .health-pill.indexing { background: var(--ok-soft); color: var(--ok); }
+.storage-status.healthy, .answer-evidence-heading > svg, .evaluation-result.passed svg { color: var(--ok); }
+.evaluation-result.passed { border-left-color: var(--ok); }
+
+/* Citation hover card: the exact quote and its page, shown without leaving the answer. */
+.citation-popover { position: fixed; z-index: 80; width: 340px; max-width: calc(100vw - 24px); padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); box-shadow: var(--shadow); font-size: 12px; line-height: 1.6; pointer-events: none; }
+.citation-popover header { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; color: var(--muted); font-size: 10px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.citation-popover header svg { color: var(--ok); }
+.citation-popover header .citation-popover-flag { margin-left: auto; color: var(--amber); letter-spacing: 0; text-transform: none; }
+.citation-popover blockquote { display: -webkit-box; margin: 0; padding-left: 10px; border-left: 2px solid var(--line); overflow: hidden; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 7; line-clamp: 7; }
+.citation-popover blockquote.table-quote { white-space: pre; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; line-height: 1.5; }
+.citation-popover footer { margin-top: 7px; color: var(--muted); font-size: 10px; }
+
+/* Sync and import share one collapsible section at the top of the activity pane. */
+.source-tools { margin: 0 0 18px; border-bottom: 1px solid var(--line); }
+.source-tools > summary { display: flex; align-items: center; gap: 7px; min-height: 34px; padding: 4px 0 10px; color: var(--ink); font-size: 11px; font-weight: 600; list-style: none; cursor: pointer; }
+.source-tools > summary::-webkit-details-marker { display: none; }
+.source-tools > summary > svg { color: var(--muted); transition: transform 120ms ease-out; }
+.source-tools[open] > summary > svg { transform: rotate(90deg); }
+.source-tools > summary .source-tools-state { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; color: var(--ok); font-size: 10px; font-weight: 500; }
+.source-tools > .sync-card, .source-tools > .import-paper { margin: 0 0 18px; }
