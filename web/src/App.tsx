@@ -39,7 +39,7 @@ import { ImportPaper } from "./components/ImportPaper";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { SkippedDrawer } from "./components/SkippedDrawer";
 import { SyncControls } from "./components/SyncControls";
-import { SelectedDocument, StorageHealth, SystemPane } from "./components/SystemPane";
+import { SelectedDocument, SourceTools, StorageHealth, SystemPane } from "./components/SystemPane";
 import { PublicationWindowFields } from "./components/PublicationWindow";
 import { RECENT_WINDOW, publicationLabel, publicationParams, type PublicationWindow } from "./publication";
 import { loadSessions, MAX_HISTORY, paperSessionsReducer, saveSessions } from "./paperSessions";
@@ -500,8 +500,10 @@ export default function App() {
         </footer>
       </section>
       <SystemPane docked={docked} open={systemOpen} onClose={() => setSystemOpen(false)}>
-        <SyncControls status={syncQuery.data} error={syncQuery.error} />
-        {layout.import === "right" && <ImportPaper key={importRevision} onImported={selectPaper} onProgress={importProgress} />}
+        <SourceTools label={layout.import === "right" ? "Sync & import" : "Sync"} syncing={syncing}>
+          <SyncControls status={syncQuery.data} error={syncQuery.error} />
+          {layout.import === "right" && <ImportPaper key={importRevision} onImported={selectPaper} onProgress={importProgress} />}
+        </SourceTools>
         <section
           className="pipeline-card"
           aria-label={showAnswer ? "Answer pipeline" : "Sync pipeline"}
