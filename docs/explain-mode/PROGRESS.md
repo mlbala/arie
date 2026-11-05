@@ -259,3 +259,23 @@ Keep entries to 12 lines. Put numbers here, not in chat.
 - Numbers: `make eval-paper PAPER=2610.40325 ARGS="--compare-reranker"`, deepseek, one run each, same day, 8-CPU Mac, shared worker. Before (HEAD, S15): configured passed 9/11, fallbacks {question_not_answered: 1}, median 4.71 s; no_reranker 11/11, no fallbacks, median 3.88 s. After (S16): configured 9/11, {question_not_answered: 1}, median 6.11 s; no_reranker 10/11, no fallbacks, median 2.89 s. `entailment_timeout`: 0 before, 0 after. S00 baseline: configured 9/11, no_reranker 11/11, no reasons recorded.
 - Open: the eval check above needs the 2-vCPU host; gate has no timeout; panel does not show `rerank_skipped_busy` (see Open issues).
 - Next: S17 (optional).
+
+## Final acceptance
+
+2026-11-05, deepseek, one run per cell, 8-CPU Mac (not the 2-vCPU host), no code changes. `make check` ✓ (ruff, boundaries, pyright, 441 core + 61 api + 58 contract tests) · `make web-check` ✓ (67 vitest). P = paper 2610.40325 (11 cases, saved questions, configured variant); Q = Qasper dev first 30 (23 papers, 49 cases: 46 fact, 3 abstain, same conversion counts as S05).
+
+| Metric | Strict | Explain | Gate | Pass/fail |
+| --- | --- | --- | --- | --- |
+| Fact recall on prose | P 0.688 · Q 0.286 | P 0.562 · Q 0.457 | explain ≥ strict | P **FAIL** · Q pass |
+| Excerpt fallback rate | P 1/11 (9.1%) · Q 13/49 (26.5%) | P 0/11 · Q 0/49 | explain < 10% | P pass · Q pass |
+| First token, median (s) | n/a | P 1.61 · Q 1.08 | ≤ 8 s | P pass · Q pass (Mac, not the 2-vCPU host) |
+| Cache hit from the 2nd question | n/a | P 0.999 (8 cases) · Q 0.974 (26 cases) | > 80% | P pass · Q pass |
+| Citation support | n/a | P 0.863 · Q 0.891 | ≥ 90% | P **FAIL** · Q **FAIL** |
+| Win rate, explain vs strict | n/a | P 0.625 (8 cases) · Q 0.533 (46 cases) | > 0.5 | P pass · Q pass (thin; ties count 0.5) |
+
+- Against baselines. Strict paper = S00 baseline exactly (9/11 passed, recall 0.688, one `question_not_answered`). Strict Qasper vs S05: passed 21/49 (22), prose recall 0.286 (0.297), fallbacks 13 (9), median 4.41 s → 5.22 s. Explain passed 9/11 (P) and 23/49 (Q).
+- Fact recall on prose, P: explain failed 2 cases, neither a fallback (0 reasons): one fact case written without its key fact (recall 0) and one refusal case answered with text (known, explain cannot abstain). Strict failed 2 fact cases (`question_not_answered` 1, one written answer with recall 0). The recall gap (0.688 vs 0.562) is 1 of 8 fact cases; strict and explain each moved by up to 0.31 between S11, S13 and today, so read it as noise, not a regression.
+- Citation support, P and Q: explain had 0 fallbacks, so no fallback reasons to list. Support equals the deterministic valid rate (0.863 / 0.863, 0.892 / 0.891), 0 judge failures. Eval results save only the rates, not the flagged sentences or their reasons, so the top 3 flag reasons cannot be listed from this run (same gap as Open issues, gate 2).
+- Strict fallbacks on Q, for context (not a gate): `entailment_rejected` 7, `incomplete_coverage` 3, `question_not_answered` 3. S05 had 5, 2 and 2.
+- Qasper strict ran 18:42 to 18:46 while the Docker image was rebuilt and 3 chat questions were asked. All 49 cases were reranked (median 1.38 s of 3 s) and no timeout fallback appeared, so the counts hold, but its seconds may be inflated. Paper runs and Qasper explain did not overlap. Qasper cases are rebuilt from the dev split on each run (`eval_qasper` has no `--regenerate`); the counts match S05.
+- Gate 3 as the README defines it (overviews with vs without guide summaries) was not rerun; the win-rate row applies "> 0.5" to explain vs strict. Gate 4 is still unread (needs 30 rated answers). Default stays `strict`: gate 2 fails.
