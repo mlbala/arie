@@ -306,6 +306,31 @@ async def test_planner_overreach_is_trimmed_to_the_bound_paper_outline() -> None
 
 
 @pytest.mark.asyncio
+async def test_planner_sees_guide_section_summaries_in_place_of_bare_names() -> None:
+    plan: dict[str, object] = {
+        "task": "overview",
+        "depth": "standard",
+        "queries": ["Cedar"],
+        "aspects": ["what Cedar is"],
+        "sections": ["Results"],
+    }
+    model = PlanningModel(plan, (0,))
+    run = await answer_question(
+        context("guided-plan"),
+        "paper",
+        "What is this paper about?",
+        ROWS,
+        cast(LLM, model),
+        section_summaries={"Results": "Accuracy rose from 62% to 68% [c2].", "Other": "x"},
+    )
+    payload = cast(dict[str, object], json.loads(model.requests[0].prompt))
+    outline = cast(list[object], payload["outline"])
+    assert {"section": "Results", "summary": "Accuracy rose from 62% to 68% [c2]."} in outline
+    assert "Abstract" in outline and "Other" not in json.dumps(outline)
+    assert run.plan.sections == ("Results",)
+
+
+@pytest.mark.asyncio
 async def test_reviewer_cannot_approve_answer_that_omits_a_requested_aspect() -> None:
     model = PlanningModel(
         {

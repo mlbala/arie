@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
+import time
 from pathlib import Path
 
 import pytest
-from arie_api.models import ANSWER_SLOTS, AnswerModels
+from arie_api.models import ANSWER_SLOTS, FAILURE_LIMIT, AnswerModel, AnswerModels
 from arie_core.registry.manager import ArieConfig, RuntimeQoSConfig
 from arie_worker.models import LocalModel, ModelPool
 
@@ -19,6 +21,51 @@ def config(shared: bool = True, **plugins: object) -> ArieConfig:
     return ArieConfig(
         runtime_qos=RuntimeQoSConfig(shared_model_worker=shared), plugins=dict(plugins)
     )
+
+
+def test_an_unset_worker_choice_splits_the_slots_on_a_host_with_two_cpus_or_fewer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugins: dict[str, object] = {"entailment": ENTAIL, "reranker": RERANK}
+    unset = ArieConfig(plugins=plugins)  # shared_model_worker not set
+    assert unset.runtime_qos.shared_model_worker is None
+    cpus = {"count": 2}
+    monkeypatch.setattr("arie_core.registry.manager.os.process_cpu_count", lambda: cpus["count"])
+    small = AnswerModels(ROOT, unset)
+    cpus["count"] = 4
+    large = AnswerModels(ROOT, unset)
+    forced = AnswerModels(
+        ROOT, ArieConfig(runtime_qos=RuntimeQoSConfig(shared_model_worker=True), plugins=plugins)
+    )
+    cpus["count"] = 2
+    forced_small = AnswerModels(
+        ROOT, ArieConfig(runtime_qos=RuntimeQoSConfig(shared_model_worker=True), plugins=plugins)
+    )
+    try:
+        assert len(small.pools) == 2 and len(large.pools) == 1
+        assert len(forced.pools) == 1 and len(forced_small.pools) == 1  # an explicit true wins
+    finally:
+        for models in (small, large, forced, forced_small):
+            models.close()
+
+
+@pytest.mark.asyncio
+async def test_a_model_is_busy_while_its_worker_still_runs_an_abandoned_call() -> None:
+    models = AnswerModels(ROOT, config(reranker=RERANK))
+    reranker = models.get("reranker")
+    assert reranker is not None
+    try:
+        await reranker.model.pool.submit(30.0, os.getpid)  # start the worker first
+        assert not reranker.busy
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.2):
+                await reranker.model.pool.submit(30.0, time.sleep, 0.8)
+        assert reranker.busy  # the caller left; the worker has not finished
+        await reranker.model.pool.submit(30.0, os.getpid)  # queues behind it, so it has ended
+        await asyncio.sleep(0.05)
+        assert not reranker.busy
+    finally:
+        models.close()
 
 
 def test_slots_share_one_worker_by_default_and_split_when_configured() -> None:
@@ -64,10 +111,16 @@ async def test_scores_are_refused_until_ready_and_status_reports_load_errors() -
 
 
 class FakePool:
-    def __init__(self, result: object) -> None:
+    """Returns ``result``, or raises it if it is an exception, after ``delay`` seconds."""
+
+    def __init__(self, result: object, delay: float = 0.0) -> None:
         self.result = result
+        self.delay = delay
 
     async def call(self, *args: object, **kwargs: object) -> object:
+        await asyncio.sleep(self.delay)
+        if isinstance(self.result, Exception):
+            raise self.result
         return self.result
 
 
@@ -80,6 +133,95 @@ async def test_wrong_length_results_are_rejected_rather_than_misaligned() -> Non
     with pytest.raises(ValueError, match="vectors for 1"):
         await wrong.embed(["a"])
     assert await short.scores("score", "q", [], count=0) == []
+
+
+def back_reranker(models: AnswerModels, pool: FakePool) -> AnswerModel:
+    """The reranker slot, marked loaded and backed by ``pool`` (call again to swap pools)."""
+    reranker = models.get("reranker")
+    assert reranker is not None
+    reranker.model = LocalModel(pool, "reranker", "fake", {})  # pyright: ignore[reportArgumentType]
+    reranker.ready = True
+    return reranker
+
+
+@pytest.mark.asyncio
+async def test_three_timeouts_in_a_row_degrade_a_loaded_model_and_one_success_heals_it() -> None:
+    models = AnswerModels(ROOT, config(reranker=RERANK))
+    try:
+        reranker = back_reranker(models, FakePool([0.5], delay=1.0))
+        assert models.status()["reranker"]["status"] == "healthy"
+        for attempt in range(1, FAILURE_LIMIT + 1):
+            # The harness gives up first, as `asyncio.timeout` does in the answer path.
+            with pytest.raises(TimeoutError):
+                async with asyncio.timeout(0.02):
+                    await reranker.scores("q", ["p"], count=1)
+            status = models.status()["reranker"]
+            assert status["consecutive_failures"] == attempt
+            assert status["status"] == ("degraded" if attempt == FAILURE_LIMIT else "healthy")
+        status = models.status()["reranker"]
+        assert "timed out after" in status["last_error"]
+        assert status["last_error"] in status["detail"]
+        assert 0.0 < status["last_latency_seconds"] < 1.0
+
+        back_reranker(models, FakePool([0.9]))
+        assert await reranker.scores("q", ["p"], count=1) == [0.9]
+        status = models.status()["reranker"]
+        assert status["status"] == "healthy" and status["consecutive_failures"] == 0
+        assert status["last_error"] == "" and status["last_latency_seconds"] is not None
+    finally:
+        models.close()
+
+
+@pytest.mark.asyncio
+async def test_failures_count_but_a_success_between_them_resets_the_streak() -> None:
+    models = AnswerModels(ROOT, config(reranker=RERANK))
+    try:
+        reranker = back_reranker(models, FakePool(RuntimeError("worker crashed")))
+        for _ in range(FAILURE_LIMIT - 1):
+            with pytest.raises(RuntimeError, match="worker crashed"):
+                await reranker.scores("q", ["p"], count=1)
+        back_reranker(models, FakePool([1.0]))
+        await reranker.scores("q", ["p"], count=1)
+        back_reranker(models, FakePool(RuntimeError("worker crashed")))
+        with pytest.raises(RuntimeError):
+            await reranker.scores("q", ["p"], count=1)
+        assert models.status()["reranker"]["status"] == "healthy"
+        for _ in range(FAILURE_LIMIT - 1):
+            with pytest.raises(RuntimeError):
+                await reranker.scores("q", ["p"], count=1)
+        status = models.status()["reranker"]
+        assert status["status"] == "degraded" and "worker crashed" in status["detail"]
+    finally:
+        models.close()
+
+
+@pytest.mark.asyncio
+async def test_a_pool_kill_after_timeout_is_reported_as_a_timeout() -> None:
+    models = AnswerModels(ROOT, config(reranker=RERANK))
+    try:
+        reranker = back_reranker(models, FakePool(TimeoutError()))
+        for _ in range(FAILURE_LIMIT):
+            with pytest.raises(TimeoutError):
+                await reranker.scores("q", ["p"], count=1)
+        status = models.status()["reranker"]
+        assert status["status"] == "degraded" and "timed out after" in status["detail"]
+    finally:
+        models.close()
+
+
+@pytest.mark.asyncio
+async def test_a_call_refused_because_the_model_is_not_ready_is_not_a_failure() -> None:
+    models = AnswerModels(ROOT, config(reranker=RERANK))
+    try:
+        reranker = models.get("reranker")
+        assert reranker is not None
+        for _ in range(FAILURE_LIMIT + 1):
+            with pytest.raises(RuntimeError, match="not ready"):
+                await reranker.scores("q", ["p"], count=1)
+        status = models.status()["reranker"]
+        assert status["status"] == "loading" and status["consecutive_failures"] == 0
+    finally:
+        models.close()
 
 
 @pytest.mark.asyncio

@@ -9,7 +9,7 @@ any coding agent. `docs/SPEC.md` describes what the code does; `docs/adr/` says 
 | Path | Holds |
 | --- | --- |
 | `core/arie_core/` | Vendor-free kernel: `harness/` (answer path), `pipeline/` (chunking), `plugin_api/` (slot protocols), `contracts/dtos.py`, `registry/` (config + plugin discovery), `budget/`, `sched/` |
-| `api/arie_api/` | FastAPI app (`routes.py`), runtime layers in `runtime/`, answer models (`models.py`), evals (`paper_eval.py`, `eval_paper.py`, `eval_answers.py`) |
+| `api/arie_api/` | FastAPI app (`routes.py`), runtime layers in `runtime/`, answer models (`models.py`), evals (`paper_eval.py`, `eval_paper.py`, `eval_qasper.py`, `eval_answers.py`) |
 | `worker/arie_worker/` | `SupervisedPool` and spawned worker processes |
 | `plugins/<slot>-<name>/arie_*/` | One package per plugin (LLM, embedder, parser, source, entailment, reranker, db, files, vectors) |
 | `contract_tests/` | Slot compliance tests for every plugin, no network |
@@ -25,11 +25,12 @@ any coding agent. `docs/SPEC.md` describes what the code does; `docs/adr/` says 
 - `make web-check`: oxlint, typecheck, vitest
 - After any route or response-model change: `cd web && npm run generate:api`
 - `make eval-paper PAPER=<id> ARGS="--compare-reranker"` runs the per-paper eval
+- `make eval-qasper N=30` imports Qasper dev papers and runs the outside benchmark (network + LLM key)
 
 ## Invariants (never break; see SPEC section 1)
 
 - **I1 Paper isolation.** `paper_id` is bound in Python, never in model input or tool schemas; every row is re-filtered by `paper_id`.
-- **I2 No unverified claims.** Strict mode: every shown claim passes the verifier, or the answer abstains or falls back to excerpts. Explain mode (ADR 0010, once written) amends this: every sentence is cited or marked background, and every citation is checked.
+- **I2 No unverified claims.** Strict mode: every shown claim passes the verifier, or the answer abstains or falls back to excerpts. Explain mode ([ADR 0010](docs/adr/0010-explain-mode-paper-in-the-prompt.md)) amends this: every sentence is cited or marked background, and every citation is checked.
 - **I3 Bounded execution.** Every model call goes through `ModelSession` with a token and time budget.
 - **I4 Clean ingestion.** Validated records, declared hosts only, size/type-checked PDFs, atomic writes.
 - **I5 No vendor code in core.** `arie_core` imports no SDK or plugin; plugins import only `arie_core.plugin_api` and `arie_core.contracts`. `make boundaries` enforces it.

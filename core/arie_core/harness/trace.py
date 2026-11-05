@@ -28,7 +28,9 @@ class AnswerTrace(msgspec.Struct, frozen=True, kw_only=True):
     """Timing, token use, prompt version, model and fallback reason of one answer.
 
     ``tokens`` counts what the provider reported over every model call of the answer.
-    ``prompt_version`` is empty when no prompt was sent.
+    ``prompt_version`` is empty when no prompt was sent. ``rerank_skipped_busy`` is true when
+    reranking was skipped because the answer worker still ran a call its caller had abandoned
+    (SPEC section 13.4).
     """
 
     seconds: StageSeconds = StageSeconds()
@@ -37,6 +39,7 @@ class AnswerTrace(msgspec.Struct, frozen=True, kw_only=True):
     model: str = ""
     mode: str = ""
     fallback_reason: str = ""
+    rerank_skipped_busy: bool = False
 
 
 __all__ = ["STAGES", "AnswerTrace", "StageSeconds"]

@@ -486,6 +486,8 @@ export default function App() {
           onProgress={(id, update) =>
             setProgress((current) => ({ ...current, [id]: update }))
           }
+          modes={sessions.modes}
+          onModeChange={(id, mode) => dispatchSessions({ type: "setMode", id, mode })}
         />
         <footer className="research-footer">
           <span>

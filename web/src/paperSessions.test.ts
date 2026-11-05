@@ -3,6 +3,7 @@ import {
   EMPTY_SESSIONS,
   loadSessions,
   MAX_HISTORY,
+  MAX_MODES,
   MAX_PINNED,
   paperSessionsReducer,
   saveSessions,
@@ -68,13 +69,33 @@ describe("paperSessionsReducer", () => {
     expect(forgotten.history).toEqual(["p1"]);
     expect(forgotten.activeId).toBeNull();
   });
+
+  it("remembers each paper's answer mode across tab moves and drops it when forgotten", () => {
+    const state = run([
+      ...open("a", "b"),
+      { type: "setMode", id: "a", mode: "explain" },
+      { type: "setMode", id: "default", mode: "explain" },
+      { type: "close", id: "a" },
+      ...open(...ids(MAX_PINNED + 1)),
+    ]);
+    expect(state.modes).toEqual({ a: "explain", default: "explain" });
+    expect(paperSessionsReducer(state, { type: "setMode", id: "a", mode: "explain" })).toBe(state);
+    expect(run([{ type: "setMode", id: "a", mode: "strict" }, { type: "forget", id: "default" }], state).modes)
+      .toEqual({ a: "strict" });
+    const many = run(ids(MAX_MODES + 2).map((id): PaperSessionAction => ({ type: "setMode", id, mode: "explain" })));
+    expect(Object.keys(many.modes)).toHaveLength(MAX_MODES);
+    expect(many.modes.p0).toBeUndefined();
+    expect(many.modes[`p${MAX_MODES + 1}`]).toBe("explain");
+  });
 });
 
 it("restores saved tabs within limits and ignores unreadable storage", () => {
-  saveSessions({ pinned: ["a", "b"], history: ["c"], activeId: "b", touched: true });
-  expect(loadSessions()).toEqual({ pinned: ["a", "b"], history: ["c"], activeId: "b", touched: true });
-  localStorage.setItem("arie.ui.sessions", JSON.stringify({ pinned: Array.from({ length: 9 }, (_, i) => `p${i}`), history: [1, "h"], activeId: 3 }));
-  expect(loadSessions()).toEqual({ pinned: ["p0", "p1", "p2", "p3", "p4"], history: ["h"], activeId: null, touched: false });
+  saveSessions({ pinned: ["a", "b"], history: ["c"], activeId: "b", touched: true, modes: { a: "explain" } });
+  expect(loadSessions()).toEqual({ pinned: ["a", "b"], history: ["c"], activeId: "b", touched: true, modes: { a: "explain" } });
+  localStorage.setItem("arie.ui.sessions", JSON.stringify({ pinned: Array.from({ length: 9 }, (_, i) => `p${i}`), history: [1, "h"], activeId: 3, modes: { a: "loud", b: "strict" } }));
+  expect(loadSessions()).toEqual({ pinned: ["p0", "p1", "p2", "p3", "p4"], history: ["h"], activeId: null, touched: false, modes: { b: "strict" } });
+  localStorage.setItem("arie.ui.sessions", JSON.stringify({ pinned: ["a"], modes: ["explain"] }));
+  expect(loadSessions().modes).toEqual({});
   localStorage.setItem("arie.ui.sessions", "{not json");
   expect(loadSessions()).toEqual(EMPTY_SESSIONS);
 });

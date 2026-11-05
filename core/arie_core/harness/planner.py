@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Literal
 
@@ -71,17 +71,37 @@ def _task(question: str, overview: bool) -> str:
     return next((name for name, pattern in routes if re.search(pattern, question, re.I)), "answer")
 
 
+_SUMMARY_CHARS = 240
+
+
+def _outline_entries(
+    outline: Sequence[str], summaries: Mapping[str, str]
+) -> list[str | dict[str, str]]:
+    """Outline names, each with its guide summary (cut to 240 characters) when there is one.
+
+    Outline names are cut to 100 characters, so the summaries are matched on that cut.
+    """
+    cut = {name[:100]: text for name, text in summaries.items() if text}
+    return [
+        {"section": name, "summary": cut[name][:_SUMMARY_CHARS]} if name in cut else name
+        for name in outline
+    ]
+
+
 async def plan_research(
     question: str,
     history: Sequence[DialogueTurn],
     rows: Sequence[EvidenceChunk],
     session: ModelSession,
     project_root: Path,
+    section_summaries: Mapping[str, str] | None = None,
 ) -> tuple[AnswerPlan, str]:
     """Plan arbitrary paper tasks; malformed plans fall back without widening paper scope.
 
     The model sees questions and a bounded outline, never previous answer prose,
     paper IDs or other-paper rows. It cannot change tools, limits or citation policy.
+    With ``section_summaries`` (the paper guide's, S14) each outline entry with a summary is
+    sent as ``{"section", "summary"}`` in place of its bare name; section names stay the keys.
     """
     basic = plan_answer(question, history)
     basic = msgspec.structs.replace(
@@ -108,7 +128,7 @@ async def plan_research(
             {
                 "question": question,
                 "prior_questions": [turn.question[:700] for turn in history[-3:]],
-                "outline": outline,
+                "outline": _outline_entries(outline, section_summaries or {}),
             },
             160,
             4.0,

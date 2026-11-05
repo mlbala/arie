@@ -67,10 +67,15 @@ export function EvidenceDrawer({ paperId, citation, onClose }: Props) {
     };
   }, [onClose]);
   const text = pageQuery.data?.text ?? "";
+  // A quote must match the page exactly. An explain citation has no quote: it marks its whole
+  // chunk, cut at the end of the page when the chunk runs onto the next one.
+  const end = citation ? Math.min(citation.char_end, text.length) : 0;
   const selected =
     citation?.page_start === page &&
-    citation.char_end <= text.length &&
-    text.slice(citation.char_start, citation.char_end) === citation.quote;
+    (citation.quote === undefined
+      ? citation.char_start < end
+      : citation.char_end <= text.length &&
+        text.slice(citation.char_start, citation.char_end) === citation.quote);
   const pdf = apiUrl(`/v1/papers/${encodeURIComponent(paperId)}/pdf`);
   return (
     <div
@@ -171,9 +176,9 @@ export function EvidenceDrawer({ paperId, citation, onClose }: Props) {
                   <>
                     {text.slice(0, citation.char_start)}
                     <mark ref={mark}>
-                      {text.slice(citation.char_start, citation.char_end)}
+                      {text.slice(citation.char_start, end)}
                     </mark>
-                    {text.slice(citation.char_end)}
+                    {text.slice(end)}
                   </>
                 ) : (
                   text

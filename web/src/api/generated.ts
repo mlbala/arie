@@ -55,6 +55,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/feedback/agreement": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Feedback Agreement
+         * @description How often the judge's verdict matched the reader's ratings, overall and per task.
+         */
+        get: operations["feedback_agreement_v1_feedback_agreement_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/health": {
         parameters: {
             query?: never;
@@ -181,6 +201,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/papers/{paper_id}/chat/{turn_id}/feedback/facts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Add Feedback Facts
+         * @description Attach key facts to an answer rated down, so its question is scored in evaluations.
+         */
+        put: operations["add_feedback_facts_v1_papers__paper_id__chat__turn_id__feedback_facts_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/papers/{paper_id}/eval": {
         parameters: {
             query?: never;
@@ -230,6 +270,29 @@ export interface paths {
         };
         /** Paper Evaluation Run */
         get: operations["paper_evaluation_run_v1_papers__paper_id__eval_runs__run_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/papers/{paper_id}/guide": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Guide
+         * @description The paper's cited guide, with a citation per marker, or its build status.
+         *
+         *     ``status`` is ``ready`` (``guide`` and ``citations`` set), ``pending`` (queued, or
+         *     failed and waiting for a retry; ``error`` names the last failure) or ``missing``.
+         */
+        get: operations["get_guide_v1_papers__paper_id__guide_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -472,10 +535,26 @@ export interface components {
              */
             compare_reranker: boolean;
             /**
+             * Mode
+             * @default strict
+             * @enum {string}
+             */
+            mode: "strict" | "explain";
+            /**
              * Regenerate
              * @default false
              */
             regenerate: boolean;
+        };
+        /** FeedbackFactsRequest */
+        FeedbackFactsRequest: {
+            /** Key Facts */
+            key_facts: string[];
+            /**
+             * Source Sentence
+             * @default
+             */
+            source_sentence: string;
         };
         /** FeedbackRequest */
         FeedbackRequest: {
@@ -486,6 +565,11 @@ export interface components {
             note: string;
             /** Rating */
             rating: ("up" | "down") | null;
+            /**
+             * Reasons
+             * @default []
+             */
+            reasons: ("wrong" | "not_in_paper" | "too_shallow" | "too_long" | "missing_citation" | "did_not_answer")[];
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -533,6 +617,8 @@ export interface components {
              * @default []
              */
             history: components["schemas"]["QuestionTurn"][];
+            /** Mode */
+            mode?: ("strict" | "explain") | null;
             /** Question */
             question: string;
         };
@@ -686,6 +772,28 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    feedback_agreement_v1_feedback_agreement_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };
@@ -960,6 +1068,44 @@ export interface operations {
             };
         };
     };
+    add_feedback_facts_v1_papers__paper_id__chat__turn_id__feedback_facts_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                paper_id: string;
+                turn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FeedbackFactsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     paper_evaluation_v1_papers__paper_id__eval_get: {
         parameters: {
             query?: never;
@@ -1035,6 +1181,39 @@ export interface operations {
             path: {
                 paper_id: string;
                 run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_guide_v1_papers__paper_id__guide_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                paper_id: string;
             };
             cookie?: never;
         };

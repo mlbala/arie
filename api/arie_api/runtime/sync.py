@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import yaml
+from arie_core.contracts import ParsedDoc
 from arie_core.pipeline import IngestionPipeline
 from arie_core.pipeline.chunker import chunk_spans
 from arie_core.plugin_api import (
@@ -32,6 +33,7 @@ from arie_api.providers import (
 from arie_api.runtime.base import (
     Document,
     context,
+    logger,
 )
 from arie_api.runtime.vectors import VectorIndex
 
@@ -371,6 +373,11 @@ class SyncJobs(VectorIndex):
             job, status=status, phase="complete", current_paper=None, message=message
         )
 
+    async def parse_pdf(self, file_path: str) -> ParsedDoc:
+        """Parse one PDF in the PDF pool, once no question is in flight (S16)."""
+        await self.foreground.wait_quiet()
+        return await self.pool.parse(file_path)
+
     async def _supervised_paper(
         self, job: Document, paper: ScrapedPaperInput, hosts: tuple[str, ...]
     ) -> None:
@@ -428,7 +435,7 @@ class SyncJobs(VectorIndex):
                 storage_root=self.storage_root,
                 file_storage=self.file_storage,
                 allowed_hosts=hosts,
-                parse_worker=self.pool.parse,
+                parse_worker=self.parse_pdf,
                 ctx=context(paper.paper_id),
             )
             if not pipeline.gate(paper):
@@ -505,7 +512,17 @@ class SyncJobs(VectorIndex):
                 status_reason="PDF extracted and indexed",
             )
             await self.save_paper(document)
+            try:
+                await self.ensure_pack(document)
+            except Exception:
+                # The paper is indexed; the pack is built on first use instead.
+                logger.warning(
+                    "Could not build the paper pack for %s", paper.paper_id, exc_info=True
+                )
             self.vector_wakeup.set()
+            # The guide builder (``guides.py``) writes this paper's guide when no answer runs.
+            self.guide_pending[paper.paper_id] = None
+            self.guide_wakeup.set()
             job["indexed"] += 1
         except Exception as exc:
             job["failed"] += 1

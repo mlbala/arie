@@ -23,20 +23,20 @@ Size: S fits easily in one sitting, M is a normal session, L may need a second s
 | S00 | Install this kit and record a baseline | — | S | Partly manual | done |
 | S01 | Answer trace and logging | S00 | M | | done |
 | S02 | Remove dead code listed in SPEC §12 | S00 | S | | done |
-| S03 | Honest model health and eval visibility | S01 | M | API + web | todo |
-| S04 | Answer-level eval metrics | S01 | M | | todo |
-| S05 | Qasper slice and strict baseline | S04 | M | Needs network and an LLM key | todo |
-| S06 | ADR 0010, paper pack, context limits | S04 | M | **plan first** | todo |
-| S07 | Streaming usage and cache stats in LLM plugins | S01 | M | | todo |
-| S08 | Explain harness core | S06, S07 | L | **plan first** | todo |
-| S09 | Explain route, SSE events, eval variant | S08 | M | | todo |
-| S10 | Deterministic citation checks | S09 | M | | todo |
-| S11 | Explain mode in the web chat, gate 1 | S10 | L | web | todo |
-| S12 | Background grounding checker | S10 | L | Measure first | todo |
-| S13 | LLM judge, eval metrics, default switch, gate 2 | S12, S05 | M | | todo |
-| S14 | Paper guide and section summaries, gate 3 | S10 | L | API + web | todo |
-| S15 | Feedback loop, gate 4 | S13 | M | API + web | todo |
-| S16 | Foreground lane and answer workers | S03 | M | Optional | todo |
+| S03 | Honest model health and eval visibility | S01 | M | API + web | done |
+| S04 | Answer-level eval metrics | S01 | M | | done |
+| S05 | Qasper slice and strict baseline | S04 | M | Needs network and an LLM key | done |
+| S06 | ADR 0010, paper pack, context limits | S04 | M | **plan first** | done |
+| S07 | Streaming usage and cache stats in LLM plugins | S01 | M | | done |
+| S08 | Explain harness core | S06, S07 | L | **plan first** | done |
+| S09 | Explain route, SSE events, eval variant | S08 | M | | done |
+| S10 | Deterministic citation checks | S09 | M | | done |
+| S11 | Explain mode in the web chat, gate 1 | S10 | L | web | done |
+| S12 | Background grounding checker | S10 | L | Measure first | done |
+| S13 | LLM judge, eval metrics, default switch, gate 2 | S12, S05 | M | | done |
+| S14 | Paper guide and section summaries, gate 3 | S10 | L | API + web | done |
+| S15 | Feedback loop, gate 4 | S13 | M | API + web | done |
+| S16 | Foreground lane and answer workers | S03 | M | Optional; eval check open, needs the 2-vCPU host (PROGRESS) | done |
 | S17 | Prompt optimization with GEPA | S15 | M | Optional | todo |
 
 Sessions whose Needs are done can run in any order. S02, S03 and S07 are good picks
@@ -61,7 +61,7 @@ Sessions follow these instead of re-deciding them. Changing one is a user decisi
 - **History.** The last 6 turns, question plus answer text with markers stripped. Saved answers are never evidence.
 - **Fit rule.** Whole pack if its estimated tokens ≤ 60% of the provider's `context_tokens`. Otherwise a paged pack: abstract, introduction, conclusion, then whole sections ranked by today's retrieval until the limit.
 - **Explain budgets.** One streaming writer call. First token within 10 s, stall timeout 15 s, total 90 s. Output tokens: brief 600, standard 1,200, detailed 2,500. Depth comes from the free keyword planner (`plan_answer`); no LLM planner call in explain mode.
-- **Checks after streaming.** Deterministic citation checks first (instant), then the background grounding checker, then the LLM judge on flagged sentences only. Results stream as SSE events while the connection is open and are saved with the turn.
+- **Checks after streaming.** Deterministic citation checks first (instant), then the LLM judge on every cited sentence in one batched call per answer, on the writer's provider so the pack stays cached. `judge.chat: all | off` (default `all`) turns the in-chat judge off to save cost. There is no local grounding checker ([ADR 0011](../adr/0011-no-local-grounding-model.md)). Results stream as SSE events while the connection is open and are saved with the turn.
 - **Judge models.** The in-chat judge uses the writer's provider, so it hits the cached pack. The eval pairwise judge is configurable and defaults to a different provider when a key exists.
 - **Storage.** New runtime tables follow the `arie_*` pattern: `arie_paper_packs`, `arie_paper_guides`. New columns are added only if missing, so old databases keep working.
 - **Prompts.** `prompts/explain.v1.yaml`, `prompts/judge.v1.yaml`, `prompts/guide.v1.yaml`. Each answer records its prompt version.

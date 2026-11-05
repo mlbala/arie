@@ -259,6 +259,16 @@ class LibraryStore(RuntimeBase):
                     "DELETE FROM arie_chat_turns WHERE paper_id = ?",
                     (paper_id,),
                 )
+                await self.db.execute(
+                    context("delete-pack"),
+                    "DELETE FROM arie_paper_packs WHERE paper_id = ?",
+                    (paper_id,),
+                )
+                await self.db.execute(
+                    context("delete-guide"),
+                    "DELETE FROM arie_paper_guides WHERE paper_id = ?",
+                    (paper_id,),
+                )
                 await self.evaluations.forget(paper_id)
 
     async def _forget_vectors(self, paper_id: str) -> None:

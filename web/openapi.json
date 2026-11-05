@@ -9,6 +9,15 @@
             "title": "Compare Reranker",
             "type": "boolean"
           },
+          "mode": {
+            "default": "strict",
+            "enum": [
+              "strict",
+              "explain"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
           "regenerate": {
             "default": false,
             "title": "Regenerate",
@@ -16,6 +25,32 @@
           }
         },
         "title": "EvalRunRequest",
+        "type": "object"
+      },
+      "FeedbackFactsRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "key_facts": {
+            "items": {
+              "maxLength": 300,
+              "type": "string"
+            },
+            "maxItems": 3,
+            "minItems": 1,
+            "title": "Key Facts",
+            "type": "array"
+          },
+          "source_sentence": {
+            "default": "",
+            "maxLength": 600,
+            "title": "Source Sentence",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key_facts"
+        ],
+        "title": "FeedbackFactsRequest",
         "type": "object"
       },
       "FeedbackRequest": {
@@ -41,6 +76,23 @@
               }
             ],
             "title": "Rating"
+          },
+          "reasons": {
+            "default": [],
+            "items": {
+              "enum": [
+                "wrong",
+                "not_in_paper",
+                "too_shallow",
+                "too_long",
+                "missing_citation",
+                "did_not_answer"
+              ],
+              "type": "string"
+            },
+            "maxItems": 6,
+            "title": "Reasons",
+            "type": "array"
           }
         },
         "required": [
@@ -158,6 +210,21 @@
             "maxItems": 4,
             "title": "History",
             "type": "array"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "strict",
+                  "explain"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
           },
           "question": {
             "maxLength": 2000,
@@ -444,6 +511,27 @@
           }
         },
         "summary": "Stream Events"
+      }
+    },
+    "/v1/feedback/agreement": {
+      "get": {
+        "description": "How often the judge's verdict matched the reader's ratings, overall and per task.",
+        "operationId": "feedback_agreement_v1_feedback_agreement_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Feedback Agreement V1 Feedback Agreement Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Feedback Agreement"
       }
     },
     "/v1/health": {
@@ -946,6 +1034,67 @@
         "summary": "Rate Answer"
       }
     },
+    "/v1/papers/{paper_id}/chat/{turn_id}/feedback/facts": {
+      "put": {
+        "description": "Attach key facts to an answer rated down, so its question is scored in evaluations.",
+        "operationId": "add_feedback_facts_v1_papers__paper_id__chat__turn_id__feedback_facts_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "paper_id",
+            "required": true,
+            "schema": {
+              "title": "Paper Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "turn_id",
+            "required": true,
+            "schema": {
+              "title": "Turn Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeedbackFactsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Add Feedback Facts V1 Papers  Paper Id  Chat  Turn Id  Feedback Facts Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Feedback Facts"
+      }
+    },
     "/v1/papers/{paper_id}/eval": {
       "get": {
         "description": "This paper's evaluation questions, recent runs and answer feedback.",
@@ -1084,6 +1233,48 @@
           }
         },
         "summary": "Paper Evaluation Run"
+      }
+    },
+    "/v1/papers/{paper_id}/guide": {
+      "get": {
+        "description": "The paper's cited guide, with a citation per marker, or its build status.\n\n``status`` is ``ready`` (``guide`` and ``citations`` set), ``pending`` (queued, or\nfailed and waiting for a retry; ``error`` names the last failure) or ``missing``.",
+        "operationId": "get_guide_v1_papers__paper_id__guide_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "paper_id",
+            "required": true,
+            "schema": {
+              "title": "Paper Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Guide V1 Papers  Paper Id  Guide Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Guide"
       }
     },
     "/v1/papers/{paper_id}/override": {

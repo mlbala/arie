@@ -10,17 +10,19 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any, ClassVar, Literal, cast
+from typing import Annotated, Any, ClassVar, Literal, cast, get_args
 from urllib.parse import quote
 
 import msgspec
 from arie_core.harness.intent import DialogueTurn
+from arie_core.harness.session import EXPLAIN_SECONDS, JUDGE_SECONDS
 from arie_core.registry.sync import SyncConfig
 from arie_core.sched import EventLoopLagMonitor, supervised
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from arie_api.explain_stream import explain_events
 from arie_api.mcp_server import MCPStatelessServer, verify_scope_handle
 from arie_api.monitor import StorageMonitor
 from arie_api.providers import embedder_options
@@ -47,13 +49,38 @@ class QuestionRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     context: str | None = Field(default=None, max_length=2000)
     history: tuple[QuestionTurn, ...] = Field(default=(), max_length=4)
+    # None takes config ``answer.default_mode``. Explain mode reads the paper's saved chat for
+    # its history and ignores ``history`` and ``context``.
+    mode: Literal["strict", "explain"] | None = None
+
+
+# Why an answer was rated down; ``arie_core.harness.feedback.REASONS`` lists the same names.
+Reason = Literal[
+    "wrong",
+    "not_in_paper",
+    "too_shallow",
+    "too_long",
+    "missing_citation",
+    "did_not_answer",
+]
 
 
 class FeedbackRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     # null clears the rating.
     rating: Literal["up", "down"] | None
+    # The reader's comment on a down rating.
     note: str = Field(default="", max_length=500)
+    # Why it was rated down; only with a down rating.
+    reasons: tuple[Reason, ...] = Field(default=(), max_length=len(get_args(Reason)))
+
+
+class FeedbackFactsRequest(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    # What a correct answer must contain; each fact must appear in source_sentence if given.
+    key_facts: tuple[Annotated[str, Field(max_length=300)], ...] = Field(min_length=1, max_length=3)
+    # The paper's own sentence that holds the facts; scores whether the answer cited it.
+    source_sentence: str = Field(default="", max_length=600)
 
 
 class EvalRunRequest(BaseModel):
@@ -62,6 +89,8 @@ class EvalRunRequest(BaseModel):
     regenerate: bool = False
     # Also answer every question without the reranker, to measure what it changes.
     compare_reranker: bool = False
+    # Which answer path to score.
+    mode: Literal["strict", "explain"] = "strict"
 
 
 class SyncRequest(BaseModel):
@@ -114,6 +143,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
             worker = group.create_task(supervised(service.run)())
             imports = group.create_task(supervised(service.run_imports)())
             vectors = group.create_task(supervised(service.run_vector_index)())
+            guides = group.create_task(supervised(service.run_guides)())
             models = group.create_task(supervised(service.models.warm)())
             evaluations = group.create_task(supervised(service.evaluations.serve)())
             lag = EventLoopLagMonitor(
@@ -123,7 +153,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
             try:
                 yield
             finally:
-                for task in (worker, imports, vectors, models, evaluations, lag_monitor):
+                for task in (worker, imports, vectors, guides, models, evaluations, lag_monitor):
                     task.cancel()
                 service.close()
 
@@ -176,16 +206,48 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
         await document(paper_id)
         return {"paper_id": paper_id, "turns": await active().chat_history(paper_id)}
 
+    @app.get("/v1/papers/{paper_id:path}/guide")
+    async def get_guide(paper_id: str) -> Document:
+        """The paper's cited guide, with a citation per marker, or its build status.
+
+        ``status`` is ``ready`` (``guide`` and ``citations`` set), ``pending`` (queued, or
+        failed and waiting for a retry; ``error`` names the last failure) or ``missing``.
+        """
+        paper = await document(paper_id)
+        return await active().guide_view(paper)
+
     @app.put("/v1/papers/{paper_id:path}/chat/{turn_id}/feedback")
     async def rate_answer(paper_id: str, turn_id: str, request: FeedbackRequest) -> Document:
         """Rate a saved answer; answers rated down join the paper's evaluation for review."""
         await document(paper_id)
         try:
             return await active().evaluations.save_feedback(
-                paper_id, turn_id, request.rating, request.note
+                paper_id, turn_id, request.rating, request.note, request.reasons
             )
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/v1/feedback/agreement")
+    async def feedback_agreement() -> Document:
+        """How often the judge's verdict matched the reader's ratings, overall and per task."""
+        return await active().evaluations.agreement()
+
+    @app.put("/v1/papers/{paper_id:path}/chat/{turn_id}/feedback/facts")
+    async def add_feedback_facts(
+        paper_id: str, turn_id: str, request: FeedbackFactsRequest
+    ) -> Document:
+        """Attach key facts to an answer rated down, so its question is scored in evaluations."""
+        await document(paper_id)
+        try:
+            return await active().evaluations.save_feedback_facts(
+                paper_id, turn_id, request.key_facts, request.source_sentence
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/v1/papers/{paper_id:path}/eval")
     async def paper_evaluation(paper_id: str) -> Document:
@@ -199,7 +261,10 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
         await document(paper_id)
         try:
             run = await active().evaluations.start(
-                paper_id, regenerate=request.regenerate, compare_reranker=request.compare_reranker
+                paper_id,
+                regenerate=request.regenerate,
+                compare_reranker=request.compare_reranker,
+                mode=request.mode,
             )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -282,6 +347,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
                         "answer",
                         paper_id=paper_id,
                         mode=mode,
+                        trace_id=ctx.trace_id,
                         context_question=plan.topic_question,
                         heading="Paper summary"
                         if plan.overview and not plan.follow_up
@@ -372,8 +438,38 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
                     message="The answer could not be completed. Please try again.",
                 )
 
+        async def explain_stream() -> AsyncIterator[str]:
+            # The events as streamed (the text saved as one delta), kept for a reload.
+            saved: list[Document] = []
+            turn_id = uuid.uuid4().hex
+            try:
+                async with asyncio.timeout(EXPLAIN_SECONDS + JUDGE_SECONDS):
+                    async for kind, payload in explain_events(
+                        active(), paper, request.question, turn_id, saved
+                    ):
+                        yield _event(kind, **payload)
+                    try:
+                        await active().save_chat_turn(paper_id, request.question, saved, turn_id)
+                    except Exception:
+                        # History is a convenience; the answer was already delivered.
+                        logger.warning("Could not save chat turn for %s", paper_id, exc_info=True)
+            except TimeoutError:
+                yield _event(
+                    "error",
+                    paper_id=paper_id,
+                    message="The explanation deadline was reached. Try a narrower question.",
+                )
+            except Exception:
+                logger.exception("Paper explanation failed for %s", paper_id)
+                yield _event(
+                    "error",
+                    paper_id=paper_id,
+                    message="The answer could not be completed. Please try again.",
+                )
+
+        mode = request.mode or active().config.answer.default_mode
         return StreamingResponse(
-            stream(),
+            explain_stream() if mode == "explain" else stream(),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
