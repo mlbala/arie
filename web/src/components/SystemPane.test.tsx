@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { deletePaper, getStorageHealth, type PaperSummary } from "../api/client";
-import { SelectedDocument, StorageHealth } from "./SystemPane";
+import { SelectedDocument, SourceTools, StorageHealth } from "./SystemPane";
 
 vi.mock("../api/client", () => ({ deletePaper: vi.fn(), getStorageHealth: vi.fn() }));
 
@@ -76,4 +76,28 @@ it("shows a degraded answer model with its reason and keeps the header from sayi
   expect(screen.getByText("Model degraded")).toBeInTheDocument();
   expect(screen.queryByText("Healthy")).not.toBeInTheDocument();
   client.clear();
+});
+
+it("keeps sync and import closed until opened, remembers the choice and shows a running sync on the closed row", () => {
+  localStorage.removeItem("arie.ui.sourceTools");
+  const tools = (syncing: boolean) => <SourceTools label="Sync & import" syncing={syncing}><p>Sync controls</p></SourceTools>;
+  const { rerender, unmount } = render(tools(false));
+  const section = () => screen.getByText("Sync & import").closest("details")!;
+  expect(section()).not.toHaveAttribute("open");
+  expect(screen.queryByText("Syncing")).not.toBeInTheDocument();
+
+  rerender(tools(true));
+  expect(screen.getByText("Syncing")).toBeInTheDocument();
+
+  section().open = true;
+  fireEvent(section(), new Event("toggle"));
+  expect(section()).toHaveAttribute("open");
+  expect(localStorage.getItem("arie.ui.sourceTools")).toBe("open");
+
+  unmount();
+  render(tools(false));
+  expect(section()).toHaveAttribute("open");
+  section().open = false;
+  fireEvent(section(), new Event("toggle"));
+  expect(localStorage.getItem("arie.ui.sourceTools")).toBe("closed");
 });

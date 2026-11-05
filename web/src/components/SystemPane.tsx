@@ -1,7 +1,36 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, Database, HardDrive, Layers3, ListOrdered, ShieldCheck, Trash2, X } from "lucide-react";
+import { Activity, ChevronRight, Database, HardDrive, Layers3, ListOrdered, ShieldCheck, Trash2, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { deletePaper, getStorageHealth, type AnswerModelHealth, type PaperSummary } from "../api/client";
+
+const SOURCE_TOOLS_KEY = "arie.ui.sourceTools";
+
+function readToolsOpen(): boolean {
+  try {
+    return localStorage.getItem(SOURCE_TOOLS_KEY) === "open";
+  } catch {
+    return false;
+  }
+}
+
+/** Sync and import controls in one section, closed until opened; the choice is remembered. A running sync shows on the closed row. */
+export function SourceTools({ label, syncing, children }: { label: string; syncing: boolean; children: ReactNode }) {
+  const [open, setOpen] = useState(readToolsOpen);
+  const toggle = (next: boolean) => {
+    setOpen(next);
+    try {
+      localStorage.setItem(SOURCE_TOOLS_KEY, next ? "open" : "closed");
+    } catch {
+      // Private windows and blocked storage just forget the choice.
+    }
+  };
+  return <details className="source-tools" open={open} onToggle={(event) => toggle(event.currentTarget.open)}>
+    <summary><ChevronRight size={12} aria-hidden /><span>{label}</span>
+      {syncing && <span className="source-tools-state"><span className="live-dot" />Syncing</span>}
+    </summary>
+    {children}
+  </details>;
+}
 
 function useStorageHealth() {
   return useQuery({ queryKey: ["storage"], queryFn: getStorageHealth, refetchInterval: 15000 });
