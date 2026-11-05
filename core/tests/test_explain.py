@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import cast
 
+import msgspec
 import pytest
 from arie_api.runtime.base import CallContext
 from arie_core.budget import BudgetHandle
@@ -370,3 +371,31 @@ def test_the_repo_prompt_loads_and_a_missing_part_fails_closed(tmp_path: Path) -
     (tmp_path / "prompts" / "explain.v1.yaml").write_text(broken)
     with pytest.raises(ValueError, match="writer_rules"):
         load_explain_prompts(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_given_prompts_replace_the_file_in_the_request_and_the_trace() -> None:
+    candidate = msgspec.structs.replace(
+        PROMPTS, writer_rules="Role: writer. Cite as [c1] and be terse.", version="explain.v2"
+    )
+    model = ScriptedModel(streams=[["Cedar gates writes [c2]."]])
+    items = [
+        item
+        async for item in explain_answer(
+            ctx(),
+            PAPER,
+            QUESTION,
+            PACK,
+            ROWS,
+            cast(LLM, model),
+            context_tokens=1_000_000,
+            project_root=ROOT,
+            prompts=candidate,
+        )
+    ]
+    final = items[-1]
+    assert isinstance(final, ExplainResult) and final.trace.prompt_version == "explain.v2"
+    sent = model.requests[0]
+    assert "Role: writer. Cite as [c1] and be terse." in sent.prompt
+    assert PROMPTS.writer_rules not in sent.prompt
+    assert sent.system_prompt == PROMPTS.shared_header

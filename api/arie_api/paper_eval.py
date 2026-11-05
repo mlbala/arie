@@ -175,6 +175,29 @@ class PaperEvaluations:
             for row in rows
         ]
 
+    async def feedback_cases(
+        self, paper_id: str, rows: Sequence[EvidenceChunk]
+    ) -> list[tuple[PaperEvalCase, tuple[str, ...]]]:
+        """Answers rated down, re-asked as cases, each with the reasons the reader gave.
+
+        Once a person attached key facts to one it is scored like a fact case, otherwise it
+        is only shown for review (S15).
+        """
+        return [
+            (
+                feedback_case(
+                    str(item["turn_id"]),
+                    str(item["question"]),
+                    str(item["note"]),
+                    cast(list[str], item["key_facts"]),
+                    locate_sentence(rows, paper_id, str(item["source_sentence"])),
+                ),
+                tuple(cast(list[str], item["reasons"])),
+            )
+            for item in await self.feedback(paper_id)
+            if item["rating"] == "down"
+        ]
+
     async def implicit_feedback(self, paper_id: str) -> list[Document]:
         """Answers whose follow-up read as a negative rating, newest first (S15).
 
@@ -343,19 +366,7 @@ class PaperEvaluations:
         if not cases:
             run.update(status="running", message="Writing questions from the paper's own sentences")
             cases = await self._generate(paper, rows)
-        # Answers rated down are re-asked; once a person attached key facts to one, it is
-        # scored like a fact case, otherwise it is only shown for review.
-        review = [
-            feedback_case(
-                str(item["turn_id"]),
-                str(item["question"]),
-                str(item["note"]),
-                cast(list[str], item["key_facts"]),
-                locate_sentence(rows, paper_id, str(item["source_sentence"])),
-            )
-            for item in await self.feedback(paper_id)
-            if item["rating"] == "down"
-        ]
+        review = [case for case, _ in await self.feedback_cases(paper_id, rows)]
         variants = [("configured", True)]
         # Explain mode has no reranker, so a second variant would repeat the first.
         if (

@@ -110,9 +110,14 @@ class ExplainResult(msgspec.Struct, frozen=True, kw_only=True):
     pack_text: str = ""
 
 
-def load_explain_prompts(project_root: Path) -> ExplainPrompts:
-    """Load ``prompts/explain.v1.yaml``; fail closed on a missing or invalid part."""
-    loaded: object = yaml.safe_load((project_root / "prompts" / "explain.v1.yaml").read_text())
+def load_explain_prompts(project_root: Path, version: int = 1) -> ExplainPrompts:
+    """Load ``prompts/explain.v<version>.yaml``; fail closed on a missing or invalid part.
+
+    Every role reads version 1. A later file is a candidate from the offline optimizer (S17)
+    and is loaded only by that script until a person switches the default.
+    """
+    path = project_root / "prompts" / f"explain.v{version}.yaml"
+    loaded: object = yaml.safe_load(path.read_text())
     if not isinstance(loaded, Mapping):
         raise ValueError("The explain prompt must be a mapping")
     data = cast(Mapping[str, object], loaded)
@@ -131,9 +136,11 @@ def load_explain_prompts(project_root: Path) -> ExplainPrompts:
         if type(value) is not int or value < 1:
             raise ValueError(f"The explain prompt requires depth_words.{depth}")
         depth_words[depth] = value
-    title, version = data.get("name"), data.get("version")
-    if not isinstance(title, str) or not title or type(version) is not int:
+    title, found = data.get("name"), data.get("version")
+    if not isinstance(title, str) or not title or type(found) is not int:
         raise ValueError("The explain prompt requires a name and an integer version")
+    if found != version:
+        raise ValueError(f"explain.v{version}.yaml says version {found}")
     return ExplainPrompts(
         texts["shared_header"], texts["writer_rules"], depth_words, f"{title}.v{version}"
     )
@@ -245,6 +252,7 @@ async def explain_answer(
     turns: Sequence[ExplainTurn] = (),
     budget: StreamBudget = EXPLAIN_BUDGET,
     project_root: Path = PROJECT_ROOT,
+    prompts: ExplainPrompts | None = None,
 ) -> AsyncGenerator[str | ExplainResult]:
     """Stream one cited explanation: text deltas as ``str``, then one ``ExplainResult``.
 
@@ -253,7 +261,8 @@ async def explain_answer(
     otherwise, then one streaming call within ``budget``. ``pack`` must be the stored pack of
     ``paper_id`` and ``rows`` are re-filtered by it (I1); ``paper_id`` never enters the
     prompt. A timeout, budget stop or provider error ends the stream with its reason in
-    ``fallback_reason``; the text that arrived is kept.
+    ``fallback_reason``; the text that arrived is kept. ``prompts`` replaces the prompt file;
+    only the offline optimizer (S17) passes it, to try a candidate.
     """
     started = time.monotonic()
     session = ModelSession(ctx, llm)
@@ -275,7 +284,7 @@ async def explain_answer(
     )
     with session.stage("plan"):
         plan = plan_answer(guard.question, [DialogueTurn(turn.question) for turn in history])
-    prompts = await asyncio.to_thread(load_explain_prompts, project_root)
+    prompts = prompts or await asyncio.to_thread(load_explain_prompts, project_root)
     session.prompt_version = prompts.version
 
     paged = not pack_fits(pack, context_tokens, pack_share)

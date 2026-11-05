@@ -49,6 +49,7 @@ drift; grep the symbol, then read a range.
 - CLI: `api/arie_api/eval_paper.py`; fixed synthetic cases: `api/arie_api/eval_answers.py`
 - Qasper slice: CLI `api/arie_api/eval_qasper.py`; pure conversion (`convert_questions`) in `core/arie_core/harness/qasper.py`
 - Rating route: `PUT /v1/papers/{id}/chat/{turn_id}/feedback` in `routes.py`
+- Prompt optimizer (S17, offline, GEPA): `optimize_prompt`, `ExplainAdapter`, `ExplainRollouts` in `api/arie_api/optimize_prompts.py`; pure parts (`CallBudget`, `CountingLLM`, `split_cases`, `metric`, `feedback_text`, `render_candidate`) in `core/arie_core/harness/optimize.py`
 
 ## Web
 

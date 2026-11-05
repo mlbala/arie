@@ -1,4 +1,4 @@
-.PHONY: check lint boundaries types test test-unit test-api test-contracts web-check eval-llm eval-paper eval-qasper guides
+.PHONY: check lint boundaries types test test-unit test-api test-contracts web-check eval-llm eval-paper eval-qasper guides optimize-prompts
 
 # Everything CI runs for Python: lint, import boundaries, strict types, all test suites.
 check: lint boundaries types test
@@ -47,3 +47,11 @@ eval-qasper:
 # make guides [ARGS="<paper_id> ..."] rebuilds the named papers instead
 guides:
 	uv run python -m arie_api.build_guides $(ARGS)
+
+# Proposes a better explain prompt offline with GEPA and writes it as a candidate file; it
+# changes no live prompt. Needs the library database and an LLM key (network):
+# make optimize-prompts PROMPT=explain MAX_CALLS=200 [ARGS="--cases 10 --seed 17"]
+PROMPT ?= explain
+MAX_CALLS ?= 200
+optimize-prompts:
+	uv run python -m arie_api.optimize_prompts $(PROMPT) --max-calls $(MAX_CALLS) $(ARGS)

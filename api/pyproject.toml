@@ -6,6 +6,7 @@ dependencies = [
     "arie-core",
     "arie-worker",
     "fastapi>=0.115.0",
+    "gepa>=0.1.4,<0.2",
     "uvicorn>=0.30.0",
 ]
 

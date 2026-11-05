@@ -444,7 +444,8 @@ generator. It yields text deltas (`str`), then one `ExplainResult`:
    rank order, then the rest in page order. A section that doesn't fit whole is skipped. A
    paged pack depends on the question, so its prefix is not reused across turns.
 4. **Prompt.** `build_prompt` is pure:
-   - `system_prompt` is `shared_header` from `prompts/explain.v1.yaml`.
+   - `system_prompt` is `shared_header` from `prompts/explain.v1.yaml`. Only the offline
+     optimizer (section 10, item 6) passes other `ExplainPrompts` to `explain_answer`.
    - `prompt` is the pack, then `writer_rules`, then up to 6 earlier turns (questions capped
      at 700 characters, answers at 4,000, with `[cN]` stripped), then `Question:` and a length
      line from `depth_words` (brief 150, standard 350, detailed 800 words).
@@ -857,6 +858,48 @@ reranker 2), `inter_op_num_threads` = 1, and the CPU memory arena off.
      `run_failed`) and
      `conversion`. Exit 1 if no paper was evaluated or a run did not complete; failed
      cases do not change the exit code, since this is a baseline, not a gate.
+
+6. **Prompt optimizer** (`make optimize-prompts PROMPT=explain MAX_CALLS=200`,
+   [api/arie_api/optimize_prompts.py](../api/arie_api/optimize_prompts.py), pure parts in
+   [core/arie_core/harness/optimize.py](../core/arie_core/harness/optimize.py)). Offline and
+   optional (S17); it never changes a live prompt. GEPA (`gepa`, a dependency of `arie-api`)
+   rewrites `writer_rules`, the one part of `prompts/explain.v1.yaml` it is given; the shared
+   header and `depth_words` are copied unchanged so the judge and the guide keep reusing the
+   writer's cached prefix.
+   - **Cases.** Every saved fact case with key facts in an indexed paper (Qasper, a paper's
+     own `generated`, and answers rated down that have key facts: `feedback_cases`), plus
+     those answers' thumbs-down reasons. Abstain and review cases are left out: an explain
+     answer cannot pass a refusal (see PROGRESS). `--cases N` takes at most N, from each
+     origin in turn. A seeded split (`--seed`, default 17) keeps about 30% of every origin out
+     of GEPA as held-out cases; an origin with one case goes to train. GEPA's validation set
+     is the train set.
+   - **Metric** (`metric`, per case): `fact_recall_prose` + `citation_support` − 1 if no
+     written answer came back (an excerpt fallback), so -1 to 2. If the judge failed,
+     `citation_valid_rate` stands in for the support; an answer that cites nothing gets 0.
+     Each case is answered by `explain_answer(prompts=...)` with the candidate rules and
+     judged by `judge_support`, both on the writer's provider.
+   - **Feedback for GEPA's reflection** (`feedback_text`, at most 1,500 characters a case):
+     key facts the answer did not state, sentences the citation checks flagged with their
+     reasons, sentences the judge called partial or unsupported with its reason, a failed
+     judge, and the reader's reasons and note. Rules that lose the `[cN]` marker example, run
+     past 4,000 characters or quote a train key fact or paper id are scored -1 without a
+     model call (`check_rules`).
+   - **Cap.** `--max-calls` (required) counts every model call: each writer call, judge call
+     and reflection call goes through `CountingLLM`, which refuses the call past the cap
+     before it reaches the model. The cap and the calls kept for the held-out scoring (both
+     prompts, each case a writer and a judge call) are printed first. GEPA stops once another
+     step (two minibatch scorings, a reflection and a full train scoring) could eat into
+     that reserve. A call the cap refused ends its batch instead of being scored as a failed
+     answer. A cap too low for the starting prompt on train, both prompts on held-out and one
+     step is refused before any call.
+   - **Output.** One JSON line (`Report`): `calls_used` of `cap`, case counts, `train_old`
+     and `train_new` (GEPA's mean score of the starting and the best rules on train),
+     `held_out_old` and `held_out_new` (cases, score, `fact_recall_prose`, `citation_support`,
+     `excerpt_fallbacks`), the candidate's name and path. If GEPA finds nothing better than
+     the current rules no file is written. Otherwise `prompts/explain.v<N+1>.yaml` is created
+     (never overwritten; it must read back as the same rules) with a comment giving the
+     scores. `load_explain_prompts(root, version)` loads it; nothing does by default, so
+     activating it means changing that default, which is a person's decision.
 
 A fallback answer made of exact excerpts can still pass: excerpts are grounded and may
 quote the source sentence. So a run where Tier 3 always times out still scores whether
