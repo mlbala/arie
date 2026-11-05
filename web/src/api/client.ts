@@ -175,16 +175,47 @@ export interface SavedChatTurn {
 
 export type AnswerRating = "up" | "down" | null;
 
+/** Why a reader rated an answer down, as the API names them, with the label the chips show. */
+export const FEEDBACK_REASONS = [
+  ["wrong", "Wrong"],
+  ["not_in_paper", "Not in the paper"],
+  ["too_shallow", "Too shallow"],
+  ["too_long", "Too long"],
+  ["missing_citation", "Missing citation"],
+  ["did_not_answer", "Did not answer"],
+] as const;
+
+export type FeedbackReason = (typeof FEEDBACK_REASONS)[number][0];
+
+/** What a reader adds to a down rating: the reasons that apply and a comment. */
+export interface RatingDetail {
+  note?: string;
+  reasons?: readonly FeedbackReason[];
+}
+
 /** Rate a saved answer; `null` clears it. Answers rated down join the paper's evaluation. */
 export function rateAnswer(
   paperId: string,
   turnId: string,
   rating: AnswerRating,
-  note = "",
+  { note = "", reasons = [] }: RatingDetail = {},
 ): Promise<{ turn_id: string; rating: AnswerRating }> {
   return requestJson(
     `/v1/papers/${encodeURIComponent(paperId)}/chat/${encodeURIComponent(turnId)}/feedback`,
-    { method: "PUT", body: JSON.stringify({ rating, note }) },
+    { method: "PUT", body: JSON.stringify({ rating, note, ...(reasons.length ? { reasons } : {}) }) },
+  );
+}
+
+/** Make an answer rated down a scored case: 1-3 key facts and, optionally, the paper's own sentence that holds them. */
+export function addFeedbackFacts(
+  paperId: string,
+  turnId: string,
+  keyFacts: readonly string[],
+  sourceSentence = "",
+): Promise<{ turn_id: string; key_facts: string[]; source_sentence: string }> {
+  return requestJson(
+    `/v1/papers/${encodeURIComponent(paperId)}/chat/${encodeURIComponent(turnId)}/feedback/facts`,
+    { method: "PUT", body: JSON.stringify({ key_facts: keyFacts, source_sentence: sourceSentence }) },
   );
 }
 
@@ -218,6 +249,16 @@ export interface EvalResult {
   answer: string;
   cited_pages: number[];
   error: string;
+  /** Why the answer fell back to excerpts or abstained; empty otherwise. Absent in runs saved before the trace existed. */
+  fallback_reason?: string;
+  /** Seconds per stage (`plan`, `vector`, `read`, `rerank`, `write`, `tier3`, `review`, `total`). */
+  trace?: { seconds: Record<string, number>; prompt_version: string; model: string };
+  /** Explain runs only: the share of cited sentences the checks and the judge accept; null if not judged. */
+  citation_support?: number | null;
+  /** Explain runs only: 1, 0.5 or 0 for the explanation against the strict answer; null if not compared. */
+  win_rate?: number | null;
+  /** The support judge's status: `complete`, `failed`, `skipped`; empty in a strict run. */
+  judge_status?: string;
 }
 
 export interface EvalSummary {
@@ -233,6 +274,12 @@ export interface EvalSummary {
   errors: number;
   median_seconds: number | null;
   review: number;
+  /** Explain runs only; absent or null in a strict run. */
+  citation_support?: number | null;
+  win_rate?: number | null;
+  /** Cases behind `win_rate`, and support judgements that failed (left out of `citation_support`). */
+  win_cases?: number;
+  judge_failed?: number;
 }
 
 export interface EvalRun {
@@ -249,12 +296,53 @@ export interface EvalRun {
   results: EvalResult[];
 }
 
+/** An answer the reader rated, with what the answer recorded about itself; the new fields are absent on ratings saved before S15. */
+export interface FeedbackItem {
+  turn_id: string;
+  question: string;
+  rating: string;
+  note: string;
+  created_at: string;
+  reasons?: FeedbackReason[];
+  mode?: string;
+  task?: string;
+  prompt_version?: string;
+  trace_id?: string;
+  key_facts?: string[];
+  source_sentence?: string;
+}
+
+/** A follow-up that read as a negative rating of the answer before it; never shown in chat. */
+export interface ImplicitFeedback {
+  turn_id: string;
+  question: string;
+  signal: "said_wrong" | "asked_again" | "repeated_question";
+  follow_up: string;
+  created_at: string;
+}
+
+/** How often the judge's verdict matched the reader's rating; `rate` is `agreed / judged`. */
+export interface FeedbackAgreement {
+  rated: number;
+  judged: number;
+  agreed: number;
+  rate: number | null;
+  /** True once 30 answers are rated (gate 4). */
+  ready: boolean;
+  /** Unrated answers a follow-up questioned; not part of the agreement. */
+  implicit: number;
+  by_task: { task: string; rated: number; judged: number; agreed: number; rate: number | null }[];
+}
+
 export interface PaperEvaluation {
   paper_id: string;
   cases: EvalCase[];
   runs: Omit<EvalRun, "results">[];
   latest: EvalRun | null;
-  feedback: { turn_id: string; question: string; rating: string; note: string; created_at: string }[];
+  feedback: FeedbackItem[];
+  implicit_feedback?: ImplicitFeedback[];
+  /** Library-wide, not this paper's: gate 4 counts every rated answer. */
+  agreement?: FeedbackAgreement;
 }
 
 export function getPaperEvaluation(paperId: string): Promise<PaperEvaluation> {
@@ -280,6 +368,38 @@ export function getEvalRun(paperId: string, runId: string): Promise<EvalRun> {
 /** The last saved turns for a paper, oldest first (the server keeps 10 per paper). */
 export async function getChat(paperId: string, signal?: AbortSignal): Promise<{ turns: SavedChatTurn[] }> {
   return requestJson(`/v1/papers/${encodeURIComponent(paperId)}/chat`, signal ? { signal } : {});
+}
+
+/** A term or an equation's symbol with its cited meaning. */
+export interface GuideTerm {
+  term: string;
+  meaning: string;
+}
+
+/** The paper's reading guide (S14). Every text but questions, terms and equations has markers. */
+export interface PaperGuide {
+  tldr: string;
+  problem: string;
+  method_steps: string[];
+  key_equations: { equation: string; meaning: string; symbols: GuideTerm[] }[];
+  results: string[];
+  limitations: string[];
+  glossary: GuideTerm[];
+  section_summaries: { section: string; summary: string }[];
+  suggested_questions: string[];
+}
+
+/** `ready` carries the guide and one citation per marker; `pending` is still being written. */
+export interface PaperGuideView {
+  paper_id: string;
+  status: "ready" | "pending" | "missing";
+  error?: string;
+  guide?: PaperGuide;
+  citations?: unknown[];
+}
+
+export async function getGuide(paperId: string, signal?: AbortSignal): Promise<PaperGuideView> {
+  return requestJson(`/v1/papers/${encodeURIComponent(paperId)}/guide`, signal ? { signal } : {});
 }
 
 export async function getSkippedPapers(): Promise<{ items: SkippedPaper[] }> {
@@ -417,6 +537,16 @@ export function saveSyncSettings(settings: SyncSettings): Promise<{ settings: Sy
   return requestJson("/v1/sync/settings", { method: "PUT", body: JSON.stringify(settings) });
 }
 
+/** One answer-path model; `degraded` after repeated timeouts or failures, with the reason in `detail`. */
+export interface AnswerModelHealth {
+  plugin: string;
+  status: string;
+  detail: string;
+  consecutive_failures?: number;
+  last_error?: string;
+  last_latency_seconds?: number | null;
+}
+
 export interface StorageHealth {
   checked_at: string;
   database: {
@@ -431,8 +561,8 @@ export interface StorageHealth {
     provider: string; status: string; size_bytes: number | null; detail: string;
     embedder?: string; vectors?: number | null; papers_indexed?: number | null; papers_total?: number | null;
   };
-  entailment?: { plugin: string; status: string; detail: string };
-  reranker?: { plugin: string; status: string; detail: string };
+  entailment?: AnswerModelHealth;
+  reranker?: AnswerModelHealth;
   active_jobs: SyncJob[];
 }
 

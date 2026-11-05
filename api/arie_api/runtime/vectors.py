@@ -31,10 +31,10 @@ from arie_api.runtime.base import (
     context,
     logger,
 )
-from arie_api.runtime.library import LibraryStore
+from arie_api.runtime.packs import PaperPacks
 
 
-class VectorIndex(LibraryStore):
+class VectorIndex(PaperPacks):
     """The vector index: embedder choice, background indexing and semantic search."""
 
     def __init__(self, root: Path, config: ArieConfig | None = None) -> None:
@@ -132,6 +132,12 @@ class VectorIndex(LibraryStore):
                 pending.append(str(row["paper_id"]))
         return pending, len(rows)
 
+    async def ensure_paper_vectors(self, paper_id: str) -> None:
+        """Index one paper's vectors unless they are already current for this embedder."""
+        pending, _ = await self._vector_backlog(context("vector-backlog", 10.0))
+        if paper_id in pending:
+            await self.index_paper_vectors(paper_id)
+
     async def index_paper_vectors(self, paper_id: str) -> None:
         """Replace one paper's vectors in batches, then record the embedder and revision.
 
@@ -152,9 +158,14 @@ class VectorIndex(LibraryStore):
             and str(chunk.get("text", "")).strip()
         ]
         ctx = context(f"vectors:{paper_id}", 600.0)
+        # Do not drop the old vectors while a question may be reading them (S16).
+        await self.foreground.wait_quiet()
         await self.vector_store.delete(ctx, filters={"paper_id": paper_id})
         for start in range(0, len(chunks), EMBED_BATCH):
             batch = chunks[start : start + EMBED_BATCH]
+            # One batch is the unit of waiting: a question that starts mid-paper gets the CPU
+            # at the next batch boundary, and this paper resumes after it (S16).
+            await self.foreground.wait_quiet()
             vectors = await embedding.embed([str(chunk["text"]) for chunk in batch])
             await self.vector_store.upsert(
                 ctx,
@@ -200,6 +211,7 @@ class VectorIndex(LibraryStore):
             try:
                 if pending and warmed != self.embedder_id:
                     # The first load may download the model, which can exceed a batch timeout.
+                    await self.foreground.wait_quiet()
                     await self.embedding.embed(["warm-up"], kill_after=600.0)
                     warmed = self.embedder_id
                     self.vector_errors.pop("*", None)

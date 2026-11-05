@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 
 import msgspec
@@ -46,6 +46,8 @@ async def answer_question(
     entail: EntailmentCheck | None = None,
     entail_floor: float = MIN_ENTAILMENT,
     rerank: RerankCheck | None = None,
+    rerank_busy: Callable[[], bool] | None = None,
+    section_summaries: Mapping[str, str] | None = None,
 ) -> ResearchAnswer:
     """Coordinate guard → plan → bounded paper reads → rerank → synthesis → verification.
 
@@ -55,7 +57,11 @@ async def answer_question(
     falls back to keyword retrieval. ``entail`` is the Tier 3 entailment model for
     model-written claims; without it, claims rest on Tiers 1-2 and the model reviewer.
     ``rerank`` is the cross-encoder that picks the final passages from the keyword and
-    vector candidates; its failure or timeout keeps the keyword/vector choice.
+    vector candidates; its failure or timeout keeps the keyword/vector choice. While
+    ``rerank_busy()`` is true (the answer worker still runs a call its caller abandoned) it is
+    skipped, since the call would queue behind that one and delay the claim check; the trace
+    records ``rerank_skipped_busy``.
+    ``section_summaries`` are the paper guide's (S14); the planner sees them with the outline.
     """
     started = time.monotonic()
     session = ModelSession(ctx, llm)
@@ -85,13 +91,16 @@ async def answer_question(
     )
     with session.stage("plan"):
         plan, planner_status = await plan_research(
-            guard.question, safe_history, scoped, session, project_root
+            guard.question, safe_history, scoped, session, project_root, section_summaries
         )
     with session.stage("vector"):
         ranked = await _semantic_ranking(ctx, semantic, (plan.question, *plan.queries))
     with session.stage("read"):
         reading = read_for_answer(ctx, paper_id, plan, scoped, ranked)
-    if rerank is not None:
+    if rerank is not None and rerank_busy is not None and rerank_busy():
+        session.rerank_skipped_busy = True
+        logger.info("Reranking skipped: the answer worker is busy (trace %s)", ctx.trace_id)
+    elif rerank is not None:
         with session.stage("rerank"):
             reading = await rerank_reading(ctx, paper_id, plan, reading, rerank)
     answer = await compose_answer(

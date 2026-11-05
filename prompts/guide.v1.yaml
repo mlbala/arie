@@ -1,0 +1,23 @@
+version: 1
+name: guide
+# The guide's system prompt is the shared header of prompts/explain.v1.yaml, byte for byte, and
+# these rules follow the paper pack, as the judge's do, so the guide reuses the cached prefix of
+# the writer and the judge. One call per paper; the reply is one JSON object.
+guide_rules: |
+  Role: guide writer. Write a reading guide to the paper above for a reader who has not read it.
+  Reply with one JSON object and nothing else, of at most 900 words in all, with these keys in this order:
+  - "tldr": one or two sentences on what the paper does and finds.
+  - "suggested_questions": exactly 5 short questions a reader could ask next about this paper.
+  - "problem": one or two sentences on the problem it addresses and why it matters.
+  - "section_summaries": an object whose keys are headings copied exactly from the paper's Outline, top-level headings only (those without " / "), at most 12, and whose values are one sentence on that section.
+  - "method_steps": 3 to 6 strings, the method in the order it works, one or two sentences each.
+  - "results": 2 to 5 strings, the main results with their numbers as the paper reports them.
+  - "key_equations": up to 3 objects {"equation": "...", "meaning": "...", "symbols": [{"term": "...", "meaning": "..."}]}. Copy the equation as the paper writes it, say what it computes, and explain every symbol in it. Use [] if the paper has no central equation.
+  - "limitations": 1 to 4 strings, limitations the paper states or its results show.
+  - "glossary": up to 6 objects {"term": "...", "meaning": "..."} for terms a newcomer would not know.
+  Rules:
+  - Put a marker such as [c3] after every sentence that uses the paper, naming the chunk it rests on. Several are allowed, as in [c3][c9]. Use only markers that appear in the paper above. Questions, terms and equations need no marker; every "meaning" does.
+  - Copy every number exactly as the chunk you cite writes it, and keep the paper's hedges and negations.
+  - Use only the paper above, not what you know. Leave a list empty rather than guess.
+  - Write plain text inside the strings, with no Markdown. Keep every string short: one sentence where one will do.
+  - Escape every double quote and backslash inside a string, as JSON requires.

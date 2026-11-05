@@ -146,6 +146,51 @@ async def test_backfill_search_reembed_and_delete(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_one_paper_is_embedded_only_when_its_vectors_are_not_current(
+    tmp_path: Path,
+) -> None:
+    runtime, embedding = runtime_at(tmp_path)
+    await runtime.initialize()
+    try:
+        await runtime.save_paper(paper("a", PASSAGES))
+        await runtime.ensure_paper_vectors("a")
+        assert len(embedding.calls) == 1
+        await runtime.ensure_paper_vectors("a")
+        assert len(embedding.calls) == 1
+        runtime.embedder_id = "concept:v2"
+        await runtime.ensure_paper_vectors("a")
+        assert len(embedding.calls) == 2
+    finally:
+        runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_indexing_waits_for_a_question_but_the_questions_own_search_does_not(
+    tmp_path: Path,
+) -> None:
+    runtime, embedding = runtime_at(tmp_path)
+    await runtime.initialize()
+    try:
+        await runtime.save_paper(paper("a", PASSAGES))
+        await runtime.ensure_paper_vectors("a")
+        indexed = len(embedding.calls)
+        with runtime.foreground.hold():
+            reindex = asyncio.create_task(runtime.index_paper_vectors("a"))
+            # The question embeds its own query while the background run is held back.
+            ranked = await asyncio.wait_for(
+                runtime.semantic_search("a", ["how does it handle long inputs?"]), 5.0
+            )
+            assert ranked == ["a:0"]
+            await asyncio.sleep(0.05)
+            assert not reindex.done() and len(embedding.calls) == indexed + 1
+        await asyncio.wait_for(reindex, 5.0)
+        assert len(embedding.calls) == indexed + 2  # the query, then the one-batch re-embed
+        assert await runtime.semantic_search("a", ["long inputs"]) == ["a:0"]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_embedder_failure_is_reported_and_keyword_search_remains(tmp_path: Path) -> None:
     runtime, embedding = runtime_at(tmp_path)
     await runtime.initialize()

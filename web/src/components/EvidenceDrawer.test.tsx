@@ -17,3 +17,19 @@ it("keeps extracted pages readable after PDF deletion and hides unavailable PDF 
   expect(screen.getByText("Original PDF removed. Extracted content remains available.")).toBeInTheDocument();
   client.clear();
 });
+
+it("highlights a cited chunk without a quote on its own page, cut at the page end", async () => {
+  const pageText = "Header line. Workers read isolated processes and the run ends here.";
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(
+    String(input).endsWith("/pages/2")
+      ? { text: pageText, page_number: 2 }
+      : { id: "paper", title: "Paper", page_count: 3, pdf_deleted: false },
+  ), { headers: { "content-type": "application/json" } })));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const citation = { page_start: 2, char_start: 13, char_end: 400, chunk_id: "paper:3" };
+  const { container } = render(<QueryClientProvider client={client}><EvidenceDrawer paperId="paper" citation={citation} onClose={vi.fn()} /></QueryClientProvider>);
+  expect(await screen.findByText("Page 2 of 3")).toBeInTheDocument();
+  await vi.waitFor(() => expect(container.querySelector("mark")).toHaveTextContent("Workers read isolated processes and the run ends here."));
+  expect(container.querySelector("mark")?.textContent).toBe(pageText.slice(13));
+  client.clear();
+});

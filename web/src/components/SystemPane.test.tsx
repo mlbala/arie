@@ -52,3 +52,28 @@ it("confirms full paper deletion separately and disables an already deleted PDF"
   await waitFor(() => expect(onDeleted).toHaveBeenCalledWith("selected", false));
   client.clear();
 });
+
+it("shows a degraded answer model with its reason and keeps the header from saying Healthy", async () => {
+  const healthy = {
+    checked_at: "2026-11-02T12:00:00Z", active_jobs: [],
+    database: { provider: "sqlite", status: "healthy", size_bytes: 1024, papers: 1, evidence_chunks: 5 },
+    vector_store: { provider: "exact", status: "healthy", size_bytes: 4096, vectors: 12, detail: "All papers embedded" },
+    file_storage: { provider: "local", status: "healthy", size_bytes: 2048, files: 1, disk_free_bytes: 1000, disk_total_bytes: 2000 },
+  };
+  const detail = "nli-onnx failed its last 3 calls (last: timed out after 3.0 s); answers use exact source excerpts.";
+  vi.mocked(getStorageHealth).mockResolvedValue({
+    ...healthy,
+    entailment: { plugin: "nli-onnx", status: "degraded", detail, consecutive_failures: 3, last_error: "timed out after 3.0 s", last_latency_seconds: 3.04 },
+    reranker: { plugin: "onnx-cross-encoder", status: "healthy", detail: "Passages are reranked by relevance to each question.", consecutive_failures: 0, last_error: "", last_latency_seconds: 0.25 },
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><StorageHealth /></QueryClientProvider>);
+  fireEvent.click(screen.getByText("Storage & health"));
+  expect(await screen.findByText(detail)).toBeInTheDocument();
+  expect(screen.getByText("degraded")).toHaveClass("health-pill", "degraded");
+  expect(screen.getByText("nli-onnx · Tier 3 entailment · last call 3.0 s")).toBeInTheDocument();
+  expect(screen.getByText("onnx-cross-encoder · question relevance · last call 0.3 s")).toBeInTheDocument();
+  expect(screen.getByText("Model degraded")).toBeInTheDocument();
+  expect(screen.queryByText("Healthy")).not.toBeInTheDocument();
+  client.clear();
+});

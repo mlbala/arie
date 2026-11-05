@@ -2573,11 +2573,54 @@ html, body { overflow: hidden; }
 .answer-evaluation p { margin: 7px 0; font-size: 10px; line-height: 1.7; }
 @media (max-width: 720px) { .grounded-answer { margin-left: 0; } }
 
+/* Explain mode: streamed Markdown, page chips, and each sentence styled by its check. */
+.composer-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.answer-mode { display: inline-flex; padding: 2px; border: 1px solid var(--line); border-radius: 7px; }
+.answer-mode button { padding: 3px 9px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font-size: 10px; cursor: pointer; }
+.answer-mode button[aria-pressed="true"] { background: var(--green-soft); color: var(--green); font-weight: 600; }
+.answer-mode button:disabled { cursor: default; }
+.explained-answer { margin-left: 35px; }
+.explanation-text { margin: 12px 0 18px; color: var(--ink); font-size: 14px; line-height: 1.85; overflow-wrap: anywhere; }
+.explanation-text :is(p, ul, ol, blockquote, pre, table) { margin: 0 0 12px; }
+.explanation-text :is(h1, h2, h3, h4) { margin: 16px 0 8px; font-size: 14px; }
+.explanation-text :is(ul, ol) { padding-left: 20px; }
+.explanation-text blockquote { padding-left: 12px; border-left: 2px solid var(--line); color: var(--muted); }
+.explanation-text pre { overflow-x: auto; padding: 10px; border-radius: 6px; background: var(--canvas); font-size: 12px; }
+.explanation-text table { border-collapse: collapse; font-size: 12px; }
+.explanation-text :is(th, td) { padding: 4px 8px; border: 1px solid var(--line); text-align: left; }
+.citation-chip { display: inline; margin-left: 3px; padding: 0 4px; border: 1px solid var(--line); border-radius: 4px; background: transparent; color: var(--green); font-size: 10px; font-weight: 600; line-height: 1.5; vertical-align: 1px; cursor: pointer; }
+.citation-chip:hover:not(:disabled) { border-color: var(--green); }
+.citation-chip.unchecked { border-style: dashed; }
+.citation-chip.missing { color: var(--muted); cursor: default; }
+.answer-sentence.status-flagged { background: var(--amber-soft); text-decoration: underline wavy var(--amber); text-decoration-thickness: 1px; text-underline-offset: 3px; cursor: help; }
+.answer-sentence.status-background { color: var(--muted); }
+@media (max-width: 720px) { .explained-answer { margin-left: 0; } }
+
 /* Answer feedback and per-paper evaluation */
 .answer-feedback { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 10px; color: var(--muted); font-size: 10px; }
 .answer-feedback .icon-button { width: 28px; height: 28px; }
 .answer-feedback .icon-button[aria-pressed="true"] { border-color: var(--line); background: var(--green-soft); color: var(--green); }
-.answer-feedback form { display: flex; flex: 1 1 220px; gap: 6px; }
+.answer-feedback form { display: flex; flex: 1 1 220px; flex-wrap: wrap; gap: 6px; }
+.feedback-reasons { display: flex; flex: 1 1 100%; flex-wrap: wrap; gap: 4px; }
+.reason-chip { border: 1px solid var(--line); border-radius: 999px; background: var(--paper); padding: 3px 9px; color: var(--muted); font-size: 10px; }
+.reason-chip[aria-pressed="true"] { border-color: var(--green); background: var(--green-soft); color: var(--green); font-weight: 600; }
+.feedback-panel { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; font-size: 11px; }
+.feedback-panel h3 { margin: 0 0 6px; font-size: 11px; font-weight: 650; }
+.feedback-agreement { margin: 0 0 10px; color: var(--muted); line-height: 1.6; }
+.feedback-agreement strong { color: var(--ink); font-variant-numeric: tabular-nums; }
+.feedback-agreement ul { margin: 4px 0 0; padding-left: 16px; }
+.feedback-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.feedback-item { border: 1px solid var(--line); border-left: 3px solid var(--amber); border-radius: 6px; padding: 8px 10px; }
+.feedback-item.scored { border-left-color: var(--green); }
+.feedback-item p { margin: 3px 0 0; color: var(--muted); }
+.feedback-item .reasons { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.feedback-item .reasons span { border: 1px solid var(--line); border-radius: 999px; padding: 1px 7px; color: var(--muted); font-size: 10px; }
+.feedback-item .meta { font-size: 10px; font-variant-numeric: tabular-nums; }
+.feedback-item details summary { margin-top: 6px; color: var(--green); cursor: pointer; font-size: 10px; font-weight: 600; }
+.feedback-facts { display: grid; gap: 6px; margin-top: 6px; }
+.feedback-facts input, .feedback-facts textarea { min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); padding: 5px 8px; color: var(--ink); font: inherit; font-size: 11px; }
+.feedback-facts textarea { min-height: 52px; resize: vertical; }
+.feedback-facts .actions { display: flex; align-items: center; gap: 8px; }
 .answer-feedback input { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); padding: 5px 8px; color: var(--ink); font-size: 11px; }
 .evaluation-toggle { margin-top: 10px; border: 0; background: none; padding: 0; color: var(--green); font-size: 10px; font-weight: 600; }
 .evaluation-panel { margin-top: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); padding: 14px; }
@@ -2604,5 +2647,9 @@ html, body { overflow: hidden; }
 .evaluation-result.review svg { color: var(--amber); }
 .evaluation-result p { margin: 4px 0 0; color: var(--muted); }
 .evaluation-result details summary { margin-top: 4px; color: var(--muted); cursor: pointer; font-size: 10px; }
+.evaluation-fallbacks { margin: -4px 0 10px; color: var(--muted); font-size: 11px; }
+.evaluation-result p.evaluation-meta { display: flex; flex-wrap: wrap; font-size: 10px; font-variant-numeric: tabular-nums; }
+.evaluation-meta span + span::before { content: "·"; margin: 0 5px; }
+.evaluation-meta .evaluation-fallback { color: var(--amber); font-weight: 650; }
 .evaluation-variant { margin-left: auto; color: var(--muted); font-size: 9px; white-space: nowrap; }
 .supporting-passages blockquote.table-quote { overflow-x: auto; white-space: pre; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; line-height: 1.5; }

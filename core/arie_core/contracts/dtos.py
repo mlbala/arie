@@ -37,6 +37,8 @@ class LLMDelta(msgspec.Struct, frozen=True):
     text: str = ""
     tool_calls: list[ToolCall] = []
     finish: bool = False
+    # Set on the final delta only, and None when the provider reported no usage.
+    usage: TokenUsage | None = None
 
 
 class FileRef(msgspec.Struct, frozen=True):

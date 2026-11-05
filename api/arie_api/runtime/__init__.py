@@ -80,6 +80,26 @@ class ResearchRuntime(ChatHistory):
             """CREATE INDEX IF NOT EXISTS arie_chat_turns_paper
             ON arie_chat_turns(paper_id, created_at)""",
         )
+        # A follow-up that reads as a negative rating of the turn before it (S15). Kept apart
+        # from arie_feedback so an explicit rating is never mixed up with a guess.
+        await self.db.execute(
+            ctx,
+            """CREATE TABLE IF NOT EXISTS arie_implicit_feedback (
+            turn_id TEXT PRIMARY KEY, paper_id TEXT NOT NULL, question TEXT NOT NULL,
+            signal TEXT NOT NULL, follow_up TEXT NOT NULL, created_at TEXT NOT NULL)""",
+        )
+        await self.db.execute(
+            ctx,
+            """CREATE TABLE IF NOT EXISTS arie_paper_packs (
+            paper_id TEXT PRIMARY KEY, revision TEXT NOT NULL, text TEXT NOT NULL,
+            tokens INTEGER NOT NULL)""",
+        )
+        await self.db.execute(
+            ctx,
+            """CREATE TABLE IF NOT EXISTS arie_paper_guides (
+            paper_id TEXT PRIMARY KEY, revision TEXT NOT NULL, prompt_version TEXT NOT NULL,
+            json TEXT NOT NULL)""",
+        )
         await self.db.execute(
             ctx,
             """CREATE TABLE IF NOT EXISTS arie_sync_runs (

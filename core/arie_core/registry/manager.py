@@ -10,6 +10,7 @@ import importlib.metadata
 import importlib.util
 import inspect
 import logging
+import os
 import random
 import sys
 import time
@@ -18,7 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Protocol, TypeVar, cast
+from typing import Literal, Protocol, TypeVar, cast
 
 import yaml
 from dotenv import load_dotenv
@@ -59,13 +60,19 @@ DEPRECATED_RUNTIME_QOS_KEYS = (
 )
 
 
+# A host with this many CPUs or fewer gives each answer model its own worker by default.
+SMALL_HOST_CPUS = 2
+
+
 class RuntimeQoSConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     slow_callback_threshold_ms: float = 15.0
     utility_worker_processes: int = 4
-    # Entailment and reranker models share one worker process; false gives each its own.
-    shared_model_worker: bool = True
+    # Entailment and reranker share one worker process (true) or each has its own (false).
+    # Unset: share on hosts with more than ``SMALL_HOST_CPUS`` CPUs, separate otherwise, so a
+    # slow reranker cannot queue the claim check behind it on a small host (ADR 0012).
+    shared_model_worker: bool | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -84,6 +91,12 @@ class RuntimeQoSConfig(BaseModel):
             raise ValueError("values must be non-negative")
         return value
 
+    def shares_model_worker(self, cpus: int | None = None) -> bool:
+        """Whether the answer models share one worker: the setting, else by the CPU count."""
+        if self.shared_model_worker is not None:
+            return self.shared_model_worker
+        return (cpus if cpus is not None else os.process_cpu_count() or 1) > SMALL_HOST_CPUS
+
 
 class PluginConfigEntry(BaseModel):
     model_config = ConfigDict(extra="allow")
@@ -95,6 +108,15 @@ class PluginConfigEntry(BaseModel):
     inline: str | None = None
 
 
+# Context windows in tokens, chosen to be conservative but not checked against the providers'
+# documented limits. A provider that sets ``context_tokens`` in ``llm_providers`` overrides
+# these; an unknown plugin, or a provider with a ``base_url`` and no ``context_tokens`` (the
+# endpoint may serve any model), gets the fallback. Explain mode sizes the paper pack against
+# this number (ADR 0010).
+DEFAULT_CONTEXT_TOKENS = {"deepseek": 64_000, "openai": 128_000, "gemini": 128_000}
+FALLBACK_CONTEXT_TOKENS = 32_000
+
+
 class LLMProviderConfig(BaseModel):
     """Server-side provider defaults; credentials are resolved from environment variables."""
 
@@ -102,6 +124,8 @@ class LLMProviderConfig(BaseModel):
     model: str = Field(min_length=1, max_length=128)
     api_key_env: str = Field(pattern=r"^[A-Z][A-Z0-9_]*$")
     base_url: str | None = None
+    # None means the plugin's default in ``DEFAULT_CONTEXT_TOKENS``.
+    context_tokens: int | None = Field(default=None, ge=4096)
 
 
 def default_llm_providers() -> dict[str, LLMProviderConfig]:
@@ -133,6 +157,46 @@ def default_embedding_providers() -> dict[str, EmbeddingProviderConfig]:
     }
 
 
+class ExplainConfig(BaseModel):
+    """Explain-mode settings (ADR 0010)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    # The whole paper pack is used only if its estimated tokens fit within this share of the
+    # provider's context window; otherwise the paged pack is used.
+    max_pack_share: float = Field(default=0.6, gt=0.0, le=1.0)
+
+
+class AnswerConfig(BaseModel):
+    """Which answer path a question takes when the request does not say."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    default_mode: Literal["strict", "explain"] = "strict"
+
+
+class JudgeConfig(BaseModel):
+    """The in-chat judge (S13). It is a chat switch only: eval runs always judge."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    # all: after each explain answer, one batched call judges every cited sentence on the
+    # writer's provider. off: no judge call in chat and no ``judge`` events.
+    chat: Literal["all", "off"] = "all"
+
+    @field_validator("chat", mode="before")
+    @classmethod
+    def _yaml_booleans(cls, value: object) -> object:
+        # YAML 1.1 reads an unquoted `off` as false and `on` as true.
+        return {False: "off", True: "all"}.get(value, value) if isinstance(value, bool) else value
+
+
+class EvalConfig(BaseModel):
+    """Evaluation settings that do not belong to a plugin."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    # The provider that judges explain against strict. None picks a provider other than the
+    # writer's whose key is set, and the writer's own provider if there is none.
+    judge_provider: str | None = Field(default=None, min_length=1, max_length=64)
+
+
 class ArieConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -144,6 +208,26 @@ class ArieConfig(BaseModel):
         default_factory=default_embedding_providers
     )
     sync: SyncConfig = Field(default_factory=lambda: SyncConfig())
+    explain: ExplainConfig = Field(default_factory=ExplainConfig)
+    answer: AnswerConfig = Field(default_factory=AnswerConfig)
+    judge: JudgeConfig = Field(default_factory=JudgeConfig)
+    eval: EvalConfig = Field(default_factory=EvalConfig)
+
+    @model_validator(mode="after")
+    def _judge_provider_is_configured(self) -> ArieConfig:
+        named = self.eval.judge_provider
+        if named is not None and named not in self.llm_providers:
+            raise ValueError(f"eval.judge_provider {named!r} is not in llm_providers")
+        return self
+
+    def context_tokens_for(self, provider: str) -> int:
+        """The context window to plan for with this LLM plugin."""
+        profile = self.llm_providers.get(provider)
+        if profile is not None and profile.context_tokens is not None:
+            return profile.context_tokens
+        if profile is not None and profile.base_url:
+            return FALLBACK_CONTEXT_TOKENS
+        return DEFAULT_CONTEXT_TOKENS.get(provider, FALLBACK_CONTEXT_TOKENS)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> ArieConfig:

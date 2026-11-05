@@ -24,7 +24,12 @@ installing a package, and fork the core without touching vendor code.
 
 ## Features
 
-- **Grounded answers.** An answer contains only claims backed by a quote that exists in
+- **Two answer modes.** **Strict** (the default) retrieves excerpts and shows only claims
+  that pass a quote check, an entailment check and a review. **Explain** puts the whole
+  paper in the prompt, streams a readable answer with inline citations and checks every
+  citation afterwards, flagging what fails. See
+  [How a question is answered](#how-a-question-is-answered).
+- **Grounded answers.** A strict answer contains only claims backed by a quote that exists in
   the paper. Quotes are matched exactly (Tier 1), then after Unicode and ligature
   normalization (Tier 2), and a local natural-language-inference model checks that each
   quote actually supports its claim (Tier 3). If no claim survives, ARIE abstains or
@@ -32,8 +37,10 @@ installing a package, and fork the core without touching vendor code.
 - **One paper at a time.** Questions are answered from the selected paper only.
   Retrieval tools never receive a paper ID from the model, and every result row is
   filtered by paper again, so text from another paper cannot leak in.
-- **Bounded cost.** Each question is capped at 3 tool calls, 12,000 input tokens, 700
-  output tokens and 25 seconds, enforced in code.
+- **Bounded cost.** Each strict question is capped at 3 tool calls, 12,000 input tokens,
+  700 output tokens and 25 seconds. An explain question is one streaming call with 10
+  seconds to the first token, 90 seconds in all and 600, 1,200 or 2,500 output tokens by
+  depth. Both are enforced in code.
 - **Automated ingestion.** Syncs arXiv and Google DeepMind papers by month, year or
   range, resumes interrupted runs, and imports a single paper from its arXiv link.
   Downloads are size-limited, host-restricted and validated as PDFs before saving.
@@ -153,11 +160,11 @@ flowchart LR
 | `core/arie_core/pipeline/` | Ingestion state machine, PDF gatekeeper, section-aware chunker. |
 | `core/arie_core/harness/` | Question answering: guard, planner, paper-bound reading, reranking, writer, verifier, reviewer. |
 | `core/arie_core/budget/`, `sched/` | Token and tool budgets, QoS lanes, per-host rate limits. |
-| `api/arie_api/` | FastAPI app: REST and server-sent events, answer models, per-paper evaluation. `runtime/` holds the runtime in layers: `base` (config, plugins, pools), `library`, `vectors`, `sync` (sync and import jobs), `chat`. |
+| `api/arie_api/` | FastAPI app: REST and server-sent events, answer models, per-paper evaluation, the offline prompt optimizer. `runtime/` holds the runtime in layers: `base` (config, plugins, pools), `library`, `vectors`, `sync` (sync and import jobs), `chat`. |
 | `worker/arie_worker/` | Supervised, recycled worker processes for CPU-heavy work. |
 | `plugins/` | Bundled plugins, one package per folder. |
 | `sdk/` | The `arie` CLI for scaffolding and testing plugins. |
-| `prompts/` | Versioned prompts: `qa.v1.yaml` (planner, writer, reviewer) and `eval.v1.yaml` (evaluation questions). |
+| `prompts/` | Versioned prompts: `qa.v1.yaml` (planner, writer, reviewer), `explain.v1.yaml` (explain-mode header, writer rules, target length per depth), `judge.v1.yaml` (the citation-support and pairwise judges) and `eval.v1.yaml` (evaluation questions). A file such as `explain.v2.yaml` is a candidate written by `make optimize-prompts`; nothing loads it until you switch. |
 | `contract_tests/` | Slot contract tests run against every discovered plugin. |
 | `web/` | React 19 workspace. |
 | `docs/adr/` | Architecture decision records. |
@@ -194,6 +201,12 @@ A failed paper is recorded with its reason and never blocks the rest of a sync.
 
 ### How a question is answered
 
+A question is answered in one of two modes, set by the request's `mode` field. The
+default is `strict`; `answer.default_mode` changes it, and the chat has an
+Explain / Strict switch per paper.
+
+#### Strict mode
+
 ```mermaid
 flowchart TD
   Q[Question] --> G{Guard: prompt injection,<br/>cross-paper requests}
@@ -220,6 +233,57 @@ flowchart TD
   exact source excerpts with the reason. Generated text from earlier turns is never
   reused as evidence.
 - Prompts live in `prompts/qa.v1.yaml`; new questions load the current file.
+
+#### Explain mode
+
+```mermaid
+flowchart TD
+  Q[Question] --> G{Guard}
+  G -- blocked --> A1[Abstain with reason]
+  G -- allowed --> D[Keyword planner:<br/>answer depth, no model call]
+  D --> PK[Paper pack: the whole paper,<br/>each chunk tagged cN]
+  PK --> W[One streaming writer call:<br/>prose citing cN or marked background]
+  W --> C1[Deterministic citation checks]
+  C1 --> J[One batched judge call:<br/>every cited sentence]
+  J --> S[Flag unsupported sentences,<br/>save the turn]
+```
+
+- **Paper pack.** The paper becomes one text: title, abstract, section outline, then every
+  kept chunk tagged `[cN]`, where `N` is the chunk number. References, credits and contents
+  listings are left out. It is built when the paper is indexed and stored with the paper.
+  If its estimated size is over `explain.max_pack_share` of the model's `context_tokens`,
+  a paged pack carries the abstract, introduction, conclusion and the sections strict
+  retrieval ranks first. The paper ID never enters the prompt.
+- **Cached prefix.** The prompt is one shared header, the pack, the role instructions, the
+  last 6 turns and then the question, so the provider's prompt cache serves the pack on
+  every turn. The writer and the judge share it.
+- **One writer call.** Every sentence cites `[cN]` or is marked as background. There is no
+  planner call, rerank, entailment model or reviewer; the answer depth comes from the
+  keyword planner.
+- **Checks after streaming.** Deterministic checks (does the marker exist, does the
+  sentence match the chunk, numbers and qualifiers) run first, then the judge reads every
+  cited sentence in one call. Unsupported sentences are flagged to the reader, not removed.
+  `judge.chat: off` skips the judge. Results stream as server-sent events and are saved
+  with the turn.
+- **Limits.** A citation points to a whole chunk (its page and range), not one quote. A
+  sentence can reach the reader before its check finishes. Explain mode cannot abstain: a
+  question the paper does not cover still gets written text. Math in answers is not
+  rendered. Prompts are `prompts/explain.v1.yaml` and `prompts/judge.v1.yaml`.
+
+| | Strict | Explain |
+| --- | --- | --- |
+| Model input | At most 12,000 tokens of excerpts | The whole paper, up to `explain.max_pack_share` (default 60%) of the context window |
+| Model calls | Up to 3 (plan, write, review) | 1 writer, plus 1 judge |
+| Time limit | 25 s | 10 s to the first token, 90 s in all |
+| Checks | Before showing; a failure drops the claim or falls back to excerpts | After streaming; a failure is flagged in place |
+| Citation | Exact quote with offsets | Chunk page and range |
+| Question the paper does not cover | Abstains | Writes an answer anyway |
+
+The default stays `strict`. Explain becomes the default only when its citation support
+(cited sentences that pass the checks) reaches 90% on the evaluation sets. The latest runs
+(DeepSeek, one run each, November 2026) scored 0.86 on a library paper and 0.89 on 30
+Qasper dev papers, with no excerpt fallbacks against 9% and 27% for strict, and prose fact
+recall of 0.56 and 0.46 against strict's 0.69 and 0.29.
 
 ### Process model
 
@@ -483,10 +547,14 @@ evidence, unless it passes the verifier.
 | Section | Purpose |
 | --- | --- |
 | `plugins` | Which plugin fills each slot, plus constructor keys. |
-| `llm_providers` | Default model, key variable and optional `base_url` per LLM plugin. |
+| `llm_providers` | Default model, key variable, optional `base_url` and optional `context_tokens` (the context window explain mode plans for; defaults are 64,000 for DeepSeek and 128,000 for OpenAI and Gemini, and 32,000 for any other plugin or one with a `base_url`; they are conservative guesses, so set the real window) per LLM plugin. |
 | `embedding_providers` | Default model, similarity floor and key variable per embedder. |
+| `explain` | `max_pack_share` (default 0.6): the whole paper goes in the prompt only if its estimated tokens are at most this share of the model's `context_tokens` ([ADR 0010](docs/adr/0010-explain-mode-paper-in-the-prompt.md)). |
+| `answer` | `default_mode` (`strict`, the default, or `explain`): the answer path of a question whose request sets no `mode`. |
+| `judge` | `chat` (`all`, the default, or `off`): whether each explain answer's cited sentences are judged in the chat with one extra model call on the writer's provider. Evaluations always judge. |
+| `eval` | `judge_provider` (an `llm_providers` name): the provider that compares explain with strict in evaluations. Unset, it is another provider whose key is set, else the writer's. |
 | `sync` | Default sync window and limits (see [Sync](#sync)). |
-| `runtime_qos` | `utility_worker_processes` (PDF workers, capped to the CPUs), `slow_callback_threshold_ms` (event-loop lag warning) and `shared_model_worker` (default `true`: the claim checker and reranker share one process; `false` gives each its own). Older files may still carry `use_uvloop`, `user_initiated_override_concurrency`, `background_pdf_stream_concurrency` and `arxiv_rate_limit_delay_sec`; they are ignored and logged as deprecated. uvloop is chosen by the uvicorn `--loop` flag and arXiv spacing is fixed at 3 s. |
+| `runtime_qos` | `utility_worker_processes` (PDF workers, capped to the CPUs), `slow_callback_threshold_ms` (event-loop lag warning) and `shared_model_worker` (unset: the claim checker and reranker share one process on a host with more than 2 CPUs and get one each at 2 or fewer; `true` or `false` overrides, [ADR 0012](docs/adr/0012-foreground-gate-and-answer-worker-defaults.md)). Older files may still carry `use_uvloop`, `user_initiated_override_concurrency`, `background_pdf_stream_concurrency` and `arxiv_rate_limit_delay_sec`; they are ignored and logged as deprecated. uvloop is chosen by the uvicorn `--loop` flag and arXiv spacing is fixed at 3 s. |
 
 Keys for the local-model plugins:
 
@@ -536,8 +604,9 @@ To make ARIE lighter:
   embedding model.
 - Keep `threads: 1` on local models so one question uses about one core.
 - Lower `runtime_qos.utility_worker_processes` to run fewer PDF workers at once.
-- Keep `runtime_qos.shared_model_worker: true` (the default) and leave `memory_arena`
-  off on the ONNX plugins ([ADR 0009](docs/adr/0009-one-model-pool-shared-answer-worker.md)).
+- Leave `runtime_qos.shared_model_worker` unset (one worker above 2 CPUs, which saves
+  about 10% memory; two at 2 CPUs or fewer, so a slow reranker cannot delay the claim
+  check) and leave `memory_arena` off on the ONNX plugins ([ADR 0009](docs/adr/0009-one-model-pool-shared-answer-worker.md)).
 - Set `reranker: {use: none}` to drop the reranker; answers then use keyword and
   vector order.
 - Set `entailment: {use: none}` only on very small machines: claims then rest on quote
@@ -611,12 +680,22 @@ ready.
 - Select a paper, then ask a question. **What is this paper about?** gives a summary of
   contribution, method, evaluation, findings and limitations where the paper supports
   them. Each claim links to its page and quote.
+- The **Explain / Strict** switch under the question box is remembered per paper.
+  **Strict** shows only verified statements, each with its quote. **Explain** streams a
+  readable explanation from the whole paper. Each page chip (`p. 4`) opens the passage it
+  cites. Sentences a check flagged are underlined in amber, with the reason on hover.
+  Background sentences, which cite nothing in the paper, are muted.
 - **Import & status** shows extraction activity, evidence counts, database and PDF
   size, free disk and vector index coverage.
 - **Delete PDF** keeps the extracted text for chat; **Delete paper** removes the PDF,
   metadata and evidence. Pause sync before deleting.
-- Rate any answer with the thumbs under it. A thumbs-down can carry a short note, and
-  that question joins the paper's evaluation for review.
+- Rate any answer with the thumbs under it. A thumbs-down is saved at once and can then
+  carry reasons (wrong, not in the paper, too shallow, too long, missing citation, did
+  not answer) and a short note. That question joins the paper's evaluation for review; add
+  1-3 key facts there to make it a scored case. A follow-up that says the answer was wrong,
+  asks for it again or repeats the question marks the answer before it as questioned, and
+  the panel shows how often the judge's verdict matched your ratings. Ratings find
+  failures; they are not a quality score.
 
 ### Evaluate answers on one paper
 
@@ -632,7 +711,8 @@ the ground truth:
    prompt injection, and an energy-use question (only when the paper never mentions
    energy).
 3. Every question is answered exactly as in chat, with the same models and budgets,
-   and scored without a model judge:
+   and scored without a model judge (an explain run also asks the judge whether its cited
+   sentences are supported and whether it beats the strict answer):
    - **Grounded**: every cited quote exists in the paper at its stated offsets.
    - **Cited the source**: the answer quotes the sentence the question came from.
    - **Key facts**: the share of key facts that appear in the answer.
@@ -648,15 +728,50 @@ questions needs an LLM key; answering does not (answers then fall back to excerp
 The last 10 runs per paper are kept. From a terminal:
 `make eval-paper PAPER=<paper_id> ARGS="--compare-reranker"`.
 
+For questions ARIE did not write, `make eval-qasper N=30` imports the first N papers of
+[Qasper](https://allenai.org/data/qasper)'s dev split from arXiv (they join your library)
+and scores strict answers to its questions (`ARGS="--mode explain"` scores explain mode): extractive-span answers become key facts
+(a span is found in the paper's extracted text ignoring case, punctuation and spacing, and the
+paper's own wording is kept), unanswerable questions must be
+refused, and yes/no and free-form answers are skipped and counted. The dev file is
+downloaded once into `data/eval/qasper/`. Needs network and an LLM key.
+
+#### Improve the explain prompt offline
+
+`make optimize-prompts PROMPT=explain MAX_CALLS=200` asks [GEPA](https://github.com/gepa-ai/gepa)
+to rewrite the explain writer's rules from where they fail. It reads every saved fact case in
+your library (generated, Qasper, and answers you rated down that have key facts), scores each
+answer with the same measures as an explain evaluation (key facts stated plus citation
+support, minus a penalty when no written answer came back), and shows GEPA what went wrong:
+missed key facts, flagged citations, the judge's reasons and your thumbs-down reasons.
+
+- **It cannot change a live prompt.** The best rules are written to
+  `prompts/explain.v<N+1>.yaml` (never over an existing file), and no code loads that
+  version. To use it, change the default version in `load_explain_prompts`
+  (`core/arie_core/harness/explain.py`); each answer then records the new `prompt_version`.
+- **Hard cap on model calls.** `MAX_CALLS` counts every writer, judge and reflection call, and
+  a call past it is refused. The cap is printed first, with the calls kept back for scoring
+  the old and new rules; a cap too low for one search step is rejected before any call.
+- **Honest scoring.** About 30% of each case origin is split off by a fixed seed
+  (`--seed`) and never reaches GEPA. After the search the report gives train and held-out
+  scores for the old and new rules, so a gain that does not carry over is visible. Use
+  `ARGS="--cases 10"` for a small dry run.
+- Needs network, an LLM key and cases in the library (run an evaluation or `make eval-qasper`
+  first). Only the writer rules change: the shared header and the length per depth are copied
+  unchanged, so the judge and the guide keep reusing the writer's cached prompt.
+
 ### API
 
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /v1/papers`, `GET /v1/papers/{id}` | Library and one paper |
-| `POST /v1/papers/{id}/questions` | Ask a question; answers stream as server-sent events (`progress`, `answer`, `claim`, `abstention`, `done`, `error`) |
+| `POST /v1/papers/{id}/questions` | Ask a question; answers stream as server-sent events (`progress`, `answer`, `claim`, `abstention`, `done`, `error`). Body `mode` is `strict` (default) or `explain`, which streams `delta` text, then `citations`, `checks` (a verdict per sentence) and `judge` (the model's verdict per cited sentence, unless `judge.chat` is `off`) instead of `claim`s |
 | `GET /v1/papers/{id}/pdf`, `.../pages/{n}`, `.../chat` | Original PDF, extracted page, chat history |
-| `PUT /v1/papers/{id}/chat/{turn_id}/feedback` | Rate a saved answer `up`, `down` or `null`, with an optional note |
-| `GET /v1/papers/{id}/eval`, `POST .../eval/runs`, `GET .../eval/runs/{run}` | A paper's evaluation questions, runs and feedback; start a run |
+| `GET /v1/papers/{id}/guide` | The paper's cited reading guide (`ready`, `pending` or `missing`), shown as the chat's opening message |
+| `PUT /v1/papers/{id}/chat/{turn_id}/feedback` | Rate a saved answer `up`, `down` or `null`, with an optional note and, for `down`, `reasons` |
+| `PUT /v1/papers/{id}/chat/{turn_id}/feedback/facts` | Attach 1-3 key facts (and the paper sentence that holds them) to an answer rated down, so its question is scored in evaluations |
+| `GET /v1/papers/{id}/eval`, `POST .../eval/runs`, `GET .../eval/runs/{run}` | A paper's evaluation questions, runs and feedback; start a run (`mode` is `strict` or `explain`) |
+| `GET /v1/feedback/agreement` | How often the judge's verdict matched your ratings (overall, per task), with the count of answers a follow-up questioned |
 | `POST /v1/sync`, `GET /v1/sync/{job}`, `POST /v1/sync/{job}/pause` | Run and control syncs |
 | `POST /v1/imports` | Import one paper by URL |
 | `GET /v1/plugins`, `PUT /v1/plugins/{slot}`, `POST /v1/plugins/{slot}/test` | List, switch and test plugins |
@@ -672,6 +787,9 @@ The last 10 runs per paper are kept. From a terminal:
 | `make web-check` | `oxlint`, TypeScript and Vitest for `web/` |
 | `make eval-llm` | Source-grounding evaluation against the configured LLM |
 | `make eval-paper PAPER=<id>` | Evaluate answers on one ingested paper (see [Evaluate answers on one paper](#evaluate-answers-on-one-paper)) |
+| `make eval-qasper N=<papers>` | Import the first N Qasper dev papers and score strict answers to their questions |
+| `make optimize-prompts PROMPT=explain MAX_CALLS=200` | Propose better explain writer rules offline under a hard cap on model calls, and write them as a candidate prompt file (see [Improve the explain prompt offline](#improve-the-explain-prompt-offline)) |
+| `make guides` | Build missing paper guides one at a time (`ARGS="<id> ..."` rebuilds those papers); the server builds them only for papers it indexes |
 
 `make check` covers typo search, exact source offsets, cross-paper isolation,
 fabricated quotes, changed numbers, missing negation, unsupported paraphrases and

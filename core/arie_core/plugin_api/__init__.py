@@ -136,8 +136,17 @@ def plugin(slot: object, name: str, api: str = ">=1,<2") -> Callable[[T], T]:
 
 
 class LLM(Protocol):
+    """A language model provider.
+
+    ``complete`` answers in JSON (the strict path's prompts ask for it) and may cap the
+    output; ``stream`` answers in prose (explain mode's Markdown) with exactly
+    ``max_output_tokens`` as its output limit.
+    """
+
     async def complete(self, ctx: Ctx, request: LLMRequest) -> LLMResponse: ...
-    async def stream(self, ctx: Ctx, request: LLMRequest) -> AsyncIterator[LLMDelta]: ...
+    # Plain ``def``: implementations are async generators, so calling one returns the
+    # iterator itself, not a coroutine.
+    def stream(self, ctx: Ctx, request: LLMRequest) -> AsyncIterator[LLMDelta]: ...
 
 
 class Embedder(Protocol):

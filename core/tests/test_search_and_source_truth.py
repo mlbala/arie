@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import Sequence
 from pathlib import Path
@@ -9,12 +8,13 @@ from typing import Any, cast
 
 import pytest
 from arie_api.runtime import ResearchRuntime, context
-from arie_core.contracts import LLMRequest, LLMResponse, TokenUsage
+from arie_core.contracts import LLMRequest, LLMResponse
 from arie_core.harness.answer import compose_answer, preserves_anchors
 from arie_core.harness.reader import EvidenceChunk
 from arie_core.plugin_api import LLM, Ctx
 from arie_core.registry.manager import ArieConfig
 from arie_core.search import score_paper
+from conftest import ScriptedModel
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -90,22 +90,6 @@ async def test_search_checks_all_pages_and_keeps_filters(tmp_path: Path) -> None
         assert not (await runtime.list_papers(search="ATTENTION", month="2026-10"))["items"]
     finally:
         runtime.close()
-
-
-class ScriptedModel:
-    def __init__(self, responses: list[object]) -> None:
-        self.responses = list(responses)
-        self.requests: list[LLMRequest] = []
-
-    async def complete(self, ctx: Ctx, request: LLMRequest) -> LLMResponse:
-        del ctx
-        self.requests.append(request)
-        assert not request.tools
-        return LLMResponse(json.dumps(self.responses.pop(0)), TokenUsage(1, 30))
-
-    async def stream(self, ctx: Ctx, request: LLMRequest):
-        del ctx, request
-        yield
 
 
 SOURCE = (

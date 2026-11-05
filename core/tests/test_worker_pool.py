@@ -49,6 +49,35 @@ async def test_a_caller_giving_up_keeps_the_worker_only_when_asked(keep: bool) -
 
 
 @pytest.mark.asyncio
+async def test_a_pool_counts_the_calls_its_callers_gave_up_on_until_they_finish() -> None:
+    pool = SupervisedPool(1, "Test", keep_on_cancel=True)
+    try:
+        await pool.submit(30.0, os.getpid)
+        assert pool.abandoned_calls == 0
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.2):
+                await pool.submit(30.0, time.sleep, 0.6)
+        assert pool.abandoned_calls == 1  # still running in the worker
+        await pool.submit(30.0, os.getpid)  # queues behind it, so it has finished by now
+        await asyncio.sleep(0.05)
+        assert pool.abandoned_calls == 0
+    finally:
+        pool.close()
+
+
+@pytest.mark.asyncio
+async def test_a_pool_that_kills_on_cancel_has_no_abandoned_calls() -> None:
+    pool = SupervisedPool(1, "Test")
+    try:
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.2):
+                await pool.submit(30.0, time.sleep, 5)
+        assert pool.abandoned_calls == 0
+    finally:
+        pool.close()
+
+
+@pytest.mark.asyncio
 async def test_a_call_past_kill_after_still_kills_a_keep_on_cancel_pool() -> None:
     pool = SupervisedPool(1, "Test", keep_on_cancel=True)
     try:

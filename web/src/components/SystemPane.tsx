@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity, Database, HardDrive, Layers3, ListOrdered, ShieldCheck, Trash2, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
-import { deletePaper, getStorageHealth, type PaperSummary } from "../api/client";
+import { deletePaper, getStorageHealth, type AnswerModelHealth, type PaperSummary } from "../api/client";
 
 function useStorageHealth() {
   return useQuery({ queryKey: ["storage"], queryFn: getStorageHealth, refetchInterval: 15000 });
@@ -30,9 +30,11 @@ export function SystemPane({ open, docked, onClose, children }: { open: boolean;
 export function StorageHealth() {
   const health = useStorageHealth();
   const data = health.data;
+  const modelDegraded = data?.entailment?.status === "degraded" || data?.reranker?.status === "degraded";
+  const allHealthy = data?.database.status === "healthy" && data.file_storage.status === "healthy" && !modelDegraded;
   return (
           <details className="system-section storage-section">
-            <summary><HardDrive size={14} /><span>Storage & health</span><span className={`storage-status ${data?.database.status === "healthy" && data.file_storage.status === "healthy" ? "healthy" : ""}`}>{health.error ? "Unavailable" : data ? data.database.status === "healthy" && data.file_storage.status === "healthy" ? "Healthy" : "Check status" : "Checking"}</span></summary>
+            <summary><HardDrive size={14} /><span>Storage & health</span><span className={`storage-status ${allHealthy ? "healthy" : ""}`}>{health.error ? "Unavailable" : data ? allHealthy ? "Healthy" : modelDegraded ? "Model degraded" : "Check status" : "Checking"}</span></summary>
             <div className="storage-details">
             {health.error && <p className="sync-error" role="alert">{health.error.message}</p>}
             <article><div><Database size={14} /><strong>Database</strong><span className={`health-pill ${data?.database.status ?? "unknown"}`}>{data?.database.status ?? "Checking"}</span></div>
@@ -43,14 +45,8 @@ export function StorageHealth() {
               <p>{data?.vector_store.provider ?? "—"} · {data?.vector_store.vectors ?? "—"} vectors · {bytes(data?.vector_store.size_bytes)}</p>
               <small>{data?.vector_store.detail ?? "Waiting for provider status."}</small>
             </article>
-            {data?.entailment && <article><div><ShieldCheck size={14} /><strong>Claim checker</strong><span className={`health-pill ${data.entailment.status}`}>{data.entailment.status}</span></div>
-              <p>{data.entailment.plugin} · Tier 3 entailment</p>
-              <small>{data.entailment.detail}</small>
-            </article>}
-            {data?.reranker && <article><div><ListOrdered size={14} /><strong>Passage reranker</strong><span className={`health-pill ${data.reranker.status}`}>{data.reranker.status}</span></div>
-              <p>{data.reranker.plugin} · question relevance</p>
-              <small>{data.reranker.detail}</small>
-            </article>}
+            {data?.entailment && <AnswerModelCard icon={<ShieldCheck size={14} />} title="Claim checker" purpose="Tier 3 entailment" model={data.entailment} />}
+            {data?.reranker && <AnswerModelCard icon={<ListOrdered size={14} />} title="Passage reranker" purpose="question relevance" model={data.reranker} />}
             <article><div><HardDrive size={14} /><strong>PDF storage</strong><span className={`health-pill ${data?.file_storage.status ?? "unknown"}`}>{data?.file_storage.status ?? "Checking"}</span></div>
               <p>{data?.file_storage.provider ?? "—"} · {bytes(data?.file_storage.size_bytes)}{data?.file_storage.status === "partial" ? " (partial)" : ""}</p>
               <small>{data?.file_storage.files ?? "—"} PDF files · {bytes(data?.file_storage.disk_free_bytes)} free</small>
@@ -60,6 +56,17 @@ export function StorageHealth() {
             </div>
           </details>
 
+  );
+}
+
+/** One answer-path model; when degraded, `detail` carries the reason and `last call` shows how long it ran. */
+function AnswerModelCard({ icon, title, purpose, model }: { icon: ReactNode; title: string; purpose: string; model: AnswerModelHealth }) {
+  const latency = model.last_latency_seconds;
+  return (
+    <article><div>{icon}<strong>{title}</strong><span className={`health-pill ${model.status}`}>{model.status}</span></div>
+      <p>{model.plugin} · {purpose}{latency == null ? "" : ` · last call ${latency.toFixed(1)} s`}</p>
+      <small>{model.detail}</small>
+    </article>
   );
 }
 
