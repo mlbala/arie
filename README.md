@@ -683,7 +683,7 @@ ready.
 - The **Explain / Strict** switch under the question box is remembered per paper.
   **Strict** shows only verified statements, each with its quote. **Explain** streams a
   readable explanation from the whole paper. Each page chip (`p. 4`) opens the passage it
-  cites. Sentences a check flagged are underlined in amber, with the reason on hover.
+  cites, and hovering or focusing a chip (a numbered chip in Strict) previews the page and quote. Sentences a check flagged are underlined in amber, with the reason on hover.
   Background sentences, which cite nothing in the paper, are muted.
 - **Import & status** shows extraction activity, evidence counts, database and PDF
   size, free disk and vector index coverage.

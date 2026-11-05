@@ -1,8 +1,9 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useReducer } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { ChatWorkspace } from "./ChatWorkspace";
-import { getChat, getGuide, type CitationRange, type PaperSummary } from "../api/client";
+import { getChat, getExtractedPage, getGuide, type CitationRange, type PaperSummary } from "../api/client";
 import { EMPTY_SESSIONS, paperSessionsReducer } from "../paperSessions";
 
 // Saved history is fetched separately from the answer stream these tests script.
@@ -10,6 +11,7 @@ vi.mock("../api/client", async (importOriginal) => ({
   ...await importOriginal<typeof import("../api/client")>(),
   getChat: vi.fn(async () => ({ turns: [] })),
   getGuide: vi.fn(async () => ({ paper_id: "paper-1", status: "missing" })),
+  getExtractedPage: vi.fn(),
 }));
 
 const papers: PaperSummary[] = [
@@ -310,6 +312,42 @@ it("sends paper-specific question history for follow-ups and renders detailed pa
   expect(JSON.parse(String(fetcher.mock.calls[5]![1].body))).toEqual({ question: "What is this paper about?", mode: "strict" });
 });
 
+it("shows a source chip's page and quote on hover or focus, and still opens the source on click", async () => {
+  const quote = "The method uses isolated worker processes to read evidence.";
+  const citation = { page_start: 3, char_start: 10, char_end: 10 + quote.length, chunk_id: "paper-1:7" };
+  vi.mocked(getChat).mockResolvedValueOnce({ turns: [{
+    question: "How does the method work?",
+    events: [
+      { event: "answer", data: { paper_id: "paper-1", mode: "reviewed_answer", heading: "Detailed explanation", evaluation: { reviewed_claims: 1, rejected_claims: 0, answer_relevant: true } } },
+      { event: "claim", data: { paper_id: "paper-1", verified: true, claim: { text: "Isolated workers read the evidence.", quote, paragraph: 0, citation } } },
+      { event: "done", data: { paper_id: "paper-1", mode: "reviewed_answer" } },
+    ],
+  }] });
+  const onCitation = vi.fn();
+  render(<ChatWorkspace papers={papers} activePaperId="paper-1" onSelectPaper={vi.fn()} onClosePaper={vi.fn()} onCitation={onCitation} />);
+  const chip = await screen.findByRole("button", { name: "Source 1, page 3" });
+  expect(chip).toHaveTextContent(/^1$/);
+  expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+
+  fireEvent.mouseEnter(chip);
+  const card = screen.getByRole("tooltip");
+  expect(card).toHaveTextContent("Page 3");
+  expect(card).toHaveTextContent(quote);
+  expect(chip).toHaveAttribute("aria-describedby", card.id);
+  fireEvent.mouseLeave(chip);
+  expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+
+  fireEvent.focus(chip);
+  expect(screen.getByRole("tooltip")).toHaveTextContent(quote);
+  fireEvent.keyDown(document, { key: "Escape" });
+  expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+
+  fireEvent.mouseEnter(chip);
+  fireEvent.click(chip);
+  expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+  expect(onCitation).toHaveBeenCalledWith(expect.objectContaining({ page_start: 3, quote }));
+});
+
 it("restores saved turns as verified answers and uses them as follow-up context", async () => {
   const quote = "The method uses isolated worker processes to read evidence.";
   const citation = { page_start: 3, char_start: 10, char_end: 10 + quote.length, chunk_id: "paper-1:7" };
@@ -488,6 +526,35 @@ describe("explain answers", () => {
     expect(container.querySelector(".explanation-text img, .explanation-text script")).toBeNull();
     expect(screen.getByText(/<img src=x onerror="alert\(1\)">/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Not helpful" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("shows the cited page and passage when a chip is hovered, read from the page text", async () => {
+    // Characters 10 to 90 of page 2 are the cited chunk; the text around it must not appear.
+    const chunk = "Isolated workers read one paper each and never see another paper. ".padEnd(80, "-").slice(0, 80);
+    vi.mocked(getExtractedPage).mockResolvedValue({ number: 2, text: `BEFORE>>> ${chunk}AFTERWARDS` });
+    const events = [`event: delta\ndata: ${JSON.stringify({ paper_id: "paper-1", text })}\n\n`, ...tail].map((block) => {
+      const [kind, data] = block.trim().split("\n");
+      return { event: kind!.slice(7), data: JSON.parse(data!.slice(6)) as Record<string, unknown> };
+    });
+    vi.mocked(getChat).mockResolvedValueOnce({ turns: [{ turn_id: "turn-9", question: "How does it work?", events }] });
+    const onCitation = vi.fn();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={client}><Chat onCitation={onCitation} /></QueryClientProvider>);
+    const chips = await screen.findAllByRole("button", { name: "Source c3, page 2" });
+    fireEvent.mouseOver(chips[0]!);
+    const card = screen.getByRole("tooltip");
+    expect(card).toHaveTextContent("Page 2");
+    expect(card).toHaveTextContent("Not fully checked");
+    await waitFor(() => expect(card).toHaveTextContent("Isolated workers read one paper each"));
+    expect(card).not.toHaveTextContent("BEFORE");
+    expect(card).not.toHaveTextContent("AFTERWARDS");
+    expect(getExtractedPage).toHaveBeenCalledWith("paper-1", 2);
+    fireEvent.mouseOut(chips[0]!);
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    fireEvent.mouseOver(chips[1]!);
+    fireEvent.click(chips[1]!);
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    expect(onCitation).toHaveBeenCalledWith(expect.objectContaining({ page_start: 2, chunk_id: "paper-1:3" }));
   });
 
   it("says when an explanation stopped early", async () => {

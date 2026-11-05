@@ -1,4 +1,4 @@
-import { Activity, Fragment, useEffect, useRef, useState, type MouseEvent } from "react";
+import { Activity, Fragment, useEffect, useId, useMemo, useRef, useState, type MouseEvent, type SyntheticEvent } from "react";
 import {
   ArrowUpRight,
   BookOpen,
@@ -24,6 +24,7 @@ import {
   type SentenceStatus,
 } from "../explanation";
 import { DEFAULT_MODE, type AnswerMode } from "../paperSessions";
+import { CitationPopover, ExplainCitationPopover } from "./CitationPopover";
 import { EvaluationPanel } from "./EvaluationPanel";
 import { PaperGuideMessage } from "./PaperGuide";
 
@@ -462,7 +463,7 @@ function ChatPanel({
                     <h3 className="answer-title">{entry.heading}</h3>
                   )}
                   {entry.claims.length > 0 && <GroundedAnswer entry={entry} onCitation={onCitation} />}
-                  {entry.text !== undefined && <ExplainedAnswer entry={entry} onCitation={onCitation} />}
+                  {entry.text !== undefined && <ExplainedAnswer entry={entry} paperId={paper.id} onCitation={onCitation} />}
                   {entry.message && (
                     <p className="answer-notice">{entry.message}</p>
                   )}
@@ -602,7 +603,7 @@ function GroundedAnswer({ entry, onCitation }: { entry: ChatEntry; onCitation: (
   return <div className="grounded-answer">
     {paragraphs.map((paragraph) => <p className="answer-summary" key={paragraph}>{theme(paragraph) && <strong className="answer-theme">{theme(paragraph)}. </strong>}{entry.claims.map((claim, index) => (claim.paragraph ?? 0) === paragraph && <Fragment key={index}>
       {index > 0 ? " " : ""}{displaySourceText(claim.text)}
-      <button className="inline-citation" aria-label={`Source ${index + 1}, page ${claim.citation?.page_start}`} onClick={() => cite(claim)}>[{index + 1}]</button>
+      <CitationChip number={index + 1} claim={claim} onOpen={() => cite(claim)} />
     </Fragment>)}</p>)}
     <section className="answer-evidence" aria-label="Verified sources">
       <div className="answer-evidence-heading"><Check size={12} /><strong>Verified sources</strong><span>{entry.claims.length} supporting passage{entry.claims.length === 1 ? "" : "s"}</span></div>
@@ -627,14 +628,49 @@ function GroundedAnswer({ entry, onCitation }: { entry: ChatEntry; onCitation: (
   </div>;
 }
 
+/** A numbered source chip in a strict answer: hover or focus shows its page and quote, a click opens it. */
+function CitationChip({ number, claim, onOpen }: { number: number; claim: VerifiedClaim; onOpen: () => void }) {
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
+  const id = useId();
+  const show = (event: SyntheticEvent<HTMLButtonElement>) => setAnchor(event.currentTarget.getBoundingClientRect());
+  const hide = () => setAnchor(null);
+  return <>
+    <button className="inline-citation" aria-label={`Source ${number}, page ${claim.citation?.page_start}`}
+      aria-describedby={anchor ? id : undefined}
+      onClick={() => { hide(); onOpen(); }} onMouseEnter={show} onMouseLeave={hide} onFocus={show} onBlur={hide}>{number}</button>
+    {anchor && claim.citation && <CitationPopover id={id} onDismiss={hide} hover={{
+      anchor,
+      page: claim.citation.page_start,
+      quote: isTableQuote(claim.quote) ? claim.quote.trim() : displaySourceText(claim.quote),
+      table: isTableQuote(claim.quote),
+    }} />}
+  </>;
+}
+
 /** An explain-mode answer: streamed Markdown whose page chips open the cited chunk. */
-function ExplainedAnswer({ entry, onCitation }: { entry: ChatEntry; onCitation: (citation: CitationRange) => void }) {
+function ExplainedAnswer({ entry, paperId, onCitation }: { entry: ChatEntry; paperId: string; onCitation: (citation: CitationRange) => void }) {
   const html = renderExplanation(entry.text ?? "", entry.sentences ?? [], entry.citations);
-  // The chips are inside rendered HTML, so one handler on the container opens them.
-  const open = (event: MouseEvent<HTMLDivElement>) => {
+  // React rebuilds the chips from a new `{ __html }` object even when the string is the same,
+  // which would swap out the chip under the pointer each time the hover card opens.
+  const markup = useMemo(() => ({ __html: html }), [html]);
+  const [hover, setHover] = useState<{ citation: ExplainCitation; anchor: DOMRect } | null>(null);
+  const id = useId();
+  // The chips are inside rendered HTML, so handlers on the container find the chip under the event.
+  const chipOf = (event: SyntheticEvent<HTMLDivElement>) => {
     const chip = event.target instanceof Element ? event.target.closest("button[data-marker]") : null;
-    const cited = entry.citations?.find((citation) => String(citation.marker) === chip?.getAttribute("data-marker"));
-    if (cited) onCitation({
+    const citation = entry.citations?.find((item) => String(item.marker) === chip?.getAttribute("data-marker"));
+    return chip && citation ? { chip, citation } : null;
+  };
+  const show = (event: SyntheticEvent<HTMLDivElement>) => {
+    const found = chipOf(event);
+    if (found) setHover({ citation: found.citation, anchor: found.chip.getBoundingClientRect() });
+  };
+  const hide = () => setHover(null);
+  const open = (event: MouseEvent<HTMLDivElement>) => {
+    const cited = chipOf(event)?.citation;
+    if (!cited) return;
+    hide();
+    onCitation({
       page_start: cited.page,
       char_start: cited.charStart,
       char_end: cited.charEnd,
@@ -642,7 +678,9 @@ function ExplainedAnswer({ entry, onCitation }: { entry: ChatEntry; onCitation: 
     });
   };
   return <div className="explained-answer">
-    <div className="explanation-text" onClick={open} dangerouslySetInnerHTML={{ __html: html }} />
+    <div className="explanation-text" onClick={open} onMouseOver={show} onMouseOut={hide} onFocus={show} onBlur={hide}
+      aria-describedby={hover ? id : undefined} dangerouslySetInnerHTML={markup} />
+    {hover && <ExplainCitationPopover id={id} paperId={paperId} citation={hover.citation} anchor={hover.anchor} onDismiss={hide} />}
     {entry.incomplete && <p className="answer-notice">This explanation stopped before it finished.</p>}
   </div>;
 }
