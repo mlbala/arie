@@ -41,6 +41,9 @@ web/coverage/
 .env.*
 !.env.example
 
+# Technical specification build workspace (docx, diagrams, build scripts)
+docs/techspec/
+
 # Editors, OS and agent tooling
 .DS_Store
 .idea/
