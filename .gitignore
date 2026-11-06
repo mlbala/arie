@@ -44,6 +44,9 @@ web/coverage/
 # Technical specification build workspace (docx, diagrams, build scripts)
 docs/techspec/
 
+# Development work plan: Claude Code session prompts and progress log
+docs/explain-mode/
+
 # Editors, OS and agent tooling
 .DS_Store
 .idea/
