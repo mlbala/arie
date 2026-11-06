@@ -45,6 +45,11 @@ web/coverage/
 # technical specification workspace. The README is the only documentation in git.
 docs/
 
+# Local-only agent instructions, Claude Code settings and skills
+AGENTS.md
+CLAUDE.md
+.claude/
+
 # Editors, OS and agent tooling
 .DS_Store
 .idea/
