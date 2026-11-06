@@ -167,8 +167,6 @@ flowchart LR
 | `prompts/` | Versioned prompts: `qa.v1.yaml` (planner, writer, reviewer), `explain.v1.yaml` (explain-mode header, writer rules, target length per depth), `judge.v1.yaml` (the citation-support and pairwise judges) and `eval.v1.yaml` (evaluation questions). A file such as `explain.v2.yaml` is a candidate written by `make optimize-prompts`; nothing loads it until you switch. |
 | `contract_tests/` | Slot contract tests run against every discovered plugin. |
 | `web/` | React 19 workspace. |
-| `docs/adr/` | Architecture decision records. |
-| `docs/SPEC.md` | System specification: how each part works today, step by step, with time budgets, failure reasons and known gaps. |
 
 The core imports no vendor SDK and no plugin. `make check` enforces this with
 `import-linter`, so a fork can replace any plugin without editing the core.
@@ -298,7 +296,7 @@ never in API threads:
 
 A worker that exceeds a limit is killed and replaced; only that task fails. PDF and
 embedding workers run at lower CPU priority (`nice 10`), and the PDF pool never starts
-more processes than there are CPUs ([ADR 0006](docs/adr/0006-background-cpu-priority.md)).
+more processes than there are CPUs.
 
 Inside the API, a sync job runs one at a time and processes one paper at a time. Up to
 two single-paper imports run beside it, and evaluations run one at a time. Chat is not
@@ -307,8 +305,7 @@ requests are spaced 3 seconds apart.
 
 The claim checker and reranker share one worker that runs one call at a time. A call that
 passes its caller's budget keeps running, so the loaded models stay in memory, and the
-next call waits behind it. Each step's time budget and fallback is listed in
-[`docs/SPEC.md`](docs/SPEC.md#81-pipeline-and-time-budget).
+next call waits behind it.
 
 ### Design invariants
 
@@ -324,8 +321,6 @@ These rules hold for every change, including plugins:
    declared hosts, PDFs are size- and type-checked, and writes are atomic.
 5. **No vendor code in the core.** The core imports no SDK or plugin; plugins import only
    `arie_core.plugin_api` and `arie_core.contracts`, never each other.
-
-Decisions behind them are in [`docs/adr/`](docs/adr/README.md).
 
 ## Plug and play: bring your own components
 
@@ -534,7 +529,7 @@ warm-up, retries, the shared worker and the health pane then come from that entr
 | Connect ARIE to an external MCP server as a tool | **Not available yet.** |
 | Use an MCP server as the database | **Available** through `mcp-sql`. |
 | Expose ARIE's paper tools over MCP (`POST /mcp/p/<handle>`) | **Preview.** The endpoint speaks MCP and verifies signed, paper-scoped handles (`ARIE_MCP_SECRET`), but it serves a built-in demo paper rather than your library, and no API route issues handles yet. |
-| `reranker` slot | **Available.** `onnx-cross-encoder` (default) picks each answer's passages in `arie-worker` (ADR 0007). |
+| `reranker` slot | **Available.** `onnx-cross-encoder` (default) picks each answer's passages in `arie-worker`. |
 
 Pluggable tools are planned as a slot with two constraints from the design invariants:
 a tool never receives `paper_id` from the model, and what it returns is context, not
@@ -549,12 +544,12 @@ evidence, unless it passes the verifier.
 | `plugins` | Which plugin fills each slot, plus constructor keys. |
 | `llm_providers` | Default model, key variable, optional `base_url` and optional `context_tokens` (the context window explain mode plans for; defaults are 64,000 for DeepSeek and 128,000 for OpenAI and Gemini, and 32,000 for any other plugin or one with a `base_url`; they are conservative guesses, so set the real window) per LLM plugin. |
 | `embedding_providers` | Default model, similarity floor and key variable per embedder. |
-| `explain` | `max_pack_share` (default 0.6): the whole paper goes in the prompt only if its estimated tokens are at most this share of the model's `context_tokens` ([ADR 0010](docs/adr/0010-explain-mode-paper-in-the-prompt.md)). |
+| `explain` | `max_pack_share` (default 0.6): the whole paper goes in the prompt only if its estimated tokens are at most this share of the model's `context_tokens`. |
 | `answer` | `default_mode` (`strict`, the default, or `explain`): the answer path of a question whose request sets no `mode`. |
 | `judge` | `chat` (`all`, the default, or `off`): whether each explain answer's cited sentences are judged in the chat with one extra model call on the writer's provider. Evaluations always judge. |
 | `eval` | `judge_provider` (an `llm_providers` name): the provider that compares explain with strict in evaluations. Unset, it is another provider whose key is set, else the writer's. |
 | `sync` | Default sync window and limits (see [Sync](#sync)). |
-| `runtime_qos` | `utility_worker_processes` (PDF workers, capped to the CPUs), `slow_callback_threshold_ms` (event-loop lag warning) and `shared_model_worker` (unset: the claim checker and reranker share one process on a host with more than 2 CPUs and get one each at 2 or fewer; `true` or `false` overrides, [ADR 0012](docs/adr/0012-foreground-gate-and-answer-worker-defaults.md)). Older files may still carry `use_uvloop`, `user_initiated_override_concurrency`, `background_pdf_stream_concurrency` and `arxiv_rate_limit_delay_sec`; they are ignored and logged as deprecated. uvloop is chosen by the uvicorn `--loop` flag and arXiv spacing is fixed at 3 s. |
+| `runtime_qos` | `utility_worker_processes` (PDF workers, capped to the CPUs), `slow_callback_threshold_ms` (event-loop lag warning) and `shared_model_worker` (unset: the claim checker and reranker share one process on a host with more than 2 CPUs and get one each at 2 or fewer; `true` or `false` overrides). Older files may still carry `use_uvloop`, `user_initiated_override_concurrency`, `background_pdf_stream_concurrency` and `arxiv_rate_limit_delay_sec`; they are ignored and logged as deprecated. uvloop is chosen by the uvicorn `--loop` flag and arXiv spacing is fixed at 3 s. |
 
 Keys for the local-model plugins:
 
@@ -606,7 +601,7 @@ To make ARIE lighter:
 - Lower `runtime_qos.utility_worker_processes` to run fewer PDF workers at once.
 - Leave `runtime_qos.shared_model_worker` unset (one worker above 2 CPUs, which saves
   about 10% memory; two at 2 CPUs or fewer, so a slow reranker cannot delay the claim
-  check) and leave `memory_arena` off on the ONNX plugins ([ADR 0009](docs/adr/0009-one-model-pool-shared-answer-worker.md)).
+  check) and leave `memory_arena` off on the ONNX plugins.
 - Set `reranker: {use: none}` to drop the reranker; answers then use keyword and
   vector order.
 - Set `entailment: {use: none}` only on very small machines: claims then rest on quote
@@ -614,14 +609,12 @@ To make ARIE lighter:
 
 **Known issue on small machines.** The reranker's 3 s budget and the claim checker's
 4 s budget were measured on an 8-core Mac. On a 2-vCPU Docker VM the worst cases
-measured 9.7 s for reranking and 20.1 s for 12 long claim pairs
-([ADR 0009](docs/adr/0009-one-model-pool-shared-answer-worker.md)). When the claim check
+measured 9.7 s for reranking and 20.1 s for 12 long claim pairs. When the claim check
 misses its budget, the answer falls back to exact source excerpts with
 `fallback_reason: entailment_timeout` and the reviewer never runs. This timeout is not
 logged, and **Storage & health** still shows the claim checker as healthy, because that
 status reports only whether the model loaded. Check `fallback_reason` in the answer's
-evaluation details or in an evaluation run. Steps to confirm the cause and fix options are
-in [`docs/SPEC.md`](docs/SPEC.md#13-open-issue-evaluation-answers-fall-back-to-excerpts).
+evaluation details or in an evaluation run.
 
 **Docling** adds layout analysis, table structure and OCR for scanned PDFs, at a much
 higher cost:
@@ -812,7 +805,7 @@ After changing API routes, run `npm run generate:api` in `web/`. GitHub Actions 
   one failing paper cannot cancel a batch.
 - Never run PDF parsing or ONNX models in the API process or its threads; use a worker
   pool.
-- Record a decision that changes the architecture as a new ADR in `docs/adr/`.
+- Record a decision that changes the architecture in the matching section of this README.
 - Write commits as Conventional Commits (`feat:`, `fix:`, `docs:`, ...).
 
 ## License

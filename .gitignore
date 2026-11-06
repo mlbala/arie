@@ -41,11 +41,9 @@ web/coverage/
 .env.*
 !.env.example
 
-# Technical specification build workspace (docx, diagrams, build scripts)
-docs/techspec/
-
-# Development work plan: Claude Code session prompts and progress log
-docs/explain-mode/
+# Local-only docs: SPEC, ADRs, explain-mode work plan and session prompts, and the
+# technical specification workspace. The README is the only documentation in git.
+docs/
 
 # Editors, OS and agent tooling
 .DS_Store
