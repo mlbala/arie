@@ -370,6 +370,11 @@ export async function getChat(paperId: string, signal?: AbortSignal): Promise<{ 
   return requestJson(`/v1/papers/${encodeURIComponent(paperId)}/chat`, signal ? { signal } : {});
 }
 
+/** Delete the saved chat of every paper; returns how many turns were removed. */
+export function clearAllChats(): Promise<{ deleted: number }> {
+  return requestJson("/v1/chat", { method: "DELETE" });
+}
+
 /** A term or an equation's symbol with its cited meaning. */
 export interface GuideTerm {
   term: string;
