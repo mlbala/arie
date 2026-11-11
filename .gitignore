@@ -49,6 +49,8 @@ docs/
 AGENTS.md
 CLAUDE.md
 .claude/
+.github/copilot-instructions.md
+.github/instructions/
 
 # Editors, OS and agent tooling
 .DS_Store
