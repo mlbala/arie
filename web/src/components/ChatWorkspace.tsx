@@ -43,6 +43,8 @@ interface ChatWorkspaceProps {
   /** Answer mode per paper (from `paperSessions`); a paper without one uses DEFAULT_MODE. */
   modes?: Record<string, AnswerMode> | undefined;
   onModeChange?: ((paperId: string, mode: AnswerMode) => void) | undefined;
+  /** Bumped when saved chats are deleted; open panes remount and reload (now empty) chats. */
+  chatRevision?: number | undefined;
 }
 interface VerifiedClaim {
   text: string;
@@ -89,6 +91,7 @@ export function ChatWorkspace({
   onProgress,
   modes,
   onModeChange,
+  chatRevision = 0,
 }: ChatWorkspaceProps) {
   const activeRequest = useRef<AbortController | null>(null);
   const previousActiveId = useRef(activePaperId);
@@ -174,7 +177,7 @@ export function ChatWorkspace({
       ) : (
         papers.map((paper) => (
           <Activity
-            key={`${paper.id}:${paper.revision ?? ""}`}
+            key={`${paper.id}:${paper.revision ?? ""}:${chatRevision}`}
             mode={paper.id === activePaperId ? "visible" : "hidden"}
           >
             <ChatPanel
