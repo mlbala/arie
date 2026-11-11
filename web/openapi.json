@@ -497,6 +497,27 @@
         "summary": "Mcp Scope Handle"
       }
     },
+    "/v1/chat": {
+      "delete": {
+        "description": "Delete the saved chat of every paper. Papers, guides and ratings are untouched.",
+        "operationId": "clear_chats_v1_chat_delete",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Clear Chats V1 Chat Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Clear Chats"
+      }
+    },
     "/v1/events": {
       "get": {
         "operationId": "stream_events_v1_events_get",
