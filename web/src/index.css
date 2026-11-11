@@ -2308,6 +2308,19 @@ button:disabled {
   background: var(--green-soft);
   color: var(--ink);
 }
+.history-actions { display: flex; align-items: center; gap: 4px; }
+.history-delete {
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  color: var(--muted);
+}
+.history-delete:hover:not(:disabled),
+.history-delete:focus-visible {
+  background: var(--green-soft);
+  color: var(--ink);
+}
+.history-delete:disabled { opacity: .45; cursor: default; }
 .history-list {
   margin: 0;
   padding: 0;

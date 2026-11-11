@@ -12,7 +12,6 @@ import {
   Circle,
   FileStack,
   FolderOpen,
-  History,
   LoaderCircle,
   Menu,
   Search,
@@ -39,6 +38,7 @@ import { ImportPaper } from "./components/ImportPaper";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { SkippedDrawer } from "./components/SkippedDrawer";
 import { SyncControls } from "./components/SyncControls";
+import { HistorySection } from "./components/HistorySection";
 import { SelectedDocument, SourceTools, StorageHealth, SystemPane } from "./components/SystemPane";
 import { PublicationWindowFields } from "./components/PublicationWindow";
 import { RECENT_WINDOW, publicationLabel, publicationParams, type PublicationWindow } from "./publication";
@@ -110,6 +110,7 @@ export default function App() {
   const setSystemOpen = useCallback((open: boolean) => setActivityPanel((current) => ({ ...current, open })), []);
   const setLibraryOpen = useCallback((open: boolean) => setLibraryPanel((current) => ({ ...current, open })), []);
   const [importRevision, setImportRevision] = useState(0);
+  const [chatRevision, setChatRevision] = useState(0);
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(search), 250);
     return () => clearTimeout(timer);
@@ -263,29 +264,17 @@ export default function App() {
         </a>
         <div className="sidebar-scroll">
         {layout.import === "library" && <ImportPaper key={importRevision} onImported={selectPaper} onProgress={importProgress} />}
-        {historyPapers.length > 0 && (
-          <section className="history-section" aria-label="Recently viewed papers">
-            <div className="library-heading">
-              <span>
-                <History size={15} /> Recently viewed
-              </span>
-              <button className="text-button history-clear" onClick={() => dispatchSessions({ type: "clearHistory" })}>
-                Clear history
-              </button>
-            </div>
-            <ul className="history-list">
-              {historyPapers.map((paper) => (
-                <li key={paper.id}>
-                  <button title={paper.title} onClick={() => selectPaper(paper.id)}>
-                    <BookOpen size={12} />
-                    <span>{paper.title}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-            <p className="history-caption">{historyPapers.length} of {MAX_HISTORY} · reopen to pin again</p>
-          </section>
-        )}
+        <HistorySection
+          papers={historyPapers}
+          max={MAX_HISTORY}
+          onSelect={selectPaper}
+          onClearList={() => dispatchSessions({ type: "clearHistory" })}
+          onChatsCleared={() => {
+            setCitation(null);
+            setSourceOpen(false);
+            setChatRevision((value) => value + 1);
+          }}
+        />
         <section className="library-section" aria-label="Library papers" ref={filtersRef}>
         <div className="library-heading">
           <span>
@@ -488,6 +477,7 @@ export default function App() {
           }
           modes={sessions.modes}
           onModeChange={(id, mode) => dispatchSessions({ type: "setMode", id, mode })}
+          chatRevision={chatRevision}
         />
         <footer className="research-footer">
           <span>

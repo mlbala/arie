@@ -37,6 +37,7 @@ class _APIClient(Protocol):
     def get(self, url: str) -> httpx.Response: ...
     def post(self, url: str, *, json: object) -> httpx.Response: ...
     def put(self, url: str, *, json: object) -> httpx.Response: ...
+    def delete(self, url: str) -> httpx.Response: ...
 
 
 class _StreamingLLM:
@@ -361,6 +362,20 @@ def test_answers_can_be_rated_and_the_rating_is_restored(client: _APIClient) -> 
     assert client.put(url, json={"rating": "meh"}).status_code == 422
     missing = client.put("/v1/papers/paper-1/chat/nope/feedback", json={"rating": "up"})
     assert missing.status_code == 404
+
+
+def test_clear_chats_deletes_saved_turns_but_keeps_ratings(client: _APIClient) -> None:
+    streamed = client.post("/v1/papers/paper-1/questions", json={"question": "What is Cedar?"})
+    [done] = _events(streamed.text, "done")
+    client.put(f"/v1/papers/paper-1/chat/{done['turn_id']}/feedback", json={"rating": "down"})
+    assert len(client.get("/v1/papers/paper-1/chat").json()["turns"]) == 1
+
+    cleared = client.delete("/v1/chat")
+    assert cleared.status_code == 200 and cleared.json() == {"deleted": 1}
+    assert client.get("/v1/papers/paper-1/chat").json()["turns"] == []
+    assert client.get("/v1/papers/paper-1").status_code == 200
+    assert len(client.get("/v1/papers/paper-1/eval").json()["feedback"]) == 1
+    assert client.delete("/v1/chat").json() == {"deleted": 0}
 
 
 def _turn_url(turn_id: str) -> str:

@@ -276,14 +276,18 @@ it("pins five paper chats and shifts older ones into a clearable sidebar history
 
   expect(tabs().getAllByRole("button", { name: /^Close / })).toHaveLength(5);
   expect(tabs().queryByRole("button", { name: "Pinned candidate 0" })).not.toBeInTheDocument();
-  const history = screen.getByRole("region", { name: "Recently viewed papers" });
+  const history = screen.getByRole("region", { name: "History" });
   expect(within(history).getByRole("button", { name: "Pinned candidate 0" })).toBeInTheDocument();
 
   fireEvent.click(tabs().getByRole("button", { name: "Close Pinned candidate 3" }));
   expect(tabs().getAllByRole("button", { name: /^Close / })).toHaveLength(4);
   expect(within(history).getAllByRole("listitem")).toHaveLength(2);
 
-  fireEvent.click(within(history).getByRole("button", { name: "Clear history" }));
-  expect(screen.queryByRole("region", { name: "Recently viewed papers" })).not.toBeInTheDocument();
+  fireEvent.click(within(history).getByRole("button", { name: "Clear list" }));
+  // The list is gone but the title and the trash icon stay, so chats can still be deleted.
+  expect(within(history).queryAllByRole("listitem")).toHaveLength(0);
+  expect(within(history).queryByRole("button", { name: "Clear list" })).not.toBeInTheDocument();
+  expect(within(history).getByRole("button", { name: "Delete all chat history" })).toBeInTheDocument();
+  expect(within(history).getByText("History")).toBeInTheDocument();
   client.clear();
 });
