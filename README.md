@@ -682,6 +682,11 @@ ready.
   size, free disk and vector index coverage.
 - **Delete PDF** keeps the extracted text for chat; **Delete paper** removes the PDF,
   metadata and evidence. Pause sync before deleting.
+- Chats are saved on the server (the last 10 turns of each of the 10 most recently asked
+  papers) and reload when a paper is opened. The trash icon beside the sidebar's **History**
+  title (*Delete all chat history*) removes them all after a confirmation; papers and
+  ratings stay. **Clear list** next to it only empties the recently viewed list, not any
+  chat. The title and the trash icon stay when the list is empty.
 - Rate any answer with the thumbs under it. A thumbs-down is saved at once and can then
   carry reasons (wrong, not in the paper, too shallow, too long, missing citation, did
   not answer) and a short note. That question joins the paper's evaluation for review; add
@@ -760,6 +765,7 @@ missed key facts, flagged citations, the judge's reasons and your thumbs-down re
 | `GET /v1/papers`, `GET /v1/papers/{id}` | Library and one paper |
 | `POST /v1/papers/{id}/questions` | Ask a question; answers stream as server-sent events (`progress`, `answer`, `claim`, `abstention`, `done`, `error`). Body `mode` is `strict` (default) or `explain`, which streams `delta` text, then `citations`, `checks` (a verdict per sentence) and `judge` (the model's verdict per cited sentence, unless `judge.chat` is `off`) instead of `claim`s |
 | `GET /v1/papers/{id}/pdf`, `.../pages/{n}`, `.../chat` | Original PDF, extracted page, chat history |
+| `DELETE /v1/chat` | Delete the saved chat of every paper (`{"deleted": n}`); papers, guides and ratings are kept |
 | `GET /v1/papers/{id}/guide` | The paper's cited reading guide (`ready`, `pending` or `missing`), shown as the chat's opening message |
 | `PUT /v1/papers/{id}/chat/{turn_id}/feedback` | Rate a saved answer `up`, `down` or `null`, with an optional note and, for `down`, `reasons` |
 | `PUT /v1/papers/{id}/chat/{turn_id}/feedback/facts` | Attach 1-3 key facts (and the paper sentence that holds them) to an answer rated down, so its question is scored in evaluations |
