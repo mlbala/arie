@@ -206,6 +206,11 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
         await document(paper_id)
         return {"paper_id": paper_id, "turns": await active().chat_history(paper_id)}
 
+    @app.delete("/v1/chat")
+    async def clear_chats() -> Document:
+        """Delete the saved chat of every paper. Papers, guides and ratings are untouched."""
+        return {"deleted": await active().clear_chat_history()}
+
     @app.get("/v1/papers/{paper_id:path}/guide")
     async def get_guide(paper_id: str) -> Document:
         """The paper's cited guide, with a citation per marker, or its build status.
