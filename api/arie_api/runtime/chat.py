@@ -102,6 +102,17 @@ class ChatHistory(PaperGuides):
             (CHAT_PAPERS,),
         )
 
+    async def clear_chat_history(self) -> int:
+        """Delete every saved turn of every paper and return how many were removed.
+
+        Ratings and key facts live in the evaluation tables and are kept: they are the reader's
+        own review set, not chat display history.
+        """
+        ctx = context("clear-chats", 10.0)
+        rows = await self.db.fetch(ctx, "SELECT COUNT(*) AS n FROM arie_chat_turns")
+        await self.db.execute(ctx, "DELETE FROM arie_chat_turns")
+        return int(str(rows[0]["n"])) if rows else 0
+
     async def _note_follow_up(self, paper_id: str, question: str) -> None:
         """Mark the paper's latest turn ``implicit negative`` if ``question`` reads as one.
 
