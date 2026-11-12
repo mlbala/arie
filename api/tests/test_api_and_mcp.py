@@ -144,9 +144,14 @@ def client(
 
     async def seed() -> None:
         await initialize()
+        pdf = tmp_path / "papers" / "paper-1.pdf"
+        pdf.parent.mkdir(parents=True, exist_ok=True)
+        pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
         for identifier, status in (("paper-1", "INDEXED"), ("paper-2", "SKIPPED")):
+            stored = {"file_path": str(pdf)} if identifier == "paper-1" else {}
             await runtime.save_paper(
                 dict(
+                    **stored,
                     id=identifier,
                     title="Cedar research",
                     source="arxiv",
@@ -209,6 +214,18 @@ def test_papers_feed_and_detail(client: _APIClient) -> None:
     assert body["page_count"] == 1
     assert body["id"] == first["id"]
     assert "file_path" not in body
+
+
+def test_the_pdf_is_served_as_an_inert_download_the_browser_cannot_run(
+    client: _APIClient,
+) -> None:
+    response = client.get("/v1/papers/paper-1/pdf")
+    assert response.status_code == 200 and response.content.startswith(b"%PDF-")
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    policy = response.headers["content-security-policy"]
+    assert "sandbox" in policy and "default-src 'none'" in policy
+    assert client.get("/v1/papers/paper-2/pdf").status_code == 404
 
 
 def test_question_stream_emits_verified_claims_only(client: _APIClient) -> None:
@@ -436,7 +453,7 @@ def test_an_explain_rating_records_the_explain_prompt_and_trace(
     turn_id = str(_events(streamed, "done")[0]["turn_id"])
     rated = client.put(_turn_url(turn_id), json={"rating": "down", "reasons": ["not_in_paper"]})
     body = rated.json()
-    assert body["mode"] == "explain" and body["prompt_version"] == "explain.v1"
+    assert body["mode"] == "explain" and body["prompt_version"] == "explain.v2"
     assert body["trace_id"] == answer["trace_id"] and body["trace_id"].startswith("explain:")
 
 
@@ -681,7 +698,7 @@ def test_an_explain_request_streams_text_then_the_answer_citations_and_usage(
     assert "".join(item["text"] for item in _events(text, "delta")) == "".join(ANSWER)
 
     [answer] = _events(text, "answer")
-    assert answer["mode"] == "explained_answer" and answer["prompt_version"] == "explain.v1"
+    assert answer["mode"] == "explained_answer" and answer["prompt_version"] == "explain.v2"
     evaluation = answer["evaluation"]
     assert evaluation["task"] == "explain" and evaluation["complete"] is True
     assert evaluation["depth"] == "standard" and evaluation["paged"] is False
@@ -918,7 +935,7 @@ def test_an_explain_evaluation_scores_the_written_text_and_stores_cache_and_firs
     assert result["evidence_hit"] is True and result["grounded"] is True
     assert result["cache_hit_rate"] == 0.75 and result["first_token_seconds"] is not None
     assert result["citation_valid_rate"] == 1.0 and result["background_share"] == 0.0
-    assert result["trace"]["prompt_version"] == "explain.v1"
+    assert result["trace"]["prompt_version"] == "explain.v2"
     summary = run["summary"]["configured"]
     assert summary["mean_cache_hit_rate"] == 0.75 and summary["passed_written"] == 1
     assert summary["mean_citation_valid_rate"] == 1.0 and summary["mean_background_share"] == 0.0

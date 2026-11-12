@@ -1,4 +1,4 @@
-import { dispatchCitationHighlight } from './citations'
+import { PDF_DOCUMENT_OPTIONS, dispatchCitationHighlight } from './citations'
 import { describe, expect, it, vi } from 'vitest'
 
 describe('dispatchCitationHighlight', () => {
@@ -13,5 +13,11 @@ describe('dispatchCitationHighlight', () => {
       pdfUrl: '/papers/source.pdf',
       citation: { page_start: 4, char_start: 118, char_end: 164 },
     })
+  })
+})
+
+describe('PDF_DOCUMENT_OPTIONS', () => {
+  it('opens untrusted PDFs without eval or XFA forms', () => {
+    expect(PDF_DOCUMENT_OPTIONS).toEqual({ isEvalSupported: false, enableXfa: false })
   })
 })

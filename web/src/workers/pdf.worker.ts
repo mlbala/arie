@@ -2,6 +2,7 @@ import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url'
 import type { PDFDocumentProxy, TextItem } from 'pdfjs-dist/types/src/display/api'
 import { GlobalWorkerOptions, getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import type { CitationRange } from '../api/client'
+import { PDF_DOCUMENT_OPTIONS } from '../pdf/citations'
 
 interface HighlightRequest {
   type: 'highlight'
@@ -26,7 +27,10 @@ GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 
 self.onmessage = async (event: MessageEvent<HighlightRequest>) => {
   try {
-    const document: PDFDocumentProxy = await getDocument({ url: event.data.pdfUrl }).promise
+    const document: PDFDocumentProxy = await getDocument({
+      ...PDF_DOCUMENT_OPTIONS,
+      url: event.data.pdfUrl,
+    }).promise
     const pageNumber = event.data.citation.page_start
     if (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > document.numPages) {
       throw new Error('Citation refers to a page outside the PDF.')

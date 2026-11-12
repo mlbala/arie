@@ -164,7 +164,7 @@ flowchart LR
 | `worker/arie_worker/` | Supervised, recycled worker processes for CPU-heavy work. |
 | `plugins/` | Bundled plugins, one package per folder. |
 | `sdk/` | The `arie` CLI for scaffolding and testing plugins. |
-| `prompts/` | Versioned prompts: `qa.v1.yaml` (planner, writer, reviewer), `explain.v1.yaml` (explain-mode header, writer rules, target length per depth), `judge.v1.yaml` (the citation-support and pairwise judges) and `eval.v1.yaml` (evaluation questions). A file such as `explain.v2.yaml` is a candidate written by `make optimize-prompts`; nothing loads it until you switch. |
+| `prompts/` | Versioned prompts: `qa.v1.yaml` (planner, writer, reviewer), `explain.v2.yaml` (explain-mode header, writer rules, target length per depth; `explain.v1.yaml` is kept for answers that recorded it), `judge.v1.yaml` (the citation-support and pairwise judges) and `eval.v1.yaml` (evaluation questions). A higher-numbered file such as `explain.v3.yaml` is a candidate written by `make optimize-prompts`; nothing loads it until you switch `EXPLAIN_PROMPT_VERSION`. |
 | `contract_tests/` | Slot contract tests run against every discovered plugin. |
 | `web/` | React 19 workspace. |
 
@@ -248,12 +248,14 @@ flowchart TD
 
 - **Paper pack.** The paper becomes one text: title, abstract, section outline, then every
   kept chunk tagged `[cN]`, where `N` is the chunk number. References, credits and contents
-  listings are left out. It is built when the paper is indexed and stored with the paper.
+  listings are left out, and so is paper text that reads as instructions to the assistant.
+  It is built when the paper is indexed and stored with the paper.
   If its estimated size is over `explain.max_pack_share` of the model's `context_tokens`,
   a paged pack carries the abstract, introduction, conclusion and the sections strict
   retrieval ranks first. The paper ID never enters the prompt.
-- **Cached prefix.** The prompt is one shared header, the pack, the role instructions, the
-  last 6 turns and then the question, so the provider's prompt cache serves the pack on
+- **Cached prefix.** The prompt is one shared header, the pack between `<paper>` and
+  `</paper>` (paper text cannot write either tag), the role instructions, the last 6 turns
+  and then the question, so the provider's prompt cache serves the pack on
   every turn. The writer and the judge share it.
 - **One writer call.** Every sentence cites `[cN]` or is marked as background. There is no
   planner call, rerank, entailment model or reviewer; the answer depth comes from the
@@ -266,7 +268,7 @@ flowchart TD
 - **Limits.** A citation points to a whole chunk (its page and range), not one quote. A
   sentence can reach the reader before its check finishes. Explain mode cannot abstain: a
   question the paper does not cover still gets written text. Math in answers is not
-  rendered. Prompts are `prompts/explain.v1.yaml` and `prompts/judge.v1.yaml`.
+  rendered. Prompts are `prompts/explain.v2.yaml` and `prompts/judge.v1.yaml`.
 
 | | Strict | Explain |
 | --- | --- | --- |
