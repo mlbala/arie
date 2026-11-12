@@ -15,7 +15,7 @@ from typing import Any, cast
 
 import yaml
 from arie_core.contracts import ParsedDoc
-from arie_core.pipeline import IngestionPipeline
+from arie_core.pipeline import IngestionPipeline, PdfRejected
 from arie_core.pipeline.chunker import chunk_spans
 from arie_core.plugin_api import (
     PagedSourcePlugin,
@@ -531,6 +531,10 @@ class SyncJobs(VectorIndex):
                     status="QUARANTINED" if "quarantined" in str(exc) else "FAILED",
                     status_reason=str(exc),
                 )
+                if isinstance(exc, PdfRejected):
+                    # parse_document deleted the stored file (SPEC 6.2).
+                    document.pop("file_path", None)
+                    document.update(pdf_deleted=True)
                 await self.save_paper(document)
             await self.update_job(job, error=f"{paper.title}: {exc}")
         finally:

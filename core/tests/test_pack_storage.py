@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pikepdf
 import pytest
 from arie_api.models import ANSWER_SLOTS, AnswerModel
 from arie_api.runtime import ResearchRuntime, context
@@ -16,6 +17,7 @@ from arie_core.plugin_api import ScrapedPaperInput
 from arie_core.registry.manager import ArieConfig
 from arie_core.registry.sync import SyncConfig
 from arie_worker.models import LocalModel
+from arie_worker.pdf_check import check_pdf
 from conftest import ScriptedModel
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -394,6 +396,43 @@ async def test_pdf_parsing_waits_for_a_question_in_flight(
             assert parsed == ["idle.pdf"] and not task.done()  # held back, not killed
         assert await asyncio.wait_for(task, 1.0) == "parsed"
         assert parsed == ["idle.pdf", "busy.pdf"]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_a_pdf_with_javascript_is_quarantined_once_and_its_file_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = runtime_at(tmp_path)
+    await runtime.initialize()
+    scraped, stored = resumable(tmp_path)
+    stored.update(status="DOWNLOADING", pages=[])
+    pdf = pikepdf.new()
+    pdf.add_blank_page()
+    pdf.Root.OpenAction = pikepdf.Dictionary(
+        S=pikepdf.Name.JavaScript, JS=pikepdf.String("app.alert(1)")
+    )
+    pdf.save(stored["file_path"])
+    calls: list[str] = []
+
+    async def parse(file_path: str) -> Any:
+        # The worker's order, in process: the check first, the parser only if it passes.
+        calls.append(file_path)
+        check_pdf(file_path, runtime.config.ingestion.pdf_check)
+        raise AssertionError("the parser must not run")
+
+    monkeypatch.setattr(runtime.pool, "parse", parse)
+    try:
+        await runtime.save_paper(stored)
+        job = await ingest(runtime, scraped)
+        assert job["failed"] == 1 and job["indexed"] == 0
+        assert calls == [stored["file_path"]]  # no second parse attempt
+        saved = await runtime.get_paper("resumed")
+        assert saved and saved["status"] == "QUARANTINED"
+        assert saved["status_reason"] == "quarantined: javascript"
+        assert saved["pdf_deleted"] is True and "file_path" not in saved
+        assert not await asyncio.to_thread(Path(stored["file_path"]).exists)
     finally:
         runtime.close()
 

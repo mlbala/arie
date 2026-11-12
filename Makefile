@@ -1,4 +1,4 @@
-.PHONY: check lint boundaries types test test-unit test-api test-contracts web-check eval-llm eval-paper eval-qasper guides optimize-prompts
+.PHONY: check lint boundaries types test test-unit test-api test-contracts web-check eval-llm eval-paper eval-qasper guides optimize-prompts pdf-report
 
 # Everything CI runs for Python: lint, import boundaries, strict types, all test suites.
 check: lint boundaries types test
@@ -55,3 +55,9 @@ PROMPT ?= explain
 MAX_CALLS ?= 200
 optimize-prompts:
 	uv run python -m arie_api.optimize_prompts $(PROMPT) --max-calls $(MAX_CALLS) $(ARGS)
+
+# Runs the structural PDF check over every stored PDF in its own process and prints counts
+# per rule and the largest object, page and filter-depth values; changes nothing:
+# make pdf-report
+pdf-report:
+	uv run python -m arie_api.pdf_report

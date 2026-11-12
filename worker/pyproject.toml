@@ -2,7 +2,13 @@
 name = "arie-worker"
 version = "0.1.0"
 requires-python = ">=3.14"
-dependencies = ["arie-core", "psutil>=7.0.0", "pydantic>=2.10.0", "types-psutil>=7.0.0"]
+dependencies = [
+    "arie-core",
+    "pikepdf>=10.18.0",
+    "psutil>=7.0.0",
+    "pydantic>=2.10.0",
+    "types-psutil>=7.0.0",
+]
 
 [build-system]
 requires = ["hatchling"]

@@ -5,6 +5,7 @@ from .pipeline import (
     R_AI,
     IngestionPipeline,
     IngestionStage,
+    PdfRejected,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "R_AI",
     "IngestionPipeline",
     "IngestionStage",
+    "PdfRejected",
 ]

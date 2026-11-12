@@ -9,9 +9,10 @@ from typing import cast
 
 from arie_core.budget import BudgetHandle
 from arie_core.plugin_api import ParsedDoc, Parser
-from arie_core.registry.manager import RegistryManager
+from arie_core.registry.manager import PdfCheckConfig, RegistryManager
 from pydantic import BaseModel, ConfigDict, Field
 
+from arie_worker.pdf_check import check_pdf
 from arie_worker.pool import (
     BACKGROUND_NICE,
     DEFAULT_MAX_RSS_MB,
@@ -26,10 +27,21 @@ _PARSERS: dict[tuple[str, str], Parser] = {}
 
 
 def _extract(
-    project_root: str, parser_name: str, settings: str, timeout: float, file_path: str
+    project_root: str,
+    parser_name: str,
+    settings: str,
+    timeout: float,
+    file_path: str,
+    pdf_check: PdfCheckConfig | None = None,
 ) -> ParsedDoc:
-    """Load the configured parser only in a disposable worker process."""
+    """Check the PDF's structure, then parse it, only in a disposable worker process.
+
+    The check runs before the parser is loaded, so a rejected file (``PdfRejected``)
+    never reaches it.
+    """
     os.environ["ARIE_PDF_WORKER"] = "1"
+    if pdf_check is not None and pdf_check.enabled:
+        check_pdf(file_path, pdf_check)
     parser = _PARSERS.get((parser_name, settings))
     if parser is None:
         manager = RegistryManager(project_root=project_root)
@@ -65,7 +77,8 @@ class ExtractionLimits(BaseModel):
 class ExtractionPool(SupervisedPool):
     """Parse PDFs in recycled workers; kill hung or memory-heavy workers, then rebuild.
 
-    ``settings`` are the parser's constructor options from ``arie.yaml``. A parse that
+    ``settings`` are the parser's constructor options from ``arie.yaml``. Each file first
+    passes the structural check (``pdf_check``, from ``ingestion.pdf_check``). A parse that
     runs past ``limits.timeout_sec`` or lets a worker exceed ``limits.max_rss_mb`` kills
     the pool and fails that paper only. Workers recycle after ``limits.tasks_per_worker``
     papers, so a heavy parser (Docling) can use a fresh process for every paper.
@@ -80,6 +93,7 @@ class ExtractionPool(SupervisedPool):
         processes: int = 4,
         settings: dict[str, object] | None = None,
         limits: ExtractionLimits | None = None,
+        pdf_check: PdfCheckConfig | None = None,
     ) -> None:
         limits = limits or ExtractionLimits()
         processes = max(1, min(processes, os.process_cpu_count() or 1))
@@ -90,6 +104,7 @@ class ExtractionPool(SupervisedPool):
         self.parser_name = parser_name
         self.settings = json.dumps(settings or {}, sort_keys=True)
         self.timeout_sec = limits.timeout_sec
+        self.pdf_check = pdf_check or PdfCheckConfig()
 
     async def parse(self, file_path: str) -> ParsedDoc:
         return await self.submit(
@@ -100,6 +115,7 @@ class ExtractionPool(SupervisedPool):
             self.settings,
             self.timeout_sec,
             file_path,
+            self.pdf_check,
         )
 
 

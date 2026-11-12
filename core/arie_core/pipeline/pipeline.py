@@ -46,6 +46,15 @@ class IngestionStage(StrEnum):
     QUARANTINED = "quarantined"
 
 
+class PdfRejected(Exception):
+    """A stored PDF failed the structural check: ``"quarantined: <rule>"`` (SPEC 6.2).
+
+    Raised in the PDF worker and re-raised here after a pickle round-trip, so it lives in
+    core (the worker imports it). Not a ``RuntimeError``: the sync's one parse retry
+    catches those, and a rejected file is quarantined at once.
+    """
+
+
 def _utc_now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
@@ -245,6 +254,12 @@ class IngestionPipeline:
             self._paper_states[paper_id] = IngestionStage.PARSED
             self._parse_failures.pop(paper_id, None)
             return parsed
+        except PdfRejected:
+            # Active content or an abnormal structure: no retry, and the file is not kept.
+            self._quarantined_papers.add(paper_id)
+            self._paper_states[paper_id] = IngestionStage.QUARANTINED
+            await asyncio.to_thread(self._discard, file_path)
+            raise
         except Exception as exc:
             failure_count = self._parse_failures.get(paper_id, 0) + 1
             self._parse_failures[paper_id] = failure_count
@@ -256,6 +271,12 @@ class IngestionPipeline:
                 ) from exc
             raise RuntimeError(f"parse failed for {paper_id!r}") from exc
 
+    def _discard(self, file_path: str) -> None:
+        """Delete a rejected PDF, but only one inside the paper storage directory."""
+        path = Path(file_path).resolve()
+        if path.is_relative_to(self.storage_root.resolve()):
+            path.unlink(missing_ok=True)
+
     def stage_for(self, paper_id: str) -> IngestionStage:
         return self._paper_states.get(paper_id, IngestionStage.NORMALIZED)
 
@@ -265,4 +286,5 @@ __all__ = [
     "R_AI",
     "IngestionPipeline",
     "IngestionStage",
+    "PdfRejected",
 ]
