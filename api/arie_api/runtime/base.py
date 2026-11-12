@@ -89,6 +89,7 @@ class RuntimeBase:
             self.config.runtime_qos.utility_worker_processes,
             parser_config,
             parser_limits,
+            self.config.ingestion.pdf_check,
         )
         self.file_storage = self.instance("file_storage")
         self.jobs: dict[str, Document] = {}

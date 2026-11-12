@@ -166,6 +166,28 @@ class ExplainConfig(BaseModel):
     max_pack_share: float = Field(default=0.6, gt=0.0, le=1.0)
 
 
+class PdfCheckConfig(BaseModel):
+    """The structural check every stored PDF passes before the parser opens it (SPEC 6.2).
+
+    The limits are about 10 times the largest values ``make pdf-report`` measured over the
+    31 stored PDFs in S18 (5,957 objects, 55 pages, filter depth 1; see
+    docs/explain-mode/PROGRESS.md).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    enabled: bool = True
+    max_objects: int = Field(default=60_000, ge=1)
+    max_pages: int = Field(default=600, ge=1)
+    max_filter_depth: int = Field(default=10, ge=1)
+
+
+class IngestionConfig(BaseModel):
+    """Checks on downloaded papers (ADR 0013). S19 adds ``hidden_text``."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    pdf_check: PdfCheckConfig = Field(default_factory=PdfCheckConfig)
+
+
 class AnswerConfig(BaseModel):
     """Which answer path a question takes when the request does not say."""
 
@@ -209,6 +231,7 @@ class ArieConfig(BaseModel):
     )
     sync: SyncConfig = Field(default_factory=lambda: SyncConfig())
     explain: ExplainConfig = Field(default_factory=ExplainConfig)
+    ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
     answer: AnswerConfig = Field(default_factory=AnswerConfig)
     judge: JudgeConfig = Field(default_factory=JudgeConfig)
     eval: EvalConfig = Field(default_factory=EvalConfig)
@@ -604,6 +627,8 @@ class RegistryManager:
 __all__ = [
     "ArieConfig",
     "CircuitBreaker",
+    "IngestionConfig",
+    "PdfCheckConfig",
     "PluginConfigEntry",
     "PluginDefinition",
     "RegistryManager",

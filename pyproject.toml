@@ -118,5 +118,6 @@ forbidden_modules = [
     "weaviate",
     "fitz",
     "pymupdf4llm",
+    "pikepdf",
     "fastembed",
 ]

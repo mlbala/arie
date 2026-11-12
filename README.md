@@ -186,7 +186,11 @@ DISCOVERED → GATED → DOWNLOADING → PARSED → INDEXED
 3. **Download.** The PDF is streamed in 64 KB chunks from the source's declared hosts
    only (redirects to other hosts are refused). It is aborted above 25 MB or if the
    first 1024 bytes lack `%PDF-`, and saved atomically (`.pdf.part`, then rename).
-4. **Parse.** The parser plugin extracts text, tables and pages in a worker process.
+4. **Check and parse.** In a worker process, the PDF's structure is checked first: a file
+   that needs a password, carries active content (JavaScript, launch or form-submit
+   actions, embedded files, RichMedia, XFA) or exceeds the object, page or filter-depth
+   limits is quarantined with the rule as its reason and deleted, and no parser sees it.
+   Then the parser plugin extracts text, tables and pages.
 5. **Index.** Each section is split into paragraph chunks of at most 2,200 characters
    (tables and equations stay whole, and a "Table N" caption stays with its table),
    with exact source offsets, and saved with keyword search. The paper is now
@@ -320,7 +324,7 @@ These rules hold for every change, including plugins:
 3. **Bounded execution.** 3 tool calls, 12,000 input tokens, 700 output tokens and 25
    seconds per question.
 4. **Clean ingestion.** Source output is validated, network access is limited to
-   declared hosts, PDFs are size- and type-checked, and writes are atomic.
+   declared hosts, PDFs are size-, type- and structure-checked, and writes are atomic.
 5. **No vendor code in the core.** The core imports no SDK or plugin; plugins import only
    `arie_core.plugin_api` and `arie_core.contracts`, never each other.
 
@@ -547,6 +551,7 @@ evidence, unless it passes the verifier.
 | `llm_providers` | Default model, key variable, optional `base_url` and optional `context_tokens` (the context window explain mode plans for; defaults are 64,000 for DeepSeek and 128,000 for OpenAI and Gemini, and 32,000 for any other plugin or one with a `base_url`; they are conservative guesses, so set the real window) per LLM plugin. |
 | `embedding_providers` | Default model, similarity floor and key variable per embedder. |
 | `explain` | `max_pack_share` (default 0.6): the whole paper goes in the prompt only if its estimated tokens are at most this share of the model's `context_tokens`. |
+| `ingestion` | `pdf_check`: `enabled` (default true), `max_objects` (60,000), `max_pages` (600) and `max_filter_depth` (10). The structural check each stored PDF passes before it is parsed. `make pdf-report` shows how the stored PDFs measure against these limits. |
 | `answer` | `default_mode` (`strict`, the default, or `explain`): the answer path of a question whose request sets no `mode`. |
 | `judge` | `chat` (`all`, the default, or `off`): whether each explain answer's cited sentences are judged in the chat with one extra model call on the writer's provider. Evaluations always judge. |
 | `eval` | `judge_provider` (an `llm_providers` name): the provider that compares explain with strict in evaluations. Unset, it is another provider whose key is set, else the writer's. |
@@ -790,6 +795,7 @@ missed key facts, flagged citations, the judge's reasons and your thumbs-down re
 | `make eval-paper PAPER=<id>` | Evaluate answers on one ingested paper (see [Evaluate answers on one paper](#evaluate-answers-on-one-paper)) |
 | `make eval-qasper N=<papers>` | Import the first N Qasper dev papers and score strict answers to their questions |
 | `make optimize-prompts PROMPT=explain MAX_CALLS=200` | Propose better explain writer rules offline under a hard cap on model calls, and write them as a candidate prompt file (see [Improve the explain prompt offline](#improve-the-explain-prompt-offline)) |
+| `make pdf-report` | Run the structural PDF check over every stored PDF, each in its own process, and print counts per rule and the largest object, page and filter-depth values; changes nothing |
 | `make guides` | Build missing paper guides one at a time (`ARGS="<id> ..."` rebuilds those papers); the server builds them only for papers it indexes |
 
 `make check` covers typo search, exact source offsets, cross-paper isolation,

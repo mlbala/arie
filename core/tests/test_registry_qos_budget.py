@@ -165,6 +165,16 @@ def test_unknown_runtime_qos_key_is_still_rejected(tmp_path: Path) -> None:
         ArieConfig.from_yaml(path)
 
 
+def test_pdf_check_config_defaults_on_and_rejects_unknown_keys(tmp_path: Path) -> None:
+    path = tmp_path / "arie.yaml"
+    path.write_text("ingestion:\n  pdf_check:\n    max_objects: 5\n", encoding="utf-8")
+    check = ArieConfig.from_yaml(path).ingestion.pdf_check
+    assert check.enabled and check.max_objects == 5
+    path.write_text("ingestion:\n  pdf_check:\n    max_streams: 5\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="max_streams"):
+        ArieConfig.from_yaml(path)
+
+
 def test_repo_arie_yaml_has_no_retired_runtime_qos_keys(caplog: pytest.LogCaptureFixture) -> None:
     root = Path(__file__).resolve().parents[2]
     with caplog.at_level(logging.WARNING, logger="arie_core.registry.manager"):
