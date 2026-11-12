@@ -182,10 +182,14 @@ class PdfCheckConfig(BaseModel):
 
 
 class IngestionConfig(BaseModel):
-    """Checks on downloaded papers (ADR 0013). S19 adds ``hidden_text``."""
+    """Checks on downloaded papers (ADR 0013).
+
+    ``hidden_text`` redacts text a reader cannot see from a copy the parser reads (SPEC 6.2).
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     pdf_check: PdfCheckConfig = Field(default_factory=PdfCheckConfig)
+    hidden_text: bool = True
 
 
 class AnswerConfig(BaseModel):

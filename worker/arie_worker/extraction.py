@@ -3,15 +3,18 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import tempfile
 import time
 from pathlib import Path
 from typing import cast
 
+import msgspec
 from arie_core.budget import BudgetHandle
 from arie_core.plugin_api import ParsedDoc, Parser
 from arie_core.registry.manager import PdfCheckConfig, RegistryManager
 from pydantic import BaseModel, ConfigDict, Field
 
+from arie_worker.hidden_text import strip_hidden
 from arie_worker.pdf_check import check_pdf
 from arie_worker.pool import (
     BACKGROUND_NICE,
@@ -33,15 +36,33 @@ def _extract(
     timeout: float,
     file_path: str,
     pdf_check: PdfCheckConfig | None = None,
+    hidden_text: bool = False,
 ) -> ParsedDoc:
     """Check the PDF's structure, then parse it, only in a disposable worker process.
 
     The check runs before the parser is loaded, so a rejected file (``PdfRejected``)
-    never reaches it.
+    never reaches it. With ``hidden_text``, the parser reads a temporary copy without the
+    text a reader cannot see; the copy keeps the file name, since parsers take the paper
+    id from it, and is deleted after the parse, whether it succeeds or not.
     """
     os.environ["ARIE_PDF_WORKER"] = "1"
     if pdf_check is not None and pdf_check.enabled:
         check_pdf(file_path, pdf_check)
+    if not hidden_text:
+        return _parse(project_root, parser_name, settings, timeout, file_path)
+    with tempfile.TemporaryDirectory(prefix="arie-hidden-") as folder:
+        copy = Path(folder) / Path(file_path).name
+        hidden = strip_hidden(file_path, copy)
+        parsed = _parse(
+            project_root, parser_name, settings, timeout, str(copy) if hidden else file_path
+        )
+    metadata = {**parsed.metadata, "hidden_text_chars": str(hidden)}
+    return msgspec.structs.replace(parsed, metadata=metadata)
+
+
+def _parse(
+    project_root: str, parser_name: str, settings: str, timeout: float, file_path: str
+) -> ParsedDoc:
     parser = _PARSERS.get((parser_name, settings))
     if parser is None:
         manager = RegistryManager(project_root=project_root)
@@ -78,10 +99,12 @@ class ExtractionPool(SupervisedPool):
     """Parse PDFs in recycled workers; kill hung or memory-heavy workers, then rebuild.
 
     ``settings`` are the parser's constructor options from ``arie.yaml``. Each file first
-    passes the structural check (``pdf_check``, from ``ingestion.pdf_check``). A parse that
-    runs past ``limits.timeout_sec`` or lets a worker exceed ``limits.max_rss_mb`` kills
-    the pool and fails that paper only. Workers recycle after ``limits.tasks_per_worker``
-    papers, so a heavy parser (Docling) can use a fresh process for every paper.
+    passes the structural check (``pdf_check``, from ``ingestion.pdf_check``); with
+    ``hidden_text`` (``ingestion.hidden_text``) the parser reads a copy without hidden
+    text. A parse that runs past ``limits.timeout_sec`` or lets a worker exceed
+    ``limits.max_rss_mb`` kills the pool and fails that paper only. Workers recycle after
+    ``limits.tasks_per_worker`` papers, so a heavy parser (Docling) can use a fresh process
+    for every paper.
     Workers run at background priority, and ``processes`` is capped to the CPUs this
     process may use, since each parser already spreads one paper over several threads.
     """
@@ -94,6 +117,7 @@ class ExtractionPool(SupervisedPool):
         settings: dict[str, object] | None = None,
         limits: ExtractionLimits | None = None,
         pdf_check: PdfCheckConfig | None = None,
+        hidden_text: bool = True,
     ) -> None:
         limits = limits or ExtractionLimits()
         processes = max(1, min(processes, os.process_cpu_count() or 1))
@@ -105,6 +129,7 @@ class ExtractionPool(SupervisedPool):
         self.settings = json.dumps(settings or {}, sort_keys=True)
         self.timeout_sec = limits.timeout_sec
         self.pdf_check = pdf_check or PdfCheckConfig()
+        self.hidden_text = hidden_text
 
     async def parse(self, file_path: str) -> ParsedDoc:
         return await self.submit(
@@ -116,6 +141,7 @@ class ExtractionPool(SupervisedPool):
             self.timeout_sec,
             file_path,
             self.pdf_check,
+            self.hidden_text,
         )
 
 

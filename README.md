@@ -190,7 +190,9 @@ DISCOVERED → GATED → DOWNLOADING → PARSED → INDEXED
    that needs a password, carries active content (JavaScript, launch or form-submit
    actions, embedded files, RichMedia, XFA) or exceeds the object, page or filter-depth
    limits is quarantined with the rule as its reason and deleted, and no parser sees it.
-   Then the parser plugin extracts text, tables and pages.
+   Text a reader cannot see (invisible, transparent, under 2 pt, white on blank or off
+   the page) is then removed from a temporary copy, and the parser plugin extracts text,
+   tables and pages from that copy. The stored PDF is never changed.
 5. **Index.** Each section is split into paragraph chunks of at most 2,200 characters
    (tables and equations stay whole, and a "Table N" caption stays with its table),
    with exact source offsets, and saved with keyword search. The paper is now
@@ -551,7 +553,7 @@ evidence, unless it passes the verifier.
 | `llm_providers` | Default model, key variable, optional `base_url` and optional `context_tokens` (the context window explain mode plans for; defaults are 64,000 for DeepSeek and 128,000 for OpenAI and Gemini, and 32,000 for any other plugin or one with a `base_url`; they are conservative guesses, so set the real window) per LLM plugin. |
 | `embedding_providers` | Default model, similarity floor and key variable per embedder. |
 | `explain` | `max_pack_share` (default 0.6): the whole paper goes in the prompt only if its estimated tokens are at most this share of the model's `context_tokens`. |
-| `ingestion` | `pdf_check`: `enabled` (default true), `max_objects` (60,000), `max_pages` (600) and `max_filter_depth` (10). The structural check each stored PDF passes before it is parsed. `make pdf-report` shows how the stored PDFs measure against these limits. |
+| `ingestion` | `pdf_check`: `enabled` (default true), `max_objects` (60,000), `max_pages` (600) and `max_filter_depth` (10). The structural check each stored PDF passes before it is parsed. `hidden_text` (default true): parse a copy without the text a reader cannot see. `make pdf-report` shows how the stored PDFs measure against these limits and how much hidden text each holds. |
 | `answer` | `default_mode` (`strict`, the default, or `explain`): the answer path of a question whose request sets no `mode`. |
 | `judge` | `chat` (`all`, the default, or `off`): whether each explain answer's cited sentences are judged in the chat with one extra model call on the writer's provider. Evaluations always judge. |
 | `eval` | `judge_provider` (an `llm_providers` name): the provider that compares explain with strict in evaluations. Unset, it is another provider whose key is set, else the writer's. |

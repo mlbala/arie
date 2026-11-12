@@ -399,6 +399,7 @@ dependencies = [
     { name = "pikepdf" },
     { name = "psutil" },
     { name = "pydantic" },
+    { name = "pymupdf" },
     { name = "types-psutil" },
 ]
 
@@ -408,6 +409,7 @@ requires-dist = [
     { name = "pikepdf", specifier = ">=10.18.0" },
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "pydantic", specifier = ">=2.10.0" },
+    { name = "pymupdf", specifier = ">=1.26,<2" },
     { name = "types-psutil", specifier = ">=7.0.0" },
 ]
 

@@ -90,6 +90,7 @@ class RuntimeBase:
             parser_config,
             parser_limits,
             self.config.ingestion.pdf_check,
+            self.config.ingestion.hidden_text,
         )
         self.file_storage = self.instance("file_storage")
         self.jobs: dict[str, Document] = {}

@@ -24,9 +24,12 @@ explain:
   max_pack_share: 0.6
 # Every stored PDF is structure-checked before parsing (SPEC 6.2): a user password, active
 # content or a size over these limits quarantines the paper. Defaults shown; uncomment to
-# change them, and run `make pdf-report` to see how the stored PDFs measure.
+# change them, and run `make pdf-report` to see how the stored PDFs measure. hidden_text
+# removes text a reader cannot see (invisible, transparent, under 2 pt, white on blank,
+# off the page) from a copy before the parser reads it.
 # ingestion:
 #   pdf_check: {enabled: true, max_objects: 60000, max_pages: 600, max_filter_depth: 10}
+#   hidden_text: true
 # Embedder defaults; min_score is the cosine floor calibrated for each model.
 embedding_providers:
   fastembed: {model: BAAI/bge-small-en-v1.5, min_score: 0.6}
