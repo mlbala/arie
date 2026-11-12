@@ -75,6 +75,8 @@ class PaperEvalCase(msgspec.Struct, frozen=True, kw_only=True):
     char_end: int = 0
     key_facts: list[str] = []
     note: str = ""
+    # Qasper only (S21): ``text``, ``table`` or ``figure``, from the annotators' evidence.
+    evidence_kind: str = "text"
 
 
 class PaperEvalResult(msgspec.Struct, frozen=True, kw_only=True):
@@ -123,6 +125,8 @@ class PaperEvalResult(msgspec.Struct, frozen=True, kw_only=True):
     # None when the answer has no cited sentence or no sentence at all.
     citation_valid_rate: float | None = None
     background_share: float | None = None
+    # Copied from the case (S21); ``summarize`` splits the numbers by it.
+    evidence_kind: str = "text"
 
 
 def _normalize(text: str) -> str:
@@ -484,6 +488,7 @@ def score_case(
         case_id=case.case_id,
         question=case.question,
         kind=case.kind,
+        evidence_kind=case.evidence_kind,
         passed=passed,
         grounded=grounded,
         evidence_hit=evidence_hit,
@@ -513,6 +518,7 @@ def error_result(
         case_id=case.case_id,
         question=case.question,
         kind=case.kind,
+        evidence_kind=case.evidence_kind,
         passed=False if case.kind != "feedback" else None,
         grounded=False,
         evidence_hit=False,
@@ -582,6 +588,7 @@ def score_explained(
         case_id=case.case_id,
         question=case.question,
         kind=case.kind,
+        evidence_kind=case.evidence_kind,
         passed=passed,
         grounded=grounded,
         evidence_hit=evidence_hit,
@@ -617,6 +624,42 @@ def answer_text(answer: AnswerResult) -> str:
     return " ".join(item.text for item in answer.excerpts)
 
 
+def _fallbacks(results: Sequence[PaperEvalResult]) -> Counter[str]:
+    # An excerpt answer is a fallback even if no reason was recorded; a reason on a
+    # refusal (``not_in_paper``) is not.
+    return Counter(
+        item.fallback_reason or "unspecified"
+        for item in results
+        if item.mode in _EXCERPT_MODES
+        or (item.fallback_reason and item.mode not in _UNWRITTEN_MODES)
+    )
+
+
+def _by_evidence_kind(results: Sequence[PaperEvalResult]) -> dict[str, dict[str, object]]:
+    """Cases, passes, prose recall and fallbacks per evidence kind (S21), kinds sorted."""
+    groups: dict[str, list[PaperEvalResult]] = {}
+    for item in results:
+        groups.setdefault(item.evidence_kind or "text", []).append(item)
+    block: dict[str, dict[str, object]] = {}
+    for kind in sorted(groups):
+        group = groups[kind]
+        scored = [item for item in group if item.passed is not None]
+        facts = [item for item in scored if item.kind == "fact"]
+        passed = sum(bool(item.passed) for item in scored)
+        block[kind] = {
+            "cases": len(group),
+            "passed": passed,
+            "pass_rate": round(passed / len(scored), 3) if scored else None,
+            "mean_fact_recall_prose": round(
+                sum(item.fact_recall_prose for item in facts) / len(facts), 3
+            )
+            if facts
+            else None,
+            "fallbacks": dict(sorted(_fallbacks(group).items())),
+        }
+    return block
+
+
 def summarize(results: Sequence[PaperEvalResult]) -> dict[str, object]:
     """Aggregate scored results; feedback cases are counted but never scored."""
     # The injected case (S20) is reported only as ``injection_blocked``, so every other
@@ -631,14 +674,7 @@ def summarize(results: Sequence[PaperEvalResult]) -> dict[str, object]:
     def rate(values: Sequence[bool]) -> float | None:
         return round(sum(values) / len(values), 3) if values else None
 
-    # An excerpt answer is a fallback even if no reason was recorded; a reason on a
-    # refusal (``not_in_paper``) is not.
-    fallbacks = Counter(
-        item.fallback_reason or "unspecified"
-        for item in results
-        if item.mode in _EXCERPT_MODES
-        or (item.fallback_reason and item.mode not in _UNWRITTEN_MODES)
-    )
+    fallbacks = _fallbacks(results)
     first_tokens = sorted(
         item.first_token_seconds for item in results if item.first_token_seconds is not None
     )
@@ -681,6 +717,8 @@ def summarize(results: Sequence[PaperEvalResult]) -> dict[str, object]:
         if facts
         else None,
         "fallbacks": dict(sorted(fallbacks.items())),
+        # Qasper (S21): the same numbers per evidence kind; other cases all count as text.
+        "by_evidence_kind": _by_evidence_kind(results),
         "median_stage_seconds": stage_medians,
         # Explain mode only; None for a strict run.
         "median_first_token_seconds": first_tokens[len(first_tokens) // 2]

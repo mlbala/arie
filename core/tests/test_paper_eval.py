@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import cast
 
+import msgspec
 import pytest
 from arie_api.runtime import context
 from arie_core.contracts import LLMRequest, LLMResponse, TokenUsage
@@ -293,6 +294,57 @@ def test_the_summary_counts_written_passes_fallbacks_and_median_stage_times() ->
     assert summarize([score_case(fact_case(), ROWS, bare, seconds=1.0)])["fallbacks"] == {
         "unspecified": 1
     }
+
+
+def test_the_summary_splits_passes_recall_and_fallbacks_by_evidence_kind() -> None:
+    row = ROWS[2]
+    fallback = AnswerResult(
+        [excerpt(row, 0, len(row.text))], "source_excerpts", fallback_reason="entailment_timeout"
+    )
+    full = AnswerResult(
+        [excerpt(row, 0, len(row.text), text="Accuracy rose from 62% to 68%.")],
+        "reviewed_answer",
+    )
+    vague = AnswerResult(
+        [excerpt(row, 0, len(row.text), text="Accuracy improved.")], "reviewed_answer"
+    )
+    refusal = AnswerResult([], "abstention", fallback_reason="not_in_paper")
+    table = msgspec.structs.replace(fact_case(), evidence_kind="table")
+    figure = msgspec.structs.replace(fact_case(), evidence_kind="figure")
+    results = [
+        score_case(table, ROWS, fallback, seconds=1.0),
+        score_case(table, ROWS, full, seconds=1.0),
+        score_case(figure, ROWS, refusal, seconds=1.0),
+        # Cases saved before S21 have no evidence kind and count as text.
+        score_case(fact_case(), ROWS, vague, seconds=1.0),
+    ]
+    assert results[0].evidence_kind == "table" and results[3].evidence_kind == "text"
+
+    block = summarize(results)["by_evidence_kind"]
+    assert block == {
+        "figure": {
+            "cases": 1,
+            "passed": 0,
+            "pass_rate": 0.0,
+            "mean_fact_recall_prose": 0.0,
+            "fallbacks": {},
+        },
+        "table": {
+            "cases": 2,
+            "passed": 2,
+            "pass_rate": 1.0,
+            "mean_fact_recall_prose": 0.5,
+            "fallbacks": {"entailment_timeout": 1},
+        },
+        "text": {
+            "cases": 1,
+            "passed": 1,
+            "pass_rate": 1.0,
+            "mean_fact_recall_prose": 0.0,
+            "fallbacks": {},
+        },
+    }
+    assert summarize([])["by_evidence_kind"] == {}
 
 
 def test_feedback_facts_must_be_few_and_verbatim_in_the_source_sentence() -> None:
