@@ -14,6 +14,7 @@ import {
   getPaper,
   type CitationRange,
 } from "../api/client";
+import { withoutPictureMarkers as shown } from "../pictureText";
 
 interface Props {
   paperId: string;
@@ -112,7 +113,7 @@ export function EvidenceDrawer({ paperId, citation, onClose }: Props) {
         {citation?.quote && (
           <blockquote className="citation-selection">
             <Quote size={16} />
-            <p>{citation.quote}</p>
+            <p>{shown(citation.quote)}</p>
             <span>Verified excerpt · page {citation.page_start}</span>
           </blockquote>
         )}
@@ -174,14 +175,14 @@ export function EvidenceDrawer({ paperId, citation, onClose }: Props) {
               <pre>
                 {selected && citation ? (
                   <>
-                    {text.slice(0, citation.char_start)}
+                    {shown(text.slice(0, citation.char_start))}
                     <mark ref={mark}>
-                      {text.slice(citation.char_start, end)}
+                      {shown(text.slice(citation.char_start, end))}
                     </mark>
-                    {text.slice(end)}
+                    {shown(text.slice(end))}
                   </>
                 ) : (
-                  text
+                  shown(text)
                 )}
               </pre>
             )}

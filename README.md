@@ -194,13 +194,15 @@ DISCOVERED → GATED → DOWNLOADING → PARSED → INDEXED
    the page) is then removed from a temporary copy, and the parser plugin extracts text,
    tables and pages from that copy. The stored PDF is never changed. The pymupdf4llm
    parser also records each captioned figure: its number, page, box and the paper's own
-   caption. No model ever describes a figure.
+   caption, plus where the words drawn inside it (axis labels, legends, diagram boxes)
+   sit in the page text. No model ever describes a figure.
 5. **Index.** Each section is split into paragraph chunks of at most 2,200 characters
    (tables and equations stay whole, and a "Table N" caption stays with its table),
    with exact source offsets, and saved with keyword search. A chunk that holds a
-   figure caption, or names a figure ("Fig. 3"), is tagged. When a question names a
-   figure, or the best passage is a figure's caption, strict retrieval adds that caption
-   and up to two other passages that mention it. The paper is now chat-ready.
+   figure caption, holds the words drawn inside a figure, or names a figure ("Fig. 3"),
+   is tagged. When a question names a figure, or the best passage is a figure's caption,
+   strict retrieval adds that caption and up to two other passages that mention it. The
+   paper is now chat-ready.
 6. **Embed** (background). The indexer embeds chunks in the embedding worker and writes
    them to the vector store. It backfills old papers and re-embeds the library when the
    embedder model changes.
@@ -234,7 +236,8 @@ flowchart TD
   is filtered by paper again.
 - Tables are quoted as text. A table longer than 650 bytes offers its caption, header
   and first rows (up to 1,200 bytes) as one quote; contents listings are never
-  evidence. Figures and charts are not read: only their caption text is searchable.
+  evidence. Figures are never described: their caption and the words drawn inside a
+  vector figure are searchable and quotable; a bitmap figure gives only its caption.
 - Vector search gets at most 6 seconds and always leaves 10 seconds for writing and
   review. If it fails, retrieval falls back to keyword search.
 - If the LLM, the claim checker or credentials fail, the answer is a set of labelled
@@ -810,7 +813,7 @@ missed key facts, flagged citations, the judge's reasons and your thumbs-down re
 | `make eval-paper PAPER=<id>` | Evaluate answers on one ingested paper (see [Evaluate answers on one paper](#evaluate-answers-on-one-paper)) |
 | `make eval-qasper N=<papers>` | Import the first N Qasper dev papers and score strict answers to their questions |
 | `make optimize-prompts PROMPT=explain MAX_CALLS=200` | Propose better explain writer rules offline under a hard cap on model calls, and write them as a candidate prompt file (see [Improve the explain prompt offline](#improve-the-explain-prompt-offline)) |
-| `make figures-backfill` | Add figure records to papers indexed before they existed: re-parse each stored PDF and keep only its figures, with pages, chunks and vectors unchanged |
+| `make figures-backfill` | Add figure records to papers indexed before they existed: re-parse each stored PDF and keep only its figures, with pages, chunks and vectors unchanged (`ARGS="--all"` also refreshes papers that already have figures) |
 | `make pdf-report` | Run the structural PDF check over every stored PDF, each in its own process, and print counts per rule and the largest object, page and filter-depth values; changes nothing |
 | `make guides` | Build missing paper guides one at a time (`ARGS="<id> ..."` rebuilds those papers); the server builds them only for papers it indexes |
 

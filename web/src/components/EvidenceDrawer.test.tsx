@@ -33,3 +33,21 @@ it("highlights a cited chunk without a quote on its own page, cut at the page en
   expect(container.querySelector("mark")?.textContent).toBe(pageText.slice(13));
   client.clear();
 });
+
+it("hides picture-text markers but highlights the cited words at their stored offsets", async () => {
+  const pageText = "Parts.\n\n<!-- Start of picture text -->\nEncoder Retriever Decoder<br><!-- End of picture text -->\n";
+  const start = pageText.indexOf("Encoder");
+  const citation = { page_start: 1, char_start: start, char_end: start + 7, chunk_id: "paper:1", quote: "Encoder" };
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(
+    String(input).endsWith("/pages/1")
+      ? { text: pageText, page_number: 1 }
+      : { id: "paper", title: "Paper", page_count: 1, pdf_deleted: false },
+  ), { headers: { "content-type": "application/json" } })));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { container } = render(<QueryClientProvider client={client}><EvidenceDrawer paperId="paper" citation={citation} onClose={vi.fn()} /></QueryClientProvider>);
+  await vi.waitFor(() => expect(container.querySelector("mark")).toHaveTextContent("Encoder"));
+  const shown = container.querySelector(".extracted-page pre")?.textContent ?? "";
+  expect(shown).not.toContain("picture text");
+  expect(shown).toContain("Encoder Retriever Decoder");
+  client.clear();
+});
