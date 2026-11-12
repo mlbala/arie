@@ -24,6 +24,7 @@ dependencies = [
     "arie-plugin-embed-fastembed",
     "arie-plugin-entail-nli-onnx",
     "arie-plugin-rerank-onnx",
+    "arie-plugin-guard-onnx",
     "arie-plugin-parser-pymupdf4llm",
     "arie-plugin-source-arxiv",
     "arie-plugin-source-deepmind",
@@ -60,6 +61,7 @@ arie-llm-gemini = { workspace = true }
 arie-plugin-embed-fastembed = { workspace = true }
 arie-plugin-entail-nli-onnx = { workspace = true }
 arie-plugin-rerank-onnx = { workspace = true }
+arie-plugin-guard-onnx = { workspace = true }
 arie-plugin-parser-docling = { workspace = true }
 # Docling's PyTorch comes from the CPU-only index: no multi-GB CUDA libraries in images.
 torch = { index = "pytorch-cpu" }

@@ -6,20 +6,17 @@ import asyncio
 import json
 from typing import cast
 
-from arie_core.harness.reader import EvidenceChunk
 from arie_core.pipeline.pack import PaperPack, build_pack, marker_numbers, pack_revision
 
 from arie_api.runtime.base import Document, context
-from arie_api.runtime.library import LibraryStore
+from arie_api.runtime.guard import PaperGuard, paper_revision
 
 
-def paper_revision(paper: Document) -> str:
-    """The vector index's revision of a paper, ``<dedup_hash>:<chunk_count>``."""
-    return f"{paper.get('dedup_hash', '')}:{len(paper.get('chunks', []))}"
+class PaperPacks(PaperGuard):
+    """One pack per indexed paper in ``arie_paper_packs``, keyed by paper revision.
 
-
-class PaperPacks(LibraryStore):
-    """One pack per indexed paper in ``arie_paper_packs``, keyed by paper revision."""
+    The guard deletes a paper's pack when its untrusted chunks change (``PaperGuard``).
+    """
 
     async def ensure_pack(self, paper: Document) -> PaperPack:
         """Return the stored pack for this paper revision, building and storing it if missing."""
@@ -28,11 +25,7 @@ class PaperPacks(LibraryStore):
         stored = await self._stored_pack(paper_id, pack_revision(revision))
         if stored is not None:
             return stored
-        rows = [
-            EvidenceChunk(**row)
-            for row in paper.get("chunks", [])
-            if row.get("paper_id") == paper_id
-        ]
+        rows = await self.evidence(paper)
         pack = await asyncio.to_thread(
             build_pack,
             paper_id,

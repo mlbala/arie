@@ -552,6 +552,15 @@ export interface AnswerModelHealth {
   last_latency_seconds?: number | null;
 }
 
+/** The prompt-injection classifier that screens paper chunks at indexing (ADR 0014). */
+export interface GuardHealth extends AnswerModelHealth {
+  model?: string;
+  threshold?: number;
+  papers_scored?: number;
+  papers_total?: number;
+  untrusted_chunks?: number;
+}
+
 export interface StorageHealth {
   checked_at: string;
   database: {
@@ -568,6 +577,7 @@ export interface StorageHealth {
   };
   entailment?: AnswerModelHealth;
   reranker?: AnswerModelHealth;
+  guard?: GuardHealth;
   active_jobs: SyncJob[];
 }
 

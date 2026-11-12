@@ -1,4 +1,4 @@
-"""One supervised worker pool for every local model plugin (embedder, entailment, reranker).
+"""One supervised worker pool for every local model plugin (embedder, entailment, reranker, guard).
 
 A model plugin is any slot whose methods take ``(ctx, *args)`` and return plain data. The
 pool loads each ``(slot, name, settings)`` plugin once per worker process and calls the
@@ -27,6 +27,7 @@ WORKER_FLAGS: Mapping[str, str] = {
     "embedder": "ARIE_EMBED_WORKER",
     "entailment": "ARIE_ENTAILMENT_WORKER",
     "reranker": "ARIE_RERANK_WORKER",
+    "guard": "ARIE_GUARD_WORKER",
 }
 
 # Plugins loaded in this worker process, keyed by (slot, name, settings JSON).

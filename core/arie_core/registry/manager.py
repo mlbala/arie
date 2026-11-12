@@ -223,6 +223,35 @@ class EvalConfig(BaseModel):
     judge_provider: str | None = Field(default=None, min_length=1, max_length=64)
 
 
+class GuardConfig(BaseModel):
+    """``plugins.guard``: the local prompt-injection classifier (ADR 0014, SPEC 4 and 6.2).
+
+    ``use: none`` (the default) turns it off: no worker, no scores, packs as before. Other keys
+    go to the plugin; ``threshold`` is read by ARIE and is the score at or over which a chunk
+    is untrusted.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    use: Literal["onnx-classifier", "none"] = "none"
+    model: str = Field(default="protectai/deberta-v3-base-prompt-injection-v2", min_length=1)
+    threshold: float = Field(default=0.9, gt=0.0, le=1.0)
+    threads: int = Field(default=2, ge=1, le=16)
+    max_length: int = Field(default=512, ge=16, le=512)
+
+    @property
+    def enabled(self) -> bool:
+        return self.use != "none"
+
+    @property
+    def model_id(self) -> str:
+        """What stored scores are tagged with; a new id re-scores the library."""
+        return f"{self.use}:{self.model}"
+
+    def plugin_settings(self) -> dict[str, object]:
+        """The keys the plugin takes (everything but ``use`` and ``threshold``)."""
+        return {"model": self.model, "threads": self.threads, "max_length": self.max_length}
+
+
 class ArieConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -246,6 +275,15 @@ class ArieConfig(BaseModel):
         if named is not None and named not in self.llm_providers:
             raise ValueError(f"eval.judge_provider {named!r} is not in llm_providers")
         return self
+
+    @model_validator(mode="after")
+    def _guard_is_valid(self) -> ArieConfig:
+        self.guard()
+        return self
+
+    def guard(self) -> GuardConfig:
+        """``plugins.guard`` validated; unknown keys are rejected."""
+        return GuardConfig.model_validate(self.plugins.get("guard") or {})
 
     def context_tokens_for(self, provider: str) -> int:
         """The context window to plan for with this LLM plugin."""
@@ -631,6 +669,7 @@ class RegistryManager:
 __all__ = [
     "ArieConfig",
     "CircuitBreaker",
+    "GuardConfig",
     "IngestionConfig",
     "PdfCheckConfig",
     "PluginConfigEntry",

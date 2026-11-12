@@ -149,6 +149,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
             worker = group.create_task(supervised(service.run)())
             imports = group.create_task(supervised(service.run_imports)())
             vectors = group.create_task(supervised(service.run_vector_index)())
+            guard = group.create_task(supervised(service.run_guard)())
             guides = group.create_task(supervised(service.run_guides)())
             models = group.create_task(supervised(service.models.warm)())
             evaluations = group.create_task(supervised(service.evaluations.serve)())
@@ -159,7 +160,9 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
             try:
                 yield
             finally:
-                for task in (worker, imports, vectors, guides, models, evaluations, lag_monitor):
+                for task in (
+                    worker, imports, vectors, guard, guides, models, evaluations, lag_monitor
+                ):
                     task.cancel()
                 service.close()
 
@@ -621,6 +624,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
             "parser",
             "entailment",
             "reranker",
+            "guard",
         ]
         return {
             "plugins": [

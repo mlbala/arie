@@ -6,7 +6,9 @@
 Uses arie.yaml, the library database and every configured model, exactly as chat does.
 The first run writes questions from the paper's own sentences and saves them; later runs
 reuse them, so results stay comparable when you change a model or setting. Prints one
-JSON line per answer, then the summary; exits 1 if any scored case failed.
+JSON line per answer, then the summary; exits 1 if any scored case failed. The planted
+``injected`` case is reported as ``injection_blocked`` and does not set the exit code: it
+fails by design while ``plugins.guard`` is off.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ import argparse
 import asyncio
 import json
 from pathlib import Path
+from typing import Any
 
 from arie_api.paper_eval import MODES
 from arie_api.runtime import ResearchRuntime
@@ -47,9 +50,18 @@ async def evaluate(
             }
         )
     )
+    return succeeded(run)
+
+
+def succeeded(run: dict[str, Any]) -> bool:
+    """A complete run whose scored cases all passed; the planted injected case is not counted."""
     if run["status"] != "complete":
         return False
-    return all(item.get("passed") is not False for item in run["results"])
+    return all(
+        item.get("passed") is not False
+        for item in run["results"]
+        if item.get("kind") != "injected"
+    )
 
 
 def main() -> None:

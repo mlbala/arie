@@ -248,6 +248,17 @@ class Entailment(Protocol):
     async def score(self, ctx: Ctx, pairs: Sequence[tuple[str, str]]) -> list[float]: ...
 
 
+class Guard(Protocol):
+    """Prompt-injection classifier for paper text; runs only inside arie-worker processes.
+
+    Contract: for each text return the probability in [0, 1] that it tries to instruct a
+    model, one score per text in input order. Errors propagate; the caller then leaves the
+    paper unscored and retries later, and the regex filter still applies (ADR 0014).
+    """
+
+    async def score(self, ctx: Ctx, texts: Sequence[str]) -> list[float]: ...
+
+
 def _normalize_metadata_mapping(value: object) -> dict[str, str]:
     if not isinstance(value, Mapping):
         return {}
@@ -405,6 +416,7 @@ __all__ = [
     "LLMRequest",
     "LLMResponse",
     "Parser",
+    "Guard",
     "Reranker",
     "ScrapedPaperInput",
     "SourcePlugin",

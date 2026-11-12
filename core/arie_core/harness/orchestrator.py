@@ -10,9 +10,10 @@ import msgspec
 
 from arie_core.harness.answer import PROJECT_ROOT, AnswerResult, compose_answer
 from arie_core.harness.guardrails import InputDecision, inspect_question
+from arie_core.harness.injection import is_untrusted
 from arie_core.harness.intent import AnswerPlan, DialogueTurn, plan_answer
 from arie_core.harness.planner import plan_research
-from arie_core.harness.reader import EvidenceChunk, is_untrusted_instruction
+from arie_core.harness.reader import EvidenceChunk
 from arie_core.harness.rerank import RerankCheck, rerank_reading
 from arie_core.harness.research import ReadingResult, read_for_answer
 from arie_core.harness.session import ModelSession
@@ -78,9 +79,7 @@ async def answer_question(
             ),
             guard,
         )
-    scoped = [
-        row for row in rows if row.paper_id == paper_id and not is_untrusted_instruction(row.text)
-    ]
+    scoped = [row for row in rows if row.paper_id == paper_id and not is_untrusted(row)]
     scoped_ids = {row.chunk_id for row in scoped}
     safe_history = tuple(
         DialogueTurn(
