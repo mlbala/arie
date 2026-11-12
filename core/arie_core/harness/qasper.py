@@ -15,6 +15,11 @@ Per question, looking at every annotator's answer:
   paper's own text for the match, so scoring finds it verbatim; a span with no match drops
   the case, as for generated cases;
 * anything else (yes/no, free-form) is skipped and counted.
+
+Each question also gets an evidence kind (S21) from the annotators' evidence paragraphs:
+Qasper marks a table or figure as ``FLOAT SELECTED: Table 2: ...``. Every count is kept in
+total and per kind (``fact:table``), so the report shows how many table and figure
+questions exist even when their spans are not in the extracted text.
 """
 
 from __future__ import annotations
@@ -36,6 +41,9 @@ MAX_JSON_BYTES = 128 * 1024 * 1024
 # Letters and digits a span needs: one shorter ("5", "of") would be "recalled" by almost any answer.
 MIN_SPAN_CHARS = 3
 ORIGIN = "qasper"
+EVIDENCE_KINDS = ("text", "table", "figure")
+_FIGURE_PREFIXES = ("FLOAT SELECTED: Figure", "FLOAT SELECTED: Fig")
+_TABLE_PREFIX = "FLOAT SELECTED: Table"
 
 
 class QasperAnswer(msgspec.Struct, frozen=True):
@@ -43,6 +51,7 @@ class QasperAnswer(msgspec.Struct, frozen=True):
     extractive_spans: list[str] = []
     yes_no: bool | None = None
     free_form_answer: str = ""
+    evidence: list[str] = []
 
 
 class QasperAnnotation(msgspec.Struct, frozen=True):
@@ -104,6 +113,17 @@ def _kind(answer: QasperAnswer) -> str:
     return "free_form" if answer.free_form_answer.strip() else "empty"
 
 
+def evidence_kind(answers: Sequence[QasperAnswer]) -> str:
+    """``figure`` if any annotator cites a figure, else ``table`` if any cites a table, else
+    ``text``. Figure wins over table."""
+    evidence = [item.strip() for answer in answers for item in answer.evidence]
+    if any(item.startswith(_FIGURE_PREFIXES) for item in evidence):
+        return "figure"
+    if any(item.startswith(_TABLE_PREFIX) for item in evidence):
+        return "table"
+    return "text"
+
+
 def _loose(text: str) -> tuple[str, list[int]]:
     """The lowercase letters and digits of ``text`` (ligatures expanded), with their positions."""
     letters: list[str] = []
@@ -134,17 +154,24 @@ def convert_questions(
 
     Returns the cases and a count per outcome: ``questions``, ``fact``, ``abstain``,
     ``skipped_yes_no``, ``skipped_free_form``, ``skipped_empty``, ``dropped_span_too_short``
-    and ``dropped_span_not_in_text``. Chunks of other papers are ignored (I1).
+    and ``dropped_span_not_in_text``, each also per evidence kind as ``<outcome>:<kind>``.
+    Chunks of other papers are ignored (I1).
     """
     chunks = [(*_loose(row.text), row.text) for row in rows if row.paper_id == paper_id]
     counts: Counter[str] = Counter()
     cases: list[PaperEvalCase] = []
     for item in paper.qas:
-        counts["questions"] += 1
+        evidence = evidence_kind([annotation.answer for annotation in item.answers])
+
+        def tally(outcome: str, evidence: str = evidence) -> None:
+            counts[outcome] += 1
+            counts[f"{outcome}:{evidence}"] += 1
+
+        tally("questions")
         kinds = [_kind(annotation.answer) for annotation in item.answers]
         case_id = f"qasper-{item.question_id[:16]}"
         if kinds and all(kind == "unanswerable" for kind in kinds):
-            counts["abstain"] += 1
+            tally("abstain")
             cases.append(
                 PaperEvalCase(
                     case_id=case_id,
@@ -152,6 +179,7 @@ def convert_questions(
                     kind="abstain",
                     origin=ORIGIN,
                     note="unanswerable",
+                    evidence_kind=evidence,
                 )
             )
             continue
@@ -160,19 +188,19 @@ def convert_questions(
         )
         if extractive is None:
             other = next((kind for kind in kinds if kind != "unanswerable"), "empty")
-            counts[f"skipped_{other}"] += 1
+            tally(f"skipped_{other}")
             continue
         spans = list(dict.fromkeys(" ".join(s.split()) for s in extractive.extractive_spans))
         spans = spans[:MAX_FEEDBACK_FACTS]
         if any(len(_loose(span)[0]) < MIN_SPAN_CHARS for span in spans):
-            counts["dropped_span_too_short"] += 1
+            tally("dropped_span_too_short")
             continue
         found = [_find(span, chunks) for span in spans]
         if None in found:
-            counts["dropped_span_not_in_text"] += 1
+            tally("dropped_span_not_in_text")
         else:
             facts = list(dict.fromkeys(fact for fact in found if fact))
-            counts["fact"] += 1
+            tally("fact")
             cases.append(
                 PaperEvalCase(
                     case_id=case_id,
@@ -181,6 +209,7 @@ def convert_questions(
                     origin=ORIGIN,
                     answer_quote="; ".join(facts),
                     key_facts=facts,
+                    evidence_kind=evidence,
                 )
             )
     return cases, counts
@@ -188,10 +217,12 @@ def convert_questions(
 
 __all__ = [
     "DEV_MEMBER",
+    "EVIDENCE_KINDS",
     "ORIGIN",
     "QasperPaper",
     "arxiv_pdf_url",
     "convert_questions",
+    "evidence_kind",
     "extract_dev",
     "first_papers",
     "parse_dev",
