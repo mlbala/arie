@@ -478,10 +478,17 @@ class SyncJobs(VectorIndex):
                 except RuntimeError:
                     parsed = await pipeline.parse_document(paper.paper_id, path)
                 pages = [{"number": i + 1, "text": text} for i, text in enumerate(parsed.sections)]
+                hidden = int(parsed.metadata.get("hidden_text_chars", "0"))
+                if hidden:
+                    # The parser read a copy without this text (SPEC 6.2); never quarantined.
+                    logger.warning(
+                        "Removed %d hidden text characters from %s", hidden, paper.paper_id
+                    )
                 document.update(
                     status="PARSED",
                     pages=pages,
                     extraction_metadata=parsed.metadata,
+                    hidden_text_chars=hidden,
                     outline=json.loads(parsed.metadata.get("outline_json", "[]")),
                 )
                 await self.save_paper(document)

@@ -12,6 +12,7 @@ import pytest
 from arie_api.models import ANSWER_SLOTS, AnswerModel
 from arie_api.runtime import ResearchRuntime, context
 from arie_api.runtime import packs as packs_module
+from arie_core.contracts import ParsedDoc
 from arie_core.pipeline.pack import PaperPack, escape_markers, marker_numbers
 from arie_core.plugin_api import ScrapedPaperInput
 from arie_core.registry.manager import ArieConfig
@@ -247,6 +248,33 @@ async def test_a_paper_that_reaches_indexed_gets_its_pack_during_sync(tmp_path: 
             quoted = pages[chunk["page_start"]][chunk["char_start"] : chunk["char_end"]]
             assert quoted == chunk["text"]
             assert escape_markers(quoted.strip()) in rows[0]["text"]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_sync_saves_the_hidden_text_count_and_warns_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    runtime = runtime_at(tmp_path)
+    await runtime.initialize()
+    scraped, parsed = resumable(tmp_path)
+    parsed.update(pages=[])  # parse again, as a fresh download would
+
+    async def parse_pdf(file_path: str) -> ParsedDoc:
+        del file_path
+        metadata = {"page_count": "1", "hidden_text_chars": "42"}
+        return ParsedDoc("resumed", "", "", ["\n\n".join(TEXTS)], metadata)
+
+    monkeypatch.setattr(runtime, "parse_pdf", parse_pdf)
+    try:
+        await runtime.save_paper(parsed)
+        job = await ingest(runtime, scraped)
+        assert job["indexed"] == 1 and job["failed"] == 0  # hidden text never fails a paper
+        saved = await runtime.get_paper("resumed")
+        assert saved and saved["status"] == "INDEXED" and saved["hidden_text_chars"] == 42
+        warnings = [r.getMessage() for r in caplog.records if "hidden text" in r.getMessage()]
+        assert warnings == ["Removed 42 hidden text characters from resumed"]
     finally:
         runtime.close()
 
