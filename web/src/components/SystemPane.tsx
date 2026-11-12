@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, ChevronRight, Database, HardDrive, Layers3, ListOrdered, ShieldCheck, Trash2, X } from "lucide-react";
+import { Activity, ChevronRight, Database, HardDrive, Layers3, ListOrdered, ShieldAlert, ShieldCheck, Trash2, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { deletePaper, getStorageHealth, type AnswerModelHealth, type PaperSummary } from "../api/client";
 
@@ -59,7 +59,7 @@ export function SystemPane({ open, docked, onClose, children }: { open: boolean;
 export function StorageHealth() {
   const health = useStorageHealth();
   const data = health.data;
-  const modelDegraded = data?.entailment?.status === "degraded" || data?.reranker?.status === "degraded";
+  const modelDegraded = [data?.entailment, data?.reranker, data?.guard].some((model) => model?.status === "degraded");
   const allHealthy = data?.database.status === "healthy" && data.file_storage.status === "healthy" && !modelDegraded;
   return (
           <details className="system-section storage-section">
@@ -76,6 +76,7 @@ export function StorageHealth() {
             </article>
             {data?.entailment && <AnswerModelCard icon={<ShieldCheck size={14} />} title="Claim checker" purpose="Tier 3 entailment" model={data.entailment} />}
             {data?.reranker && <AnswerModelCard icon={<ListOrdered size={14} />} title="Passage reranker" purpose="question relevance" model={data.reranker} />}
+            {data?.guard && <AnswerModelCard icon={<ShieldAlert size={14} />} title="Injection guard" purpose="paper text screening" model={data.guard} />}
             <article><div><HardDrive size={14} /><strong>PDF storage</strong><span className={`health-pill ${data?.file_storage.status ?? "unknown"}`}>{data?.file_storage.status ?? "Checking"}</span></div>
               <p>{data?.file_storage.provider ?? "—"} · {bytes(data?.file_storage.size_bytes)}{data?.file_storage.status === "partial" ? " (partial)" : ""}</p>
               <small>{data?.file_storage.files ?? "—"} PDF files · {bytes(data?.file_storage.disk_free_bytes)} free</small>

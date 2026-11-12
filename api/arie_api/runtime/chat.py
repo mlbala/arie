@@ -20,7 +20,6 @@ from arie_core.harness.judge import (
     judge_support,
 )
 from arie_core.harness.orchestrator import ResearchAnswer, answer_question
-from arie_core.harness.reader import EvidenceChunk
 from arie_core.harness.session import JUDGE_SECONDS
 from arie_core.plugin_api import (
     LLM,
@@ -182,11 +181,7 @@ class ChatHistory(PaperGuides):
         bound into every read and search (I1).
         """
         paper_id = str(paper["id"])
-        rows = [
-            EvidenceChunk(**row)
-            for row in paper.get("chunks", [])
-            if row.get("paper_id") == paper_id
-        ]
+        rows = await self.evidence(paper)
         llm: LLM | None = cast(LLM, self.instance("llm"))
         if not getattr(llm, "api_key", None):
             llm = None
@@ -241,11 +236,7 @@ class ChatHistory(PaperGuides):
         paper_id = str(paper["id"])
         context_tokens = self.config.context_tokens_for(self.llm_provider())
         ctx = explain_context(trace_id, context_tokens)
-        rows = [
-            EvidenceChunk(**row)
-            for row in paper.get("chunks", [])
-            if row.get("paper_id") == paper_id
-        ]
+        rows = await self.evidence(paper)
         llm: LLM | None = cast(LLM, self.instance("llm"))
         if not getattr(llm, "api_key", None):
             llm = None

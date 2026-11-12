@@ -54,6 +54,11 @@ plugins:
   # passages from the keyword and vector candidates. Runs in arie-worker. `none` keeps the
   # keyword/vector order.
   reranker:     {use: onnx-cross-encoder, model: cross-encoder/ms-marco-MiniLM-L6-v2}
+  # Guard: a local prompt-injection classifier (ADR 0014). Off by default: it needs ~1.1 GB
+  # in a background worker and a ~740 MB download. On, it scores the ~1% of chunks a regex
+  # prefilter passes and drops those at or over `threshold` from packs, answers and citations.
+  guard:        {use: none}
+  # guard:      {use: onnx-classifier, model: protectai/deberta-v3-base-prompt-injection-v2, threshold: 0.9}
   database:     {use: sqlite, path: ./data/arie.db}
   file_storage: {use: local, root: ./data/papers}
   # Worker limits: timeout_sec (60), max_rss_mb (1536) and tasks_per_worker (20); other

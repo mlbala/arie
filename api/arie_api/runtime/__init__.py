@@ -94,6 +94,14 @@ class ResearchRuntime(ChatHistory):
             paper_id TEXT PRIMARY KEY, revision TEXT NOT NULL, text TEXT NOT NULL,
             tokens INTEGER NOT NULL)""",
         )
+        # Guard scores (ADR 0014): ``scores_json`` maps chunk id to score for prefiltered chunks.
+        await self.db.execute(
+            ctx,
+            """CREATE TABLE IF NOT EXISTS arie_guard_scores (
+            paper_id TEXT PRIMARY KEY, model TEXT NOT NULL, revision TEXT NOT NULL,
+            threshold REAL NOT NULL, scores_json TEXT NOT NULL, scored INTEGER NOT NULL,
+            untrusted INTEGER NOT NULL, updated_at TEXT NOT NULL)""",
+        )
         await self.db.execute(
             ctx,
             """CREATE TABLE IF NOT EXISTS arie_paper_guides (
@@ -120,6 +128,7 @@ class ResearchRuntime(ChatHistory):
         self.pool.close()
         if self.embedding is not None:
             self.embedding.close()
+        self.close_guard()
         self.models.close()
 
 

@@ -22,6 +22,7 @@ members = [
     "arie-plugin-embed-fastembed",
     "arie-plugin-entail-nli-onnx",
     "arie-plugin-files-local",
+    "arie-plugin-guard-onnx",
     "arie-plugin-parser-docling",
     "arie-plugin-parser-pymupdf4llm",
     "arie-plugin-rerank-onnx",
@@ -267,6 +268,27 @@ dependencies = [
 requires-dist = [{ name = "arie-core", editable = "core" }]
 
 [[package]]
+name = "arie-plugin-guard-onnx"
+version = "0.1.0"
+source = { editable = "plugins/guard-onnx" }
+dependencies = [
+    { name = "arie-core" },
+    { name = "huggingface-hub" },
+    { name = "numpy" },
+    { name = "onnxruntime" },
+    { name = "tokenizers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "arie-core", editable = "core" },
+    { name = "huggingface-hub", specifier = ">=0.24" },
+    { name = "numpy", specifier = ">=2.0" },
+    { name = "onnxruntime", specifier = ">=1.20" },
+    { name = "tokenizers", specifier = ">=0.20" },
+]
+
+[[package]]
 name = "arie-plugin-parser-docling"
 version = "0.1.0"
 source = { editable = "plugins/parser-docling" }
@@ -427,6 +449,7 @@ dependencies = [
     { name = "arie-plugin-embed-fastembed" },
     { name = "arie-plugin-entail-nli-onnx" },
     { name = "arie-plugin-files-local" },
+    { name = "arie-plugin-guard-onnx" },
     { name = "arie-plugin-parser-pymupdf4llm" },
     { name = "arie-plugin-rerank-onnx" },
     { name = "arie-plugin-source-arxiv" },
@@ -471,6 +494,7 @@ requires-dist = [
     { name = "arie-plugin-embed-fastembed", editable = "plugins/embed-fastembed" },
     { name = "arie-plugin-entail-nli-onnx", editable = "plugins/entail-nli-onnx" },
     { name = "arie-plugin-files-local", editable = "plugins/files-local" },
+    { name = "arie-plugin-guard-onnx", editable = "plugins/guard-onnx" },
     { name = "arie-plugin-parser-docling", marker = "extra == 'docling'", editable = "plugins/parser-docling" },
     { name = "arie-plugin-parser-pymupdf4llm", editable = "plugins/parser-pymupdf4llm" },
     { name = "arie-plugin-rerank-onnx", editable = "plugins/rerank-onnx" },

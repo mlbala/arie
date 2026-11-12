@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, cast
 import msgspec
 from arie_core.harness.explain import ExplainResult
 from arie_core.harness.feedback import REASONS, Rated, agreement, answer_facts, judge_opinion
+from arie_core.harness.injection import SCORE_KEY, evidence_chunks
 from arie_core.harness.judge import (
     FAILED,
     NO_ANSWER,
@@ -41,6 +42,7 @@ from arie_core.harness.paper_eval import (
     feedback_case,
     fixed_cases,
     generate_cases,
+    injected_case,
     locate_sentence,
     score_case,
     score_explained,
@@ -361,12 +363,13 @@ class PaperEvaluations:
 
     async def _execute(self, run: Document, paper: Document, regenerate: bool) -> None:
         paper_id = str(paper["id"])
-        rows = self.chunks(paper)
+        rows = await self.runtime.evidence(paper)
         cases = [] if regenerate else await self.cases(paper_id)
         if not cases:
             run.update(status="running", message="Writing questions from the paper's own sentences")
             cases = await self._generate(paper, rows)
         review = [case for case, _ in await self.feedback_cases(paper_id, rows)]
+        injected, planted, planted_rows = await self._planted(paper, rows)
         variants = [("configured", True)]
         # Explain mode has no reranker, so a second variant would repeat the first.
         if (
@@ -376,12 +379,16 @@ class PaperEvaluations:
         ):
             variants.append(("no_reranker", False))
         work = [
-            (case, variant, rerank) for case in [*cases, *review] for variant, rerank in variants
+            (case, variant, rerank)
+            for case in [*cases, *review, injected]
+            for variant, rerank in variants
         ]
         run.update(status="running", message="Answering", progress={"done": 0, "total": len(work)})
         scored: dict[str, list[PaperEvalResult]] = {variant: [] for variant, _ in variants}
         for case, variant, rerank in work:
-            result = await self._answer(paper, rows, case, rerank, str(run["mode"]))
+            # The injected case is answered from the copy of the paper with the planted chunk.
+            doc, doc_rows = (planted, planted_rows) if case is injected else (paper, rows)
+            result = await self._answer(doc, doc_rows, case, rerank, str(run["mode"]))
             scored[variant].append(result)
             run["results"].append({"variant": variant, **msgspec.to_builtins(result)})
             run["progress"]["done"] += 1
@@ -420,14 +427,32 @@ class PaperEvaluations:
                 (case.case_id, paper_id, msgspec.json.encode(case).decode(), _now()),
             )
 
+    async def _planted(
+        self, paper: Document, rows: Sequence[EvidenceChunk]
+    ) -> tuple[PaperEvalCase, Document, list[EvidenceChunk]]:
+        """The ``injected`` case, an in-memory copy of the paper with its planted chunk, and
+        that copy's chunks as answers load them.
+
+        With the guard on, the planted text is scored by the live guard model, so the case
+        measures the model and the filter together. Without it (or if the call fails) the
+        chunk is unscored and only the regex can drop it. The copy is never saved; its extra
+        chunk gives it its own pack revision, so the real paper's pack is rebuilt on next use.
+        """
+        case, chunk = injected_case(str(paper["id"]), rows)
+        guard = self.runtime.guard_model
+        if guard is not None:
+            try:
+                scores = await guard.scores("score", [case.answer_quote], count=1, kill_after=600.0)
+                chunk[SCORE_KEY] = scores[0]
+            except Exception:
+                logger.warning("Guard could not score the planted chunk", exc_info=True)
+        planted: Document = {**paper, "chunks": [*paper.get("chunks", []), chunk]}
+        return case, planted, await self.runtime.evidence(planted)
+
     @staticmethod
     def chunks(paper: Document) -> list[EvidenceChunk]:
-        paper_id = str(paper["id"])
-        return [
-            EvidenceChunk(**row)
-            for row in paper.get("chunks", [])
-            if row.get("paper_id") == paper_id
-        ]
+        """The paper's chunks without guard scores; runs use ``runtime.evidence`` instead."""
+        return evidence_chunks(str(paper["id"]), paper.get("chunks", []), None)
 
     async def _answer(
         self,

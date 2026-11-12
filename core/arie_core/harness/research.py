@@ -5,13 +5,13 @@ from collections.abc import Sequence
 
 import msgspec
 
+from arie_core.harness.injection import is_untrusted
 from arie_core.harness.intent import AnswerPlan
 from arie_core.harness.prefetch import reciprocal_rank_fusion
 from arie_core.harness.reader import (
     EvidenceChunk,
     annotate_sections,
     eligible,
-    is_untrusted_instruction,
     prose_sentences,
     query_terms,
     retrieve,
@@ -81,7 +81,7 @@ def read_for_answer(
     no previous answer prose or other paper can enter the evidence set.
     """
     scoped = annotate_sections(
-        [row for row in rows if row.paper_id == paper_id and not is_untrusted_instruction(row.text)]
+        [row for row in rows if row.paper_id == paper_id and not is_untrusted(row)]
     )
     actions: list[str] = []
 

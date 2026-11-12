@@ -586,7 +586,7 @@ def test_a_paper_evaluation_answers_saved_cases_and_scores_them(
     run = _finished_run(client, started)
     # The reranker is off in this fixture, so there is nothing to compare against.
     assert set(run["summary"]) == {"configured"}
-    [result] = run["results"]
+    [result] = [item for item in run["results"] if item["kind"] != "injected"]
     assert result["grounded"] is True and result["kind"] == "fact"
     assert set(result["trace"]["seconds"]) == {*STAGES, "total"}
     assert result["trace"]["mode"] == result["mode"]
@@ -596,6 +596,12 @@ def test_a_paper_evaluation_answers_saved_cases_and_scores_them(
     assert result["answer_written"] is False and result["passed_written"] is False
     assert run["summary"]["configured"]["passed_written"] == 0
     assert run["summary"]["configured"]["fallbacks"] == {"unspecified": 1}
+    # The planted instruction case runs every time; with the guard off it is packed, so it fails
+    # and is reported only as ``injection_blocked``.
+    [injected] = [item for item in run["results"] if item["kind"] == "injected"]
+    assert injected["passed"] is False
+    assert run["summary"]["configured"]["injection_blocked"] == 0.0
+    assert run["summary"]["configured"]["cases"] == 1
     overview = client.get("/v1/papers/paper-1/eval").json()
     assert overview["latest"]["run_id"] == run_id and overview["cases"][0]["case_id"] == "case-1"
     assert client.get("/v1/papers/paper-1/eval/runs/unknown").status_code == 404
@@ -928,7 +934,7 @@ def test_an_explain_evaluation_scores_the_written_text_and_stores_cache_and_firs
     )
     run = _finished_run(client, started)
     assert run["mode"] == "explain" and set(run["summary"]) == {"configured"}
-    [result] = run["results"]
+    [result] = [item for item in run["results"] if item["kind"] != "injected"]
     assert result["requested_mode"] == "explain" and result["mode"] == "explain"
     assert result["passed"] is True and result["passed_written"] is True
     assert result["answer_written"] is True and result["fact_recall_prose"] == 1.0
@@ -948,7 +954,7 @@ def test_an_explain_evaluation_without_a_key_fails_every_case_visibly(
     _seed_fact_case(tmp_path)
     started = client.post("/v1/papers/paper-1/eval/runs", json={"mode": "explain"})
     run = _finished_run(client, started)
-    [result] = run["results"]
+    [result] = [item for item in run["results"] if item["kind"] != "injected"]
     assert result["passed"] is False and result["fallback_reason"] == "model_unavailable"
     assert result["answer_written"] is False and result["cache_hit_rate"] is None
     assert result["citation_valid_rate"] is None and result["background_share"] is None
@@ -967,10 +973,11 @@ def test_an_explain_evaluation_judges_support_and_explain_against_strict(
     model = _RoleLLM()
     llm.append(model)
     run = _evaluate(client, "explain")
-    [result] = run["results"]
-    # The writer once, the support judge once and the pairwise judge once each way round.
+    [result] = [item for item in run["results"] if item["kind"] != "injected"]
+    # The fact case: the writer, the support judge and the pairwise judge each way round. The
+    # injected case adds a writer and a support judge (it has no pairwise judgement).
     assert sorted(model.roles()) == sorted(
-        ["Role: writer.", "Role: support judge.", "Role: pairwise judge.", "Role: pairwise judge."]
+        [*["Role: writer.", "Role: support judge."] * 2, *["Role: pairwise judge."] * 2]
     )
     assert result["citation_support"] == 1.0 and result["win_rate"] == 1.0
     assert result["judge_status"] == "complete"
@@ -991,7 +998,7 @@ def test_a_judge_that_always_prefers_the_first_answer_makes_the_comparison_a_tie
     _seed_fact_case(tmp_path)
     llm.append(_RoleLLM("1 | partial | Only part of it.\n", pairwise="first"))
     run = _evaluate(client, "explain")
-    [result] = run["results"]
+    [result] = [item for item in run["results"] if item["kind"] != "injected"]
     assert result["win_rate"] == 0.5 and result["citation_support"] == 1.0  # partial counts
 
 
@@ -1001,7 +1008,7 @@ def test_an_unreadable_support_verdict_leaves_the_case_out_of_the_mean_and_is_co
     _seed_fact_case(tmp_path)
     llm.append(_RoleLLM("The paper seems fine.\n"))
     run = _evaluate(client, "explain")
-    [result] = run["results"]
+    [result] = [item for item in run["results"] if item["kind"] != "injected"]
     assert result["citation_support"] is None and result["judge_status"] == "failed"
     assert result["passed"] is True and result["win_rate"] == 1.0
     summary = run["summary"]["configured"]
@@ -1016,7 +1023,7 @@ def test_a_strict_evaluation_makes_no_judge_calls_and_reports_no_judge_metrics(
     llm.append(model)
     run = _evaluate(client, "strict")
     assert model.requests == []
-    [result] = run["results"]
+    [result] = [item for item in run["results"] if item["kind"] != "injected"]
     assert result["citation_support"] is None and result["win_rate"] is None
     assert result["judge_status"] == ""
     assert run["summary"]["configured"]["win_cases"] == 0

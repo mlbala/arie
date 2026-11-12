@@ -103,6 +103,9 @@ class EvidenceChunk(msgspec.Struct, frozen=True):
     char_start: int
     char_end: int
     section: str = ""
+    # Set on load when the guard classifier scored the chunk at or over its threshold
+    # (``injection.evidence_chunks``, ADR 0014); such a chunk is never evidence.
+    untrusted: bool = False
 
 
 class Excerpt(msgspec.Struct, frozen=True):

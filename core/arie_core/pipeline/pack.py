@@ -18,6 +18,7 @@ from decimal import Decimal
 
 import msgspec
 
+from arie_core.harness.injection import is_untrusted
 from arie_core.harness.reader import (
     EvidenceChunk,
     annotate_sections,
@@ -95,18 +96,14 @@ def pack_chunks(paper_id: str, chunks: Sequence[EvidenceChunk]) -> list[tuple[in
     Chunks of other papers are ignored (I1). Contents listings, credits, references and
     acknowledgements are left out by ``eligible``, the rule the strict answer path uses, and so
     are chunks that are only a heading. Chunks that read as instructions to the assistant
-    (``is_untrusted_instruction``) are left out too, as on the strict path. Everything else
-    stays, equations and captions included: the pack is the whole paper, not a selection of
-    prose.
+    (``is_untrusted``: the regex, or a guard score over its threshold) are left out too, as on
+    the strict path. Everything else stays, equations and captions included: the pack is the
+    whole paper, not a selection of prose.
     """
     numbered: list[tuple[int, EvidenceChunk]] = []
     for row in chunks:
         number = chunk_number(paper_id, row.chunk_id)
-        if (
-            row.paper_id == paper_id
-            and number is not None
-            and not is_untrusted_instruction(row.text)
-        ):
+        if row.paper_id == paper_id and number is not None and not is_untrusted(row):
             numbered.append((number, row))
     # Page order, not input order, so the bytes don't depend on how the rows were loaded.
     numbered.sort(key=lambda item: (item[1].page_start, item[1].char_start, item[0]))

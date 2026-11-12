@@ -15,7 +15,6 @@ from typing import cast
 
 import msgspec
 from arie_core.harness.guide import COMPLETE, GuideResult, PaperGuide, load_guide_rules, write_guide
-from arie_core.harness.reader import EvidenceChunk
 from arie_core.harness.session import GUIDE_SECONDS
 from arie_core.plugin_api import LLM
 
@@ -126,11 +125,7 @@ class PaperGuides(SyncJobs):
         if paper is None or paper.get("status") != "INDEXED":
             return None
         pack = await self.ensure_pack(paper)
-        rows = [
-            EvidenceChunk(**row)
-            for row in paper.get("chunks", [])
-            if row.get("paper_id") == paper_id
-        ]
+        rows = await self.evidence(paper)
         context_tokens = self.config.context_tokens_for(self.llm_provider())
         result = await write_guide(
             explain_context(f"guide:{paper_id}", context_tokens, GUIDE_SECONDS),

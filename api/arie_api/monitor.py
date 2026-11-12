@@ -147,10 +147,20 @@ class StorageMonitor:
                 "papers_total": None,
                 "detail": f"Vector store check failed: {exc or type(exc).__name__}",
             }
+        try:
+            async with asyncio.timeout(3.0):
+                guard = await runtime.guard_status()
+        except Exception as exc:
+            guard = {
+                "plugin": runtime.guard_config.use,
+                "status": "unavailable",
+                "detail": f"Guard check failed: {exc or type(exc).__name__}",
+            }
         return {
             "checked_at": datetime.now(UTC).isoformat(),
             "database": db,
             "file_storage": pdf,
             "vector_store": vector,
             **runtime.models.status(),
+            "guard": guard,
         }

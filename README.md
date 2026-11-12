@@ -254,7 +254,8 @@ flowchart TD
 
 - **Paper pack.** The paper becomes one text: title, abstract, section outline, then every
   kept chunk tagged `[cN]`, where `N` is the chunk number. References, credits and contents
-  listings are left out, and so is paper text that reads as instructions to the assistant.
+  listings are left out, and so is paper text that reads as instructions to the assistant
+  (a pattern filter, plus the optional `guard` classifier when it is on).
   It is built when the paper is indexed and stored with the paper.
   If its estimated size is over `explain.max_pack_share` of the model's `context_tokens`,
   a paged pack carries the abstract, introduction, conclusion and the sections strict
@@ -301,6 +302,7 @@ never in API threads:
 | PDF | parser plugin | 60 s per paper, 1.5 GB memory, recycled after 20 papers (configurable for the parser) |
 | Embedding | embedder plugin | defaults above; lower CPU priority |
 | Answer models | entailment and reranker plugins, in one shared process | defaults above; normal priority so answers stay fast |
+| Guard | guard plugin, only when `plugins.guard` is on | 180 s per batch of 32 chunks, 1.5 GB memory; lower CPU priority, waits while a question runs |
 
 A worker that exceeds a limit is killed and replaced; only that task fails. PDF and
 embedding workers run at lower CPU priority (`nice 10`), and the PDF pool never starts
@@ -348,6 +350,7 @@ into the runtime:
 | `source` | `fetch_page(ctx, since, until, cursor, limit)`, `allowed_hosts` | `arxiv`, `deepmind` | `plugins.sources` (a list) |
 | `entailment` | `score(ctx, pairs) -> list[float]` | `nli-onnx` | `plugins.entailment.use` |
 | `reranker` | `score(ctx, query, passages) -> list[float]` | `onnx-cross-encoder` | `plugins.reranker.use` |
+| `guard` | `score(ctx, texts) -> list[float]` | `onnx-classifier` (off by default) | `plugins.guard.use` |
 
 The exact signatures and contracts are the `Protocol` classes in
 [`core/arie_core/plugin_api/__init__.py`](core/arie_core/plugin_api/__init__.py).
@@ -569,6 +572,9 @@ Keys for the local-model plugins:
 | `entailment.max_length` | 512 | Tokens per quote and claim pair. |
 | `reranker.threads` | 2 | CPU threads for the reranker; two keep 24 passages under its 3 s budget. |
 | `reranker.max_length`, `reranker.batch_size` | 512, 8 | Tokens per passage, and passages scored per batch. |
+| `guard.use` | `none` | `onnx-classifier` scores paper chunks for prompt injection in a background worker; chunks at or over the threshold are never packed, retrieved or cited. It is off by default because it needs about 1 GB of memory; on held-out test injections it caught 14 of 25 where the built-in pattern filter caught 1. |
+| `guard.model`, `guard.threshold` | `protectai/deberta-v3-base-prompt-injection-v2`, 0.9 | The classifier (740 MB download) and the score that marks a chunk untrusted. A new model re-scores the library; a new threshold re-applies stored scores. |
+| `guard.threads`, `guard.max_length` | 2, 512 | CPU threads and tokens per chunk for the guard. |
 | `entailment.memory_arena`, `reranker.memory_arena` | false | Keep ONNX Runtime's CPU memory arena. About 0.5 GB more memory for the answer worker, at the same measured speed. |
 
 Worker limits for `plugins.parser` (every other `parser` key goes to the parser):
@@ -599,6 +605,7 @@ Measured on one machine; expect similar proportions elsewhere.
 | --- | --- | --- |
 | Local embedder (`fastembed`, bge-small) | ~350 MB | short bursts while indexing; ~20 ms per question |
 | Answer models: claim checker (`nli-onnx`) and reranker (`onnx-cross-encoder`), one shared worker | ~0.7 GB on Linux at the worst case per answer (12 claims, 24 long passages); ~1.2 GB with `memory_arena: true` | claim check ~0.2 s per claim on one thread; reranking up to 3 s on two threads |
+| Guard (`onnx-classifier`, protectai DeBERTa), only when on | 0.94-1.08 GB peak (8-CPU Mac) | ~0.76 s per scored chunk on two threads; only ~1% of chunks pass its prefilter, so ~1.5 s for a typical paper, ~16 min to backfill 445 papers |
 | PDF worker (`pymupdf4llm`) | up to ~500 MB each | busy during sync, at lower priority |
 | PDF worker (`docling`) | 1.4-1.5 GB peak per paper | 73-165 s per 15-page paper |
 
@@ -716,7 +723,9 @@ the ground truth:
    in its sentence. So the reference answers are the paper's own words.
 2. Three fixed questions are added that ARIE must refuse: a cross-paper request, a
    prompt injection, and an energy-use question (only when the paper never mentions
-   energy).
+   energy). Each run also plants one instruction chunk in a copy of the paper and checks
+   that it never reaches the pack, a citation or the answer (`injection_blocked`; it
+   fails while `plugins.guard` is off, because the pattern filter misses it).
 3. Every question is answered exactly as in chat, with the same models and budgets,
    and scored without a model judge (an explain run also asks the judge whether its cited
    sentences are supported and whether it beats the strict answer):

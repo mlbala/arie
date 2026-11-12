@@ -11,11 +11,11 @@ from typing import cast
 import msgspec
 import yaml
 
+from arie_core.harness.injection import is_untrusted
 from arie_core.harness.intent import AnswerPlan, plan_answer
 from arie_core.harness.reader import (
     EvidenceChunk,
     Excerpt,
-    is_untrusted_instruction,
     locate_quote,
     prose_sentences,
     query_terms,
@@ -283,9 +283,7 @@ async def _compose(
     entail: EntailmentCheck | None,
     entail_floor: float,
 ) -> AnswerResult:
-    scoped = [
-        row for row in rows if row.paper_id == paper_id and not is_untrusted_instruction(row.text)
-    ]
+    scoped = [row for row in rows if row.paper_id == paper_id and not is_untrusted(row)]
     plan = plan or plan_answer(question)
     question = plan.question
     overview = plan.overview

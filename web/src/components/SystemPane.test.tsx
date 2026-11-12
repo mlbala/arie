@@ -78,6 +78,25 @@ it("shows a degraded answer model with its reason and keeps the header from sayi
   client.clear();
 });
 
+it("shows the injection guard and reports a degraded guard in the header", async () => {
+  const detail = "protectai/deberta-v3-base-prompt-injection-v2 failing: download failed. 0 of 2 papers scored; 0 chunks untrusted at threshold 0.9.";
+  vi.mocked(getStorageHealth).mockResolvedValue({
+    checked_at: "2026-11-12T12:00:00Z", active_jobs: [],
+    database: { provider: "sqlite", status: "healthy", size_bytes: 1024, papers: 2, evidence_chunks: 5 },
+    vector_store: { provider: "exact", status: "healthy", size_bytes: 4096, vectors: 12, detail: "All papers embedded" },
+    file_storage: { provider: "local", status: "healthy", size_bytes: 2048, files: 2, disk_free_bytes: 1000, disk_total_bytes: 2000 },
+    guard: { plugin: "onnx-classifier", status: "degraded", detail, threshold: 0.9, papers_scored: 0, papers_total: 2, untrusted_chunks: 0 },
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><StorageHealth /></QueryClientProvider>);
+  fireEvent.click(screen.getByText("Storage & health"));
+  expect(await screen.findByText(detail)).toBeInTheDocument();
+  expect(screen.getByText("Injection guard")).toBeInTheDocument();
+  expect(screen.getByText("onnx-classifier · paper text screening")).toBeInTheDocument();
+  expect(screen.getByText("Model degraded")).toBeInTheDocument();
+  client.clear();
+});
+
 it("keeps sync and import closed until opened, remembers the choice and shows a running sync on the closed row", () => {
   localStorage.removeItem("arie.ui.sourceTools");
   const tools = (syncing: boolean) => <SourceTools label="Sync & import" syncing={syncing}><p>Sync controls</p></SourceTools>;
