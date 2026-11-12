@@ -56,6 +56,47 @@ def caption_number(text: str) -> str:
     return match.group(1) if match else ""
 
 
+# pymupdf4llm writes the words drawn inside a vector picture between these markers, at the
+# picture box's ``pos`` in the page text (S23). The markers are part of the stored text.
+PICTURE_TEXT_START = "<!-- Start of picture text -->"
+PICTURE_TEXT_END = "<!-- End of picture text -->"
+_PICTURE_TEXT = re.compile(
+    re.escape(PICTURE_TEXT_START) + r"(.*?)" + re.escape(PICTURE_TEXT_END), re.S
+)
+_EDGE = re.compile(r"^(?:\s|<br>)+|(?:\s|<br>)+$")
+
+
+def picture_text_spans(text: str, start: int = 0, end: int | None = None) -> list[tuple[int, int]]:
+    """Offsets in ``text`` of the words of each picture-text block inside ``text[start:end]``.
+
+    A span runs from the first word to the last, without the markers, the whitespace or the
+    ``<br>`` line breaks at its edges. Blocks with no words are skipped.
+    """
+    spans: list[tuple[int, int]] = []
+    stop = len(text) if end is None else end
+    for match in _PICTURE_TEXT.finditer(text, start, stop):
+        inner = match.group(1)
+        head = _EDGE.match(inner)
+        lead = head.end() if head else 0
+        tail = _EDGE.search(inner, lead)
+        trail = len(inner) - tail.start() if tail else 0
+        if lead < len(inner) - trail:
+            spans.append((match.start(1) + lead, match.end(1) - trail))
+    return spans
+
+
+def is_picture_text(text: str) -> bool:
+    """True when ``text`` holds a picture-text marker: words drawn in a figure, not prose."""
+    return PICTURE_TEXT_START in text or PICTURE_TEXT_END in text
+
+
+def overlap_area(a: Box, b: Box) -> float:
+    """Area shared by two boxes; 0 when they only touch or are apart."""
+    width = min(a[2], b[2]) - max(a[0], b[0])
+    height = min(a[3], b[3]) - max(a[1], b[1])
+    return width * height if width > 0 and height > 0 else 0.0
+
+
 def _overlaps(a: Box, b: Box) -> bool:
     return min(a[2], b[2]) > max(a[0], b[0])
 

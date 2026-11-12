@@ -89,6 +89,9 @@ class Figure(msgspec.Struct, frozen=True):
     ``number`` is the caption's label ("3", "A1"); ``page`` is 1-based; ``box`` is
     ``(x0, y0, x1, y1)`` in PDF points. ``caption_start``/``caption_end`` address the caption
     in that page's text (``ParsedDoc.sections[page - 1]``), or are -1 when it was not found.
+    ``text_spans`` address, in the same page text, the words the PDF draws inside the figure
+    (axis labels, legends, diagram boxes): one span per picture-text block whose picture box
+    overlaps ``box`` (S23). They are the paper's own words, already in the page text.
     """
 
     number: str
@@ -97,6 +100,7 @@ class Figure(msgspec.Struct, frozen=True):
     caption: str
     caption_start: int = -1
     caption_end: int = -1
+    text_spans: tuple[tuple[int, int], ...] = ()
 
 
 class ParsedDoc(msgspec.Struct, frozen=True):

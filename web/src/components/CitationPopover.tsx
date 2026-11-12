@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { createPortal } from "react-dom";
 import { getExtractedPage } from "../api/client";
 import type { ExplainCitation } from "../explanation";
+import { withoutPictureMarkers } from "../pictureText";
 
 /** What a citation chip shows on hover. `quote` is undefined while it loads, null if it cannot be shown. */
 export interface CitationHover {
@@ -84,7 +85,7 @@ export function ExplainCitationPopover({ id, paperId, citation, anchor, onDismis
 
 /** One readable run of the chunk, cut at a word when it is long. */
 function excerpt(text: string): string | null {
-  const flat = text.replace(/\s+/g, " ").trim();
+  const flat = withoutPictureMarkers(text).replace(/\s+/g, " ").trim();
   if (!flat) return null;
   if (flat.length <= EXCERPT_CHARS) return flat;
   return `${flat.slice(0, EXCERPT_CHARS).replace(/\s+\S*$/, "")}…`;

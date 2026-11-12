@@ -9,7 +9,14 @@ from pathlib import Path
 from typing import cast
 
 from arie_core.plugin_api import Ctx, Figure, ParsedDoc, plugin
-from arie_core.plugin_api.figures import MAX_FIGURES, Box, caption_number, match_captions
+from arie_core.plugin_api.figures import (
+    MAX_FIGURES,
+    Box,
+    caption_number,
+    match_captions,
+    overlap_area,
+    picture_text_spans,
+)
 
 
 def _box(value: object) -> Box | None:
@@ -22,14 +29,29 @@ def _box(value: object) -> Box | None:
     return (x0, y0, x1, y1)
 
 
+def _span(value: object) -> tuple[int, int] | None:
+    if not isinstance(value, list | tuple):
+        return None
+    items = list(cast(Sequence[object], value))
+    if len(items) != 2 or not all(isinstance(v, int) for v in items):
+        return None
+    return cast(int, items[0]), cast(int, items[1])
+
+
 def page_figures(number: int, page: Mapping[str, object]) -> tuple[list[Figure], int]:
     """Captioned figures of one page from pymupdf4llm's layout boxes, and the count of
-    picture boxes without a caption. Caption offsets address this page's ``text``."""
+    picture boxes without a caption. Caption offsets address this page's ``text``.
+
+    The words a picture box draws are already in ``text`` as a picture-text block at the
+    box's ``pos``. Each block goes to the figure whose box overlaps that picture box most;
+    a block whose picture overlaps no figure stays untagged. Nothing is appended (S23).
+    """
     text = str(page.get("text", ""))
     boxes = page.get("page_boxes")
     if not isinstance(boxes, list):
         return [], 0
     pictures: list[Box] = []
+    blocks: list[tuple[Box, tuple[int, int]]] = []
     captions: list[tuple[str, Box, int, int]] = []
     for raw in cast(list[object], boxes):
         if not isinstance(raw, dict):
@@ -38,16 +60,15 @@ def page_figures(number: int, page: Mapping[str, object]) -> tuple[list[Figure],
         bbox = _box(item.get("bbox"))
         if bbox is None:
             continue
+        pos = _span(item.get("pos"))
         if item.get("class") == "picture":
             pictures.append(bbox)
+            if pos is not None:
+                blocks.extend((bbox, span) for span in picture_text_spans(text, *pos))
             continue
-        pos = item.get("pos")
-        if item.get("class") not in {"caption", "text"} or not isinstance(pos, list | tuple):
+        if item.get("class") not in {"caption", "text"} or pos is None:
             continue
-        span = cast(Sequence[object], pos)
-        if len(span) != 2 or not all(isinstance(v, int) for v in span):
-            continue
-        start, end = cast(int, span[0]), cast(int, span[1])
+        start, end = pos
         block = text[start:end]
         label = caption_number(block)
         if label:
@@ -55,10 +76,16 @@ def page_figures(number: int, page: Mapping[str, object]) -> tuple[list[Figure],
             end = start + len(block.strip())
             captions.append((label, bbox, start, end))
     paired, uncaptioned = match_captions(pictures, [caption[1] for caption in captions])
+    owned: dict[int, list[tuple[int, int]]] = {index: [] for index in paired}
+    for picture, span in blocks:
+        best = max(paired, key=lambda index: overlap_area(paired[index], picture), default=None)
+        if best is not None and overlap_area(paired[best], picture) > 0:
+            owned[best].append(span)
     figures: list[Figure] = []
     for index, box in sorted(paired.items()):
         label, _, start, end = captions[index]
-        figures.append(Figure(label, number, box, text[start:end], start, end))
+        spans = tuple(sorted(owned[index]))
+        figures.append(Figure(label, number, box, text[start:end], start, end, spans))
     return figures, uncaptioned
 
 

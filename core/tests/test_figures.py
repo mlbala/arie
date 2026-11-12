@@ -8,10 +8,18 @@ from arie_api.runtime import context
 from arie_core.contracts import Figure
 from arie_core.harness.injection import evidence_chunks
 from arie_core.harness.intent import AnswerPlan, plan_answer
-from arie_core.harness.reader import EvidenceChunk
+from arie_core.harness.reader import EvidenceChunk, retrieve
 from arie_core.harness.research import link_figures, read_for_answer
 from arie_core.pipeline.figures import attach_figures, chunk_figure_tags, locate_caption
-from arie_core.plugin_api.figures import caption_number, figure_mentions, match_captions
+from arie_core.plugin_api.figures import (
+    PICTURE_TEXT_END,
+    PICTURE_TEXT_START,
+    caption_number,
+    figure_mentions,
+    match_captions,
+    overlap_area,
+    picture_text_spans,
+)
 
 
 @pytest.mark.parametrize(
@@ -194,3 +202,93 @@ def test_strict_reading_adds_the_caption_chunk(depth: str) -> None:
         row.chunk_id for row in read_for_answer(context("f"), "p", question, figure_rows()).rows
     ]
     assert "c1" in linked and "c3" in linked and linked.index("c3") == linked.index("c1") + 1
+
+
+# A page as pymupdf4llm writes it: prose, the words drawn inside Figure 1, then its caption.
+DRAWN_PAGE = (
+    "The system has three parts.\n\n"
+    f"{PICTURE_TEXT_START}\nEncoder Retriever<br>Decoder<br>{PICTURE_TEXT_END}\n\n"
+    "Figure 1: The retrieval pipeline.\n\n"
+    f"{PICTURE_TEXT_START}\n<br>{PICTURE_TEXT_END}\n"
+)
+DRAWN_START = DRAWN_PAGE.index("Encoder")
+DRAWN_END = DRAWN_PAGE.index("<br>" + PICTURE_TEXT_END)
+CAPTION_START = DRAWN_PAGE.index("Figure 1:")
+FIGURE_1 = Figure(
+    "1",
+    1,
+    (100, 120, 450, 300),
+    "Figure 1: The retrieval pipeline.",
+    CAPTION_START,
+    CAPTION_START + 33,
+    ((DRAWN_START, DRAWN_END),),
+)
+
+
+def test_picture_text_spans_are_the_words_between_the_markers() -> None:
+    # Edge whitespace and <br> are cut; a block with no words gives no span.
+    assert picture_text_spans(DRAWN_PAGE) == [(DRAWN_START, DRAWN_END)]
+    assert DRAWN_PAGE[DRAWN_START:DRAWN_END] == "Encoder Retriever<br>Decoder"
+    # Only blocks wholly inside the range count.
+    assert picture_text_spans(DRAWN_PAGE, CAPTION_START) == []
+    assert overlap_area((0, 0, 10, 10), (5, 5, 20, 20)) == 25
+    assert overlap_area((0, 0, 10, 10), (10, 0, 20, 10)) == 0
+
+
+def test_a_chunk_of_drawn_words_is_tagged_with_its_figure_but_not_as_its_caption() -> None:
+    block = DRAWN_PAGE.index(PICTURE_TEXT_START)
+    end = DRAWN_PAGE.index(PICTURE_TEXT_END) + len(PICTURE_TEXT_END)
+    assert chunk_figure_tags(DRAWN_PAGE[block:end], 1, block, end, [FIGURE_1]) == {
+        "figure": "1",
+        "figure_text": True,
+    }
+    caption = DRAWN_PAGE[CAPTION_START : CAPTION_START + 33]
+    tags = chunk_figure_tags(caption, 1, CAPTION_START, CAPTION_START + 33, [FIGURE_1])
+    assert tags == {"figure": "1"}
+    # Same offsets on another page, or a figure without spans: no drawn-word tag.
+    assert chunk_figure_tags(DRAWN_PAGE[block:end], 2, block, end, [FIGURE_1]) == {}
+    plain = msgspec.structs.replace(FIGURE_1, text_spans=())
+    assert chunk_figure_tags(DRAWN_PAGE[block:end], 1, block, end, [plain]) == {}
+
+
+def test_attach_figures_keeps_only_spans_that_are_stored_picture_text() -> None:
+    chunks: list[dict[str, object]] = [
+        dict(paper_id="p", chunk_id=f"p:{i}", page_start=1, char_start=s, char_end=e, text=t)
+        for i, (s, e, t) in enumerate(
+            [(0, 27, "x"), (29, DRAWN_END + 4 + len(PICTURE_TEXT_END), "y")]
+        )
+    ]
+    document: dict[str, object] = {"pages": [{"number": 1, "text": DRAWN_PAGE}], "chunks": chunks}
+    stale = msgspec.structs.replace(FIGURE_1, text_spans=((DRAWN_START, DRAWN_END), (0, 5)))
+    attach_figures(document, [stale])
+    stored = document["figures"]
+    assert isinstance(stored, list) and stored[0]["text_spans"] == ((DRAWN_START, DRAWN_END),)
+    assert [c.get("figure_text") for c in chunks] == [None, True]
+
+
+def drawn_row(text: str = "Encoder Retriever Decoder", section: str = "Results") -> EvidenceChunk:
+    return EvidenceChunk(
+        "p", "c5", text, 3, 100, 100 + len(text), section, figure="2", figure_text=True
+    )
+
+
+def test_figure_text_never_replaces_the_caption_chunk() -> None:
+    scoped = [*figure_rows(), drawn_row()]
+    _, c1, c2, c3, c4, c5 = scoped
+    # The drawn words come after the caption and share its number; the caption is still linked.
+    assert link_figures(plan("What does Figure 2 show?"), [c1, c2], scoped) == [c1, c3, c4, c2]
+    # Drawn words at the top are not a caption, so they link nothing on their own.
+    assert link_figures(plan("Which parts are drawn?"), [c5, c2], scoped) == [c5, c2]
+
+
+def test_overviews_drop_words_drawn_inside_figures() -> None:
+    sentence = "We propose an encoder that improved retrieval accuracy on Cedar."
+    drawn = drawn_row(f"{PICTURE_TEXT_START}\n{sentence}\n{PICTURE_TEXT_END}", "Abstract")
+    prose = EvidenceChunk("p", "c6", sentence, 1, 0, len(sentence), "Abstract")
+    picked = retrieve("p", "Summarize the paper", [drawn, prose])
+    assert [row.chunk_id for row in picked] == ["c6"]
+    untagged = msgspec.structs.replace(drawn, figure="", figure_text=False)
+    assert [r.chunk_id for r in retrieve("p", "Summarize the paper", [untagged, prose])] == ["c6"]
+    question = msgspec.structs.replace(plan_answer("Summarize the paper"), overview=True)
+    rows = read_for_answer(context("f"), "p", question, [*figure_rows(), drawn, prose])
+    assert all(not row.figure_text for row in (*rows.rows, *rows.pool))
