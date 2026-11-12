@@ -4,7 +4,7 @@ Each INDEXED paper with a stored PDF and no ``figures`` key is parsed again in t
 worker pool; only the parse's figures are kept (ADR 0015). Captions are found again in the
 stored page text and chunks gain ``figure``/``mentions`` tags. Pages, chunk text, ids and
 offsets are unchanged, so vectors, guard scores and paper packs stay valid. ``--all``
-also refreshes papers that already have figures.
+also refreshes papers that already have figures, and adds S23's figure-text spans and tags.
 """
 
 from __future__ import annotations
@@ -58,10 +58,21 @@ async def backfill(refresh: bool = False) -> Counter[str]:
             )
             counts["captions_not_in_stored_text"] += missing
             counts["caption_chunks"] += sum(
-                "figure" in chunk for chunk in cast(list[Document], paper.get("chunks") or [])
+                "figure" in chunk and not chunk.get("figure_text")
+                for chunk in cast(list[Document], paper.get("chunks") or [])
             )
             counts["mention_chunks"] += sum(
                 "mentions" in chunk for chunk in cast(list[Document], paper.get("chunks") or [])
+            )
+            # S23: words drawn inside figures, already in the page text, now tagged.
+            counts["figure_text_spans_parsed"] += sum(len(f.text_spans) for f in parsed.figures)
+            counts["figure_text_spans"] += sum(
+                len(cast(list[object], figure.get("text_spans") or []))
+                for figure in cast(list[Document], paper.get("figures") or [])
+            )
+            counts["figure_text_chunks"] += sum(
+                bool(chunk.get("figure_text"))
+                for chunk in cast(list[Document], paper.get("chunks") or [])
             )
     finally:
         runtime.close()

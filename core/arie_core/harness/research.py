@@ -17,7 +17,7 @@ from arie_core.harness.reader import (
     retrieve,
 )
 from arie_core.plugin_api import Ctx
-from arie_core.plugin_api.figures import figure_mentions
+from arie_core.plugin_api.figures import figure_mentions, is_picture_text
 
 
 class ReadingResult(msgspec.Struct, frozen=True):
@@ -61,7 +61,14 @@ def _pool(
         openings: dict[str, EvidenceChunk] = {}
         for row in scoped:
             top = row.section.split(" / ")[0]
-            if top and top not in openings and "appendix" not in top.lower() and _usable(row):
+            if (
+                top
+                and top not in openings
+                and "appendix" not in top.lower()
+                and not row.figure_text
+                and not is_picture_text(row.text)
+                and _usable(row)
+            ):
                 openings[top] = row
         found.extend(openings.values())
     return tuple(dict.fromkeys(row for row in found if _usable(row)))[:POOL_SIZE]
@@ -86,13 +93,18 @@ def link_figures(
     result = list(rows)
     if plan.overview or not result or not any(row.figure for row in scoped):
         return result
-    captions = {row.figure: row for row in scoped if row.figure}
+    # The caption chunk is the one tagged by the caption's offsets; words drawn inside the
+    # figure (``figure_text``, S23) share its number but never stand in for the caption.
+    captions: dict[str, EvidenceChunk] = {}
+    for row in scoped:
+        if row.figure and not row.figure_text:
+            captions.setdefault(row.figure, row)
 
     def refers(row: EvidenceChunk, number: str) -> bool:
         return row.figure == number or number in row.mentions
 
     wanted = [n for n in figure_mentions(plan.question) if n in captions]
-    wanted += [result[0].figure] if result[0].figure in captions else []
+    wanted += [result[0].figure] if captions.get(result[0].figure) == result[0] else []
     if not wanted:
         return result
     number = wanted[0]
@@ -185,6 +197,8 @@ def read_for_answer(
             for row in candidates
             if prose_sentences(row.text)
             and not re.match(r"^\s*[#*]*(?:Table|Figure)\s+\d", row.text, re.I)
+            and not row.figure_text
+            and not is_picture_text(row.text)
         ]
     new_rows = [row for row in candidates if row.chunk_id not in prior_ids]
     if len(new_rows) < 4 or len({row.section.split(" / ")[0] for row in candidates}) < 2:

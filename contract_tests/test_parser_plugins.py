@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from arie_core.harness.reader import locate_quote
+from arie_core.pipeline.chunker import chunk_spans
+from arie_core.pipeline.figures import chunk_figure_tags
 from arie_core.plugin_api import Figure, ParsedDoc
 from arie_core.registry.manager import RegistryManager
 
@@ -76,6 +79,77 @@ async def test_pymupdf4llm_returns_captioned_figures_with_page_offsets(
     # A page of text alone has no figures.
     plain = await parser("pymupdf4llm").parse(None, write_pdf(tmp_path / "p.pdf", ["Text."]))
     assert plain.figures == []
+
+
+def diagram_pdf(path: Path) -> str:
+    """One page: a sentence, a vector diagram with three labelled boxes, its caption."""
+    pymupdf = importlib.import_module("pymupdf")
+    document = pymupdf.open()
+    page = document.new_page()
+    page.insert_text((72, 72), "As Figure 1 shows, the system has three parts.", fontsize=11)
+    page.draw_rect(pymupdf.Rect(100, 120, 450, 300), color=(0, 0, 0), fill=(0.9, 0.9, 0.95))
+    for x, label in ((115, "Encoder"), (225, "Retriever"), (345, "Decoder")):
+        page.draw_rect(pymupdf.Rect(x, 180, x + 90, 230), color=(0, 0, 0), fill=(0.6, 0.8, 0.6))
+        page.insert_text((x + 8, 210), label, fontsize=10)
+    page.draw_line((205, 205), (225, 205))
+    page.draw_line((315, 205), (345, 205))
+    page.insert_text((100, 320), "Figure 1: The retrieval pipeline.", fontsize=10)
+    page.insert_text((72, 360), "More body text follows here.", fontsize=11)
+    document.save(str(path))
+    return str(path)
+
+
+def raw_pages(pdf: str) -> list[str]:
+    """pymupdf4llm's own page text, before the plugin looks at it."""
+    module = importlib.import_module("pymupdf4llm")
+    pages = cast(list[dict[str, object]], module.to_markdown(pdf, page_chunks=True))
+    return [str(page["text"]) for page in pages]
+
+
+def tagged_chunks(text: str, figures: list[Figure]) -> list[tuple[str, dict[str, object]]]:
+    return [
+        (text[start:end], chunk_figure_tags(text[start:end], 1, start, end, figures))
+        for start, end in chunk_spans(text)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pymupdf4llm_tags_words_drawn_inside_a_figure_without_appending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ARIE_PDF_WORKER", "1")
+    pdf = diagram_pdf(tmp_path / "2510.01236.pdf")
+    parsed: ParsedDoc = await parser("pymupdf4llm").parse(None, pdf)
+    [figure] = parsed.figures
+    text = parsed.sections[0]
+    # The page text is pymupdf4llm's, unchanged: the labels are there once, not appended.
+    assert parsed.sections == raw_pages(pdf)
+    assert text.count("Encoder") == 1 and text.count("Decoder") == 1
+    [(start, end)] = figure.text_spans
+    assert text[start:end] == "Encoder Retriever Decoder"
+    chunks = tagged_chunks(text, parsed.figures)
+    drawn = [(chunk, tags) for chunk, tags in chunks if tags.get("figure_text")]
+    assert len(drawn) == 1
+    chunk, tags = drawn[0]
+    assert tags["figure"] == "1" and "Retriever" in chunk
+    assert locate_quote(chunk, "Encoder") is not None
+    # The caption keeps its own chunk, tagged as the caption, not as drawn words.
+    assert ("Figure 1: The retrieval pipeline.", {"figure": "1"}) in [
+        (chunk.strip(), tags) for chunk, tags in chunks
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pymupdf4llm_leaves_text_and_chunks_of_a_page_without_figures_identical(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ARIE_PDF_WORKER", "1")
+    pdf = write_pdf(tmp_path / "plain.pdf", ["Gated memory retrieval uses a bank of slots."])
+    parsed: ParsedDoc = await parser("pymupdf4llm").parse(None, pdf)
+    assert parsed.figures == []
+    assert parsed.sections == raw_pages(pdf)
+    assert chunk_spans(parsed.sections[0]) == chunk_spans(raw_pages(pdf)[0])
+    assert all(tags == {} for _, tags in tagged_chunks(parsed.sections[0], parsed.figures))
 
 
 @pytest.mark.asyncio
