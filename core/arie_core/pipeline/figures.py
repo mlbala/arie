@@ -13,7 +13,7 @@ from typing import cast
 import msgspec
 
 from arie_core.contracts import Figure
-from arie_core.plugin_api.figures import caption_number, figure_mentions
+from arie_core.plugin_api.figures import caption_number, figure_mentions, picture_text_spans
 
 
 def locate_caption(page_text: str, number: str, caption: str) -> tuple[int, int]:
@@ -33,9 +33,12 @@ def locate_caption(page_text: str, number: str, caption: str) -> tuple[int, int]
 def chunk_figure_tags(
     text: str, page: int, char_start: int, char_end: int, figures: Sequence[Figure]
 ) -> dict[str, object]:
-    """``figure`` (the caption this chunk holds) and ``mentions`` (other figures it names).
+    """``figure`` (the figure this chunk belongs to) and ``mentions`` (other figures it names).
 
-    Returns only the keys that are set, so a chunk without figures stays as it was.
+    A chunk holding a caption (by the caption's offsets, else by its opening label) is that
+    figure's caption chunk. A chunk that overlaps one of a figure's ``text_spans`` holds words
+    drawn inside it: ``figure`` is set and ``figure_text`` is true (S23). Returns only the
+    keys that are set, so a chunk without figures stays as it was.
     """
     figure = ""
     for item in figures:
@@ -46,10 +49,23 @@ def chunk_figure_tags(
         number = caption_number(text)
         if number and any(item.page == page and item.number == number for item in figures):
             figure = number
-    mentions = [number for number in figure_mentions(text) if number != figure]
+    drawn = ""
+    if not figure:
+        drawn = next(
+            (
+                item.number
+                for item in figures
+                if item.page == page
+                and any(start < char_end and char_start < end for start, end in item.text_spans)
+            ),
+            "",
+        )
+    mentions = [number for number in figure_mentions(text) if number not in {figure, drawn}]
     tags: dict[str, object] = {}
-    if figure:
-        tags["figure"] = figure
+    if figure or drawn:
+        tags["figure"] = figure or drawn
+    if drawn:
+        tags["figure_text"] = True
     if mentions:
         tags["mentions"] = mentions
     return tags
@@ -70,21 +86,28 @@ def attach_figures(document: dict[str, object], parsed: Sequence[Figure]) -> int
     """Add a fresh parse's figures to a stored paper without changing its pages or chunks.
 
     Captions are found again in the stored page text, so offsets address what is stored
-    (-1 when a caption is not there). Chunks gain ``figure``/``mentions`` tags; their text,
-    ids and offsets stay, so vectors, guard scores and packs remain valid. Returns the number
-    of captions not found in the stored text.
+    (-1 when a caption is not there). A figure-text span is kept only when it is exactly a
+    picture-text block of the stored page. Chunks gain ``figure``/``figure_text``/``mentions``
+    tags; their text, ids and offsets stay, so vectors, guard scores and packs remain valid.
+    Returns the number of captions not found in the stored text.
     """
     pages = cast(list[dict[str, object]], document.get("pages") or [])
     texts = {int(cast(int, page["number"])): str(page["text"]) for page in pages}
     figures: list[Figure] = []
     missing = 0
     for figure in parsed:
-        start, end = locate_caption(texts.get(figure.page, ""), figure.number, figure.caption)
+        page_text = texts.get(figure.page, "")
+        start, end = locate_caption(page_text, figure.number, figure.caption)
         missing += start < 0
-        figures.append(msgspec.structs.replace(figure, caption_start=start, caption_end=end))
+        stored = set(picture_text_spans(page_text))
+        spans = tuple(span for span in figure.text_spans if span in stored)
+        figures.append(
+            msgspec.structs.replace(figure, caption_start=start, caption_end=end, text_spans=spans)
+        )
     document["figures"] = msgspec.to_builtins(figures)
     for chunk in cast(list[dict[str, object]], document.get("chunks") or []):
         chunk.pop("figure", None)
+        chunk.pop("figure_text", None)
         chunk.pop("mentions", None)
         chunk.update(
             chunk_figure_tags(

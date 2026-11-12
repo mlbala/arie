@@ -11,6 +11,7 @@ import msgspec
 from arie_core.contracts import Claim, Evidence, LLMRequest
 from arie_core.harness.verifier import EvidenceVerifier
 from arie_core.plugin_api import LLM, Ctx
+from arie_core.plugin_api.figures import is_picture_text
 
 STOP = frozenset(
     [
@@ -108,8 +109,10 @@ class EvidenceChunk(msgspec.Struct, frozen=True):
     untrusted: bool = False
     # Set on load from the stored chunk (ADR 0015): the figure whose caption this chunk holds,
     # and the other figures its text names. Both are the paper's own words, never a description.
+    # ``figure_text`` marks a chunk of words drawn inside ``figure`` rather than its caption (S23).
     figure: str = ""
     mentions: tuple[str, ...] = ()
+    figure_text: bool = False
 
 
 class Excerpt(msgspec.Struct, frozen=True):
@@ -226,7 +229,8 @@ def retrieve(paper_id: str, question: str, rows: Sequence[EvidenceChunk]) -> lis
                     or per_section.get(group, 0) >= quota
                 ):
                     continue
-                if not prose_sentences(row.text):
+                # Words drawn inside a figure are not narrative, even when they read as prose.
+                if not prose_sentences(row.text) or row.figure_text or is_picture_text(row.text):
                     continue
                 selected.append(row)
                 per_section[group] = per_section.get(group, 0) + 1
