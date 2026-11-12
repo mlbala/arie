@@ -31,6 +31,12 @@ from arie_api.runtime import Document, ResearchRuntime, context
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# A stored PDF is untrusted bytes (ADR 0013). The UI reads it with pdf.js, which is unaffected;
+# opened directly, the browser may not sniff it as another type or run anything in it.
+PDF_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "sandbox; default-src 'none'",
+}
 
 
 @dataclass(frozen=True)
@@ -293,7 +299,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
             return path
 
         path = await asyncio.to_thread(resolve_pdf)
-        return FileResponse(path, media_type="application/pdf")
+        return FileResponse(path, media_type="application/pdf", headers=PDF_HEADERS)
 
     @app.get("/v1/papers/{paper_id:path}/pages/{page_number}")
     async def paper_page(paper_id: str, page_number: int) -> Document:
