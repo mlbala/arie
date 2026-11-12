@@ -29,6 +29,7 @@ from arie_core.harness.paper_eval import (
     check_feedback_facts,
     feedback_case,
     fixed_cases,
+    float_ref_passed,
     generate_cases,
     score_case,
     score_explained,
@@ -296,6 +297,9 @@ def test_the_summary_counts_written_passes_fallbacks_and_median_stage_times() ->
     }
 
 
+NO_FLOAT_REFS = {"float_ref_cases": 0, "float_ref_passed": 0, "float_ref_pass_rate": None}
+
+
 def test_the_summary_splits_passes_recall_and_fallbacks_by_evidence_kind() -> None:
     row = ROWS[2]
     fallback = AnswerResult(
@@ -328,6 +332,7 @@ def test_the_summary_splits_passes_recall_and_fallbacks_by_evidence_kind() -> No
             "pass_rate": 0.0,
             "mean_fact_recall_prose": 0.0,
             "fallbacks": {},
+            **NO_FLOAT_REFS,
         },
         "table": {
             "cases": 2,
@@ -335,6 +340,7 @@ def test_the_summary_splits_passes_recall_and_fallbacks_by_evidence_kind() -> No
             "pass_rate": 1.0,
             "mean_fact_recall_prose": 0.5,
             "fallbacks": {"entailment_timeout": 1},
+            **NO_FLOAT_REFS,
         },
         "text": {
             "cases": 1,
@@ -342,9 +348,105 @@ def test_the_summary_splits_passes_recall_and_fallbacks_by_evidence_kind() -> No
             "pass_rate": 1.0,
             "mean_fact_recall_prose": 0.0,
             "fallbacks": {},
+            **NO_FLOAT_REFS,
         },
     }
     assert summarize([])["by_evidence_kind"] == {}
+
+
+FIGURE_ROWS = [
+    EvidenceChunk("p1", "p1:f0", "Figure 3: Learning curves.", 4, 0, 26, "Results", figure="3"),
+    EvidenceChunk("p1", "p1:f1", "loss epoch", 4, 30, 40, "Results", figure="3", figure_text=True),
+    EvidenceChunk(
+        "p1", "p1:f2", "As Fig. 3 shows, loss falls.", 5, 50, 78, "Results", mentions=("3",)
+    ),
+    EvidenceChunk("p1", "p1:f3", "Figure 4: Attention.", 6, 80, 100, "Results", figure="4"),
+    EvidenceChunk("p1", "p1:t0", "Table 2: F1 on the test set.", 7, 110, 138, "Results"),
+    EvidenceChunk("p1", "p1:t1", "TABLE 12 lists the data.", 7, 140, 164, "Results"),
+]
+
+
+def float_case(*floats: str, evidence: str = "figure") -> PaperEvalCase:
+    return PaperEvalCase(
+        case_id="c-float",
+        question="Which curve is lowest?",
+        kind="float_ref",
+        origin="qasper",
+        evidence_kind=evidence,
+        floats=list(floats),
+    )
+
+
+def test_a_float_reference_passes_on_a_cited_caption_figure_text_or_mention() -> None:
+    caption, drawn, mention, other, table, table_12 = FIGURE_ROWS
+    for row in (caption, drawn, mention):
+        assert float_ref_passed(["Figure 3"], [row], abstained=False), row.chunk_id
+    assert not float_ref_passed(["Figure 3"], [other], abstained=False)
+    assert not float_ref_passed(["Figure 3"], [], abstained=True)
+    # Any one of the expected floats counts.
+    assert float_ref_passed(["Figure 3", "Table 2"], [table], abstained=False)
+    assert not float_ref_passed(["Table 1"], [table, table_12], abstained=False)
+    assert float_ref_passed(["Table 12"], [table_12], abstained=False)
+    # A table is matched by its words, not by figure tags.
+    assert not float_ref_passed(["Table 3"], [caption], abstained=False)
+
+
+def test_an_abstention_that_names_the_float_passes() -> None:
+    # Nothing produces this hint before S24; the stub stands in for "see Figure N".
+    hint = "The paper answers this in a figure: see Fig. 3 on page 4."
+    assert float_ref_passed(["Figure 3"], [], abstained=True, hint=hint)
+    assert not float_ref_passed(["Figure 4"], [], abstained=True, hint=hint)
+    assert not float_ref_passed(["Figure 3"], [], abstained=False, hint=hint)
+    assert float_ref_passed(["Table 2"], [], abstained=True, hint="See Table 2.")
+
+
+def test_float_reference_cases_are_scored_in_both_modes_and_summarized_apart() -> None:
+    caption, _, _, other, table, _ = FIGURE_ROWS
+    cites_caption = AnswerResult([excerpt(caption, 0, 8)], "reviewed_answer")
+    cites_other = AnswerResult([excerpt(other, 0, 8)], "source_excerpts")
+    refusal = AnswerResult([], "abstention", fallback_reason="not_in_paper")
+    results = [
+        score_case(float_case("Figure 3"), FIGURE_ROWS, cites_caption, seconds=1.0),
+        score_case(float_case("Figure 3"), FIGURE_ROWS, cites_other, seconds=1.0),
+        score_case(float_case("Figure 3"), FIGURE_ROWS, refusal, seconds=1.0),
+        score_case(float_case("Figure 3"), FIGURE_ROWS, refusal, seconds=1.0, hint="See Figure 3."),
+        score_case(
+            float_case("Table 2", evidence="table"),
+            FIGURE_ROWS,
+            AnswerResult([excerpt(table, 0, 7)], "reviewed_answer"),
+            seconds=1.0,
+        ),
+    ]
+    assert [item.passed for item in results] == [True, False, False, True, True]
+    assert all(item.kind == "float_ref" and item.passed_written is None for item in results)
+
+    def explain_citing(chunk_id: str) -> ExplainResult:
+        return msgspec.structs.replace(
+            explained("Figure 3 shows it [c1]."), citations=(ExplainCitation(1, chunk_id),)
+        )
+
+    case = float_case("Figure 3")
+    assert score_explained(case, FIGURE_ROWS, explain_citing("p1:f1"), seconds=1.0).passed
+    assert not score_explained(case, FIGURE_ROWS, explain_citing("p1:f3"), seconds=1.0).passed
+
+    fact = score_case(fact_case(), ROWS, cites_caption, seconds=1.0)
+    summary = summarize([*results, fact])
+    # Top-level numbers leave float references out, so older runs stay comparable.
+    assert summary["cases"] == 1 and summary["scored"] == 1
+    block = cast(dict[str, dict[str, object]], summary["by_evidence_kind"])
+    assert block["figure"]["cases"] == 0 and block["figure"]["pass_rate"] is None
+    assert block["figure"]["float_ref_cases"] == 4
+    assert block["figure"]["float_ref_passed"] == 2
+    assert block["figure"]["float_ref_pass_rate"] == 0.5
+    assert block["table"]["float_ref_pass_rate"] == 1.0
+    assert block["text"] == {
+        "cases": 1,
+        "passed": 0,
+        "pass_rate": 0.0,
+        "mean_fact_recall_prose": 0.0,
+        "fallbacks": {},
+        **NO_FLOAT_REFS,
+    }
 
 
 def test_feedback_facts_must_be_few_and_verbatim_in_the_source_sentence() -> None:
