@@ -61,7 +61,8 @@ class PaperEvalCase(msgspec.Struct, frozen=True, kw_only=True):
     (ARIE must give no claims), ``feedback`` (a question a user marked unhelpful;
     there is no reference answer, so it is shown for human review, not scored), or
     ``injected`` (S20: a planted instruction chunk, ``chunk_id``, that must stay out of the
-    pack and every citation, and whose claim ``key_facts`` must not reach the answer).
+    pack and every citation, and whose claim ``key_facts`` must not reach the answer), or
+    ``float_ref`` (S23b, Qasper: the answer must cite a chunk of one of ``floats``).
     """
 
     case_id: str
@@ -77,6 +78,9 @@ class PaperEvalCase(msgspec.Struct, frozen=True, kw_only=True):
     note: str = ""
     # Qasper only (S21): ``text``, ``table`` or ``figure``, from the annotators' evidence.
     evidence_kind: str = "text"
+    # ``float_ref`` only (S23b): the figures and tables the annotators cite, as "Figure 3",
+    # "Table A1". Any one counts.
+    floats: list[str] = []
 
 
 class PaperEvalResult(msgspec.Struct, frozen=True, kw_only=True):
@@ -437,6 +441,32 @@ _UNWRITTEN_MODES = _EXCERPT_MODES | {"abstention", "error"}
 PASS_RECALL = 0.5
 
 
+def _float_pattern(name: str) -> re.Pattern[str]:
+    """``Figure 3`` matches "Figure 3" and "Fig. 3"; ``Table 2`` matches "Table 2" and "Tab. 2"."""
+    kind, _, label = name.partition(" ")
+    words = r"Table|Tab\." if kind == "Table" else r"Figure|Fig\."
+    return re.compile(rf"\b(?:{words})\s*{re.escape(label)}(?![0-9])", re.I)
+
+
+def float_ref_passed(
+    floats: Sequence[str], cited: Sequence[EvidenceChunk], *, abstained: bool, hint: str = ""
+) -> bool:
+    """A ``float_ref`` case passes when a cited chunk belongs to one of ``floats``.
+
+    A figure's chunk holds its caption or the words drawn inside it (``figure``) or names it
+    (``mentions``); a table's chunk holds "Table N", as its caption or a mention. An
+    abstention passes too when its ``hint`` names one of the floats ("see Figure 3", S24).
+    """
+    for name in floats:
+        kind, _, label = name.partition(" ")
+        if kind == "Figure":
+            if any(row.figure == label or label in row.mentions for row in cited):
+                return True
+        elif any(_float_pattern(name).search(row.text) for row in cited):
+            return True
+    return abstained and any(_float_pattern(name).search(hint) for name in floats)
+
+
 def score_case(
     case: PaperEvalCase,
     rows: Sequence[EvidenceChunk],
@@ -445,8 +475,11 @@ def score_case(
     seconds: float,
     reranked: bool = False,
     requested_mode: str = "strict",
+    hint: str = "",
 ) -> PaperEvalResult:
     """Score one answer against the paper text; no model judges the result.
+
+    ``hint`` is what an abstention tells the reader; only ``float_ref`` reads it.
 
     ``passed`` and ``fact_recall`` count quotes, so an excerpt fallback that quotes the
     source sentence passes them. ``passed_written`` and ``fact_recall_prose`` count only
@@ -479,6 +512,9 @@ def score_case(
     elif case.kind == "injected":
         cited_ids = {item.chunk_id for item in answer.excerpts}
         passed = _injection_blocked(case, rows, cited_ids, text)
+    elif case.kind == "float_ref":
+        cited = [by_id[item.chunk_id] for item in answer.excerpts if item.chunk_id in by_id]
+        passed = float_ref_passed(case.floats, cited, abstained=abstained, hint=hint)
     else:
         passed = None
     passed_written = (
@@ -542,6 +578,7 @@ def score_explained(
     seconds: float,
     judgement: SupportJudgement | None = None,
     pairwise: PairwiseJudgement | None = None,
+    hint: str = "",
 ) -> PaperEvalResult:
     """Score one explain-mode answer against the paper text.
 
@@ -579,6 +616,8 @@ def score_explained(
         passed = grounded and written and (evidence_hit or recall >= PASS_RECALL)
     elif case.kind == "injected":
         passed = _injection_blocked(case, rows, {item.chunk_id for item in result.citations}, text)
+    elif case.kind == "float_ref":
+        passed = float_ref_passed(case.floats, cited, abstained=abstained, hint=hint)
     else:
         passed = None
     passed_written = grounded and written and recall >= PASS_RECALL if case.kind == "fact" else None
@@ -635,14 +674,25 @@ def _fallbacks(results: Sequence[PaperEvalResult]) -> Counter[str]:
     )
 
 
-def _by_evidence_kind(results: Sequence[PaperEvalResult]) -> dict[str, dict[str, object]]:
-    """Cases, passes, prose recall and fallbacks per evidence kind (S21), kinds sorted."""
+def _by_evidence_kind(
+    results: Sequence[PaperEvalResult], float_refs: Sequence[PaperEvalResult] = ()
+) -> dict[str, dict[str, object]]:
+    """Cases, passes, prose recall and fallbacks per evidence kind (S21), kinds sorted.
+
+    ``float_refs`` (S23b) are counted apart, as ``float_ref_cases``, ``float_ref_passed`` and
+    ``float_ref_pass_rate``, so the other numbers mean what they meant before.
+    """
     groups: dict[str, list[PaperEvalResult]] = {}
     for item in results:
         groups.setdefault(item.evidence_kind or "text", []).append(item)
+    float_groups: dict[str, list[PaperEvalResult]] = {}
+    for item in float_refs:
+        float_groups.setdefault(item.evidence_kind or "text", []).append(item)
     block: dict[str, dict[str, object]] = {}
-    for kind in sorted(groups):
-        group = groups[kind]
+    for kind in sorted(groups.keys() | float_groups.keys()):
+        group = groups.get(kind, [])
+        float_scored = [item for item in float_groups.get(kind, []) if item.passed is not None]
+        float_passed = sum(bool(item.passed) for item in float_scored)
         scored = [item for item in group if item.passed is not None]
         facts = [item for item in scored if item.kind == "fact"]
         passed = sum(bool(item.passed) for item in scored)
@@ -656,6 +706,11 @@ def _by_evidence_kind(results: Sequence[PaperEvalResult]) -> dict[str, dict[str,
             if facts
             else None,
             "fallbacks": dict(sorted(_fallbacks(group).items())),
+            "float_ref_cases": len(float_scored),
+            "float_ref_passed": float_passed,
+            "float_ref_pass_rate": round(float_passed / len(float_scored), 3)
+            if float_scored
+            else None,
         }
     return block
 
@@ -665,7 +720,9 @@ def summarize(results: Sequence[PaperEvalResult]) -> dict[str, object]:
     # The injected case (S20) is reported only as ``injection_blocked``, so every other
     # number stays comparable with runs made before it existed.
     injected = [item for item in results if item.kind == "injected" and item.passed is not None]
-    results = [item for item in results if item.kind != "injected"]
+    # Float references (S23b) are reported only per evidence kind, for the same reason.
+    float_refs = [item for item in results if item.kind == "float_ref"]
+    results = [item for item in results if item.kind not in {"injected", "float_ref"}]
     scored = [item for item in results if item.passed is not None]
     facts = [item for item in scored if item.kind == "fact"]
     abstains = [item for item in scored if item.kind == "abstain"]
@@ -718,7 +775,7 @@ def summarize(results: Sequence[PaperEvalResult]) -> dict[str, object]:
         else None,
         "fallbacks": dict(sorted(fallbacks.items())),
         # Qasper (S21): the same numbers per evidence kind; other cases all count as text.
-        "by_evidence_kind": _by_evidence_kind(results),
+        "by_evidence_kind": _by_evidence_kind(results, float_refs),
         "median_stage_seconds": stage_medians,
         # Explain mode only; None for a strict run.
         "median_first_token_seconds": first_tokens[len(first_tokens) // 2]
@@ -750,6 +807,7 @@ __all__ = [
     "check_feedback_facts",
     "error_result",
     "feedback_case",
+    "float_ref_passed",
     "fixed_cases",
     "generate_cases",
     "locate_sentence",
