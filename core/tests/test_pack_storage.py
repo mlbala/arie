@@ -100,10 +100,10 @@ async def test_ensure_pack_stores_once_per_revision_and_rebuilds_when_the_paper_
         paper = document("first")
         pack = await runtime.ensure_pack(paper)
         assert pack.chunk_numbers == (0, 1) and "[c2]" not in pack.text  # references excluded
-        assert pack.revision == "hash-1:3:p1"
+        assert pack.revision == "hash-1:3:p2"
         rows = await stored_rows(runtime)
         assert [(r["paper_id"], r["revision"], r["tokens"]) for r in rows] == [
-            ("first", "hash-1:3:p1", pack.token_estimate)
+            ("first", "hash-1:3:p2", pack.token_estimate)
         ]
         assert rows[0]["text"] == pack.text
 
@@ -111,8 +111,8 @@ async def test_ensure_pack_stores_once_per_revision_and_rebuilds_when_the_paper_
         assert again == pack and counter.calls == 1
 
         changed = await runtime.ensure_pack(document("first", count=2))
-        assert counter.calls == 2 and changed.revision == "hash-1:2:p1"
-        assert [r["revision"] for r in await stored_rows(runtime)] == ["hash-1:2:p1"]
+        assert counter.calls == 2 and changed.revision == "hash-1:2:p2"
+        assert [r["revision"] for r in await stored_rows(runtime)] == ["hash-1:2:p2"]
     finally:
         runtime.close()
 
@@ -232,7 +232,7 @@ async def test_a_paper_that_reaches_indexed_gets_its_pack_during_sync(tmp_path: 
         assert saved and saved["status"] == "INDEXED" and saved["chunks"]
         rows = await stored_rows(runtime)
         assert [r["paper_id"] for r in rows] == ["resumed"]
-        assert rows[0]["revision"] == f"{scraped.dedup_hash}:{len(saved['chunks'])}:p1"
+        assert rows[0]["revision"] == f"{scraped.dedup_hash}:{len(saved['chunks'])}:p2"
         assert "Title: Agent tools for questions" in rows[0]["text"] and "[c0]" in rows[0]["text"]
         assert "resumed" not in rows[0]["text"]  # the paper id never reaches the pack
         # Every marker leads back to the saved chunk and to the exact page text it quotes.
@@ -312,7 +312,7 @@ async def test_the_guide_builder_waits_while_an_answer_is_in_flight(
         assert len(model.requests) == 1 and runtime.guide_pending == {}
 
         guide = await runtime.get_guide("first")
-        assert guide is not None and guide.revision == "hash-1:3:p1"
+        assert guide is not None and guide.revision == "hash-1:3:p2"
         assert guide.results == ()  # "12" is in no chunk, so the result was dropped
         assert guide.summaries() == {"Introduction": "The method improves accuracy by four points."}
         view = await runtime.guide_view(document("first"))

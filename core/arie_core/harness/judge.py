@@ -33,6 +33,7 @@ from arie_core.harness.session import (
     StreamStopped,
     failure_reason,
 )
+from arie_core.pipeline.pack import fence_pack
 from arie_core.plugin_api import LLM, Ctx
 
 logger = logging.getLogger(__name__)
@@ -156,13 +157,13 @@ def build_support_prompt(
 ) -> LLMRequest:
     """The support request: header, then the pack bytes the writer sent, then rules and sentences.
 
-    Pure. The pack comes first and unchanged, so the prefix matches the writer's up to the end
-    of the pack. The sentences keep their ``[cN]`` markers; the chunks are not sent again.
+    Pure. The fenced pack comes first and unchanged, so the prefix matches the writer's up to
+    the end of the pack. The sentences keep their ``[cN]`` markers; the chunks are not sent again.
     """
     numbered = "\n".join(
         f"{number}. {_flat(text, _SENTENCE_CHARS)}" for number, text in enumerate(sentences, 1)
     )
-    parts = [pack_text.rstrip("\n"), rules.strip(), "Sentences to judge:\n\n" + numbered]
+    parts = [fence_pack(pack_text), rules.strip(), "Sentences to judge:\n\n" + numbered]
     return LLMRequest(
         prompt="\n\n".join(parts) + "\n",
         system_prompt=header,

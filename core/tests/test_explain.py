@@ -30,6 +30,7 @@ from arie_core.harness.session import EXPLAIN_BUDGET, ModelSession, StreamBudget
 from arie_core.pipeline.pack import (
     PaperPack,
     build_pack,
+    fence_pack,
     pack_chunks,
     pack_header,
     render_blocks,
@@ -111,7 +112,7 @@ async def test_deltas_arrive_in_order_and_provider_usage_reaches_the_trace() -> 
     assert final.first_token_seconds is not None and 0 <= final.first_token_seconds < 5
     assert final.usage == TokenUsage(900, 40, 700, 200)
     assert final.trace.tokens == TokenUsage(900, 40, 700, 200)
-    assert final.trace.prompt_version == "explain.v1" and final.trace.mode == "explain"
+    assert final.trace.prompt_version == "explain.v2" and final.trace.mode == "explain"
     assert model.requests[0].max_output_tokens == 1200 and not model.requests[0].tools
 
 
@@ -190,7 +191,7 @@ async def test_two_questions_on_one_paper_share_the_prompt_bytes_up_to_the_histo
     await run(model, "What accuracy did it reach?", turns=turns)
     first, second, again = model.requests
 
-    prefix = PACK.text.rstrip("\n") + "\n\n" + PROMPTS.writer_rules + "\n\n"
+    prefix = fence_pack(PACK.text) + "\n\n" + PROMPTS.writer_rules + "\n\n"
     assert first.system_prompt == second.system_prompt == PROMPTS.shared_header
     assert os.path.commonprefix([first.prompt, second.prompt]) == prefix
     assert second.prompt[len(prefix) :].startswith("Earlier turns")
@@ -213,7 +214,7 @@ def test_build_prompt_keeps_the_last_six_turns_and_is_byte_stable() -> None:
     assert "Question 1?" not in request.prompt
     assert "Reader: Question 2?\nARIE: Answer 2." in request.prompt
     assert "[c" not in request.prompt.split("Earlier turns", 1)[1]
-    assert request.prompt.startswith("PACK\n\nRULES\n\nEarlier turns")
+    assert request.prompt.startswith("<paper>\nPACK\n</paper>\n\nRULES\n\nEarlier turns")
 
 
 @pytest.mark.asyncio
@@ -362,13 +363,13 @@ def test_a_paged_pack_keeps_whole_sections_priority_first_then_retrieval_rank() 
 
 
 def test_the_repo_prompt_loads_and_a_missing_part_fails_closed(tmp_path: Path) -> None:
-    assert PROMPTS.version == "explain.v1"
+    assert PROMPTS.version == "explain.v2"
     assert PROMPTS.depth_words == {"brief": 150, "standard": 350, "detailed": 800}
     assert "[c" not in PROMPTS.shared_header and "\n" in PROMPTS.shared_header
     (tmp_path / "prompts").mkdir()
-    text = (ROOT / "prompts" / "explain.v1.yaml").read_text()
+    text = (ROOT / "prompts" / "explain.v2.yaml").read_text()
     broken = text.replace("writer_rules:", "writer_notes:")
-    (tmp_path / "prompts" / "explain.v1.yaml").write_text(broken)
+    (tmp_path / "prompts" / "explain.v2.yaml").write_text(broken)
     with pytest.raises(ValueError, match="writer_rules"):
         load_explain_prompts(tmp_path)
 
@@ -376,7 +377,7 @@ def test_the_repo_prompt_loads_and_a_missing_part_fails_closed(tmp_path: Path) -
 @pytest.mark.asyncio
 async def test_given_prompts_replace_the_file_in_the_request_and_the_trace() -> None:
     candidate = msgspec.structs.replace(
-        PROMPTS, writer_rules="Role: writer. Cite as [c1] and be terse.", version="explain.v2"
+        PROMPTS, writer_rules="Role: writer. Cite as [c1] and be terse.", version="explain.v3"
     )
     model = ScriptedModel(streams=[["Cedar gates writes [c2]."]])
     items = [
@@ -394,7 +395,7 @@ async def test_given_prompts_replace_the_file_in_the_request_and_the_trace() -> 
         )
     ]
     final = items[-1]
-    assert isinstance(final, ExplainResult) and final.trace.prompt_version == "explain.v2"
+    assert isinstance(final, ExplainResult) and final.trace.prompt_version == "explain.v3"
     sent = model.requests[0]
     assert "Role: writer. Cite as [c1] and be terse." in sent.prompt
     assert PROMPTS.writer_rules not in sent.prompt
