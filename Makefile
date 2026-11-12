@@ -38,10 +38,12 @@ eval-paper:
 	uv run python -m arie_api.eval_paper $(PAPER) $(ARGS)
 
 # Evaluates answers on the first N papers of Qasper's dev split (imports them from arXiv):
-# make eval-qasper N=30 (ARGS="--mode explain" scores explain mode)
+# make eval-qasper N=30 (ARGS="--mode explain" scores explain mode;
+# KIND=figure or KIND=table keeps only papers with a question of that evidence kind)
 N ?= 5
+KIND ?= any
 eval-qasper:
-	uv run python -m arie_api.eval_qasper $(N) $(ARGS)
+	uv run python -m arie_api.eval_qasper $(N) --kind $(KIND) $(ARGS)
 
 # Builds the paper guides that are missing, one paper at a time (network + LLM key):
 # make guides [ARGS="<paper_id> ..."] rebuilds the named papers instead

@@ -16,9 +16,11 @@ from arie_core.harness.qasper import (
     arxiv_pdf_url,
     convert_questions,
     evidence_kind,
+    expected_floats,
     extract_dev,
     first_papers,
     parse_dev,
+    select_papers,
 )
 from arie_core.harness.reader import EvidenceChunk
 
@@ -81,9 +83,7 @@ def test_spans_are_kept_when_they_are_in_the_text_and_other_answers_are_mapped_o
         _question(6, _answer(free_form="They use a gated memory.")),
         _question(
             7,
-            _answer(
-                spans=("batch size of 32", "learning rate of 0.001", "5 epochs", "x y", "z")
-            ),
+            _answer(spans=("batch size of 32", "learning rate of 0.001", "5 epochs", "x y", "z")),
         ),
         _question(8, _answer(spans=("5",))),
         _question(9),
@@ -220,7 +220,7 @@ def test_cases_and_counts_are_split_by_evidence_kind() -> None:
     )
     cases, counts = convert_questions("p1", paper, ROWS)
 
-    kinds = {case.question: case.evidence_kind for case in cases}
+    kinds = {case.question: case.evidence_kind for case in cases if case.kind != "float_ref"}
     assert kinds == {
         "Question 1?": "table",
         "Question 3?": "figure",
@@ -234,3 +234,92 @@ def test_cases_and_counts_are_split_by_evidence_kind() -> None:
     assert counts["dropped_span_not_in_text:figure"] == 1
     assert counts["fact:table"] == 1 and counts["fact:figure"] == 1 and counts["fact:text"] == 1
     assert counts["abstain:table"] == 1
+
+
+def _papers(questions: dict[str, list[dict[str, object]]]) -> dict[str, QasperPaper]:
+    records = {pid: {"title": pid, "qas": qas} for pid, qas in questions.items()}
+    return parse_dev(json.dumps(records).encode())
+
+
+def test_a_kind_selects_papers_with_a_question_of_that_kind_in_id_order() -> None:
+    figure = _question(1, _answer(yes_no=True, evidence=("FLOAT SELECTED: Figure 1: Curves.",)))
+    table = _question(2, _answer(free_form="Higher.", evidence=("FLOAT SELECTED: Table 1: F1.",)))
+    text = _question(3, _answer(spans=("F1 of 83.5",), evidence=("We report F1.",)))
+    papers = _papers(
+        {
+            "1909.00004": [figure],
+            "1503.00001": [text],
+            "1601.00002": [table, figure],
+            "1701.00003": [table],
+            "1801.00005": [],
+        }
+    )
+    assert select_papers(papers, 1, "figure") == ["1601.00002"]
+    assert select_papers(papers, 5, "figure") == ["1601.00002", "1909.00004"]
+    # A question citing a figure and a table counts as a figure question, not a table one.
+    assert select_papers(papers, 5, "table") == ["1601.00002", "1701.00003"]
+    assert select_papers(papers, 5, "text") == ["1503.00001"]
+    assert select_papers(papers, 0, "figure") == []
+    # ``any`` keeps the old slice: the first N in id order, whatever their questions.
+    for count in (1, 3, 10):
+        assert select_papers(papers, count) == first_papers(papers, count)
+    with pytest.raises(ValueError):
+        select_papers(papers, 3, "chart")
+
+
+def test_expected_floats_are_read_from_float_evidence() -> None:
+    assert expected_floats([_evidence("FLOAT SELECTED: Figure 3: Curves.")]) == ["Figure 3"]
+    assert expected_floats([_evidence("FLOAT SELECTED: Fig. 3: Curves.")]) == ["Figure 3"]
+    assert expected_floats([_evidence("FLOAT SELECTED: Figure A1: Extra.")]) == ["Figure A1"]
+    assert expected_floats([_evidence("FLOAT SELECTED: Table 2: F1.")]) == ["Table 2"]
+    two = _evidence("FLOAT SELECTED: Table 2: F1.", "Prose.", "FLOAT SELECTED: Figure 12: Loss.")
+    again = _evidence("FLOAT SELECTED: Table 2: F1.")
+    assert expected_floats([two, again]) == ["Table 2", "Figure 12"]
+    assert expected_floats([_evidence("Table 2 shows F1.", "We train.")]) == []
+    assert expected_floats([]) == []
+    # An annotator who found no answer does not set what the answer must cite.
+    unanswerable = QasperAnswer(unanswerable=True, evidence=["FLOAT SELECTED: Table 4: X."])
+    assert expected_floats([unanswerable]) == []
+
+
+def test_every_float_question_gets_a_float_ref_case_next_to_its_fact_case() -> None:
+    table = "FLOAT SELECTED: Table 1: F1 scores."
+    figure = "FLOAT SELECTED: Figure 2: Learning curves."
+    paper = _paper(
+        _question(1, _answer(spans=("F1 of 83.5",), evidence=(table,))),
+        _question(2, _answer(yes_no=True, evidence=(figure, table))),
+        _question(3, _answer(free_form="It rises.", evidence=(figure,))),
+        _question(4, _answer(unanswerable=True, evidence=(table,))),
+        _question(5, _answer(spans=("labeled features",))),
+    )
+    cases, counts = convert_questions("p1", paper, ROWS)
+
+    refs = {case.question: case for case in cases if case.kind == "float_ref"}
+    assert {question: case.floats for question, case in refs.items()} == {
+        "Question 1?": ["Table 1"],
+        "Question 2?": ["Figure 2", "Table 1"],
+        "Question 3?": ["Figure 2"],
+    }
+    assert refs["Question 2?"].evidence_kind == "figure"
+    assert refs["Question 1?"].case_id.endswith("-float")
+    assert len({case.case_id for case in cases}) == len(cases)
+    assert [case.kind for case in cases if case.question == "Question 1?"] == ["float_ref", "fact"]
+    assert counts["float_ref"] == 3 and counts["float_ref:figure"] == 2
+    assert counts["float_ref:table"] == 1
+    # Yes/no and free-form answers are still skipped as fact cases.
+    assert counts["skipped_yes_no"] == 1 and counts["skipped_free_form"] == 1
+
+
+def test_a_paper_without_float_questions_gives_the_same_cases_as_before() -> None:
+    paper = _paper(
+        _question(1, _answer(spans=("F1 of 83.5",), evidence=("We report F1.",))),
+        _question(2, _answer(unanswerable=True)),
+        _question(3, _answer(yes_no=False)),
+    )
+    cases, counts = convert_questions("p1", paper, ROWS)
+    assert [(case.kind, case.case_id) for case in cases] == [
+        ("fact", "qasper-001abcdef0123456"),
+        ("abstain", "qasper-002abcdef0123456"),
+    ]
+    assert all(case.floats == [] for case in cases)
+    assert "float_ref" not in counts

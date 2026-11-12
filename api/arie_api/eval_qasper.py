@@ -1,13 +1,14 @@
 """Evaluate answers on the first N papers of Qasper's dev split.
 
-    uv run python -m arie_api.eval_qasper <papers>
+    uv run python -m arie_api.eval_qasper <papers> [--kind figure|table|text|any]
 
 Qasper's questions were written by NLP practitioners from a paper's title and abstract,
 so they are an outside check next to ``eval_paper``'s self-generated questions. The dev
 file is downloaded once into ``data/eval/qasper/``. For each of the first N papers (sorted
-by id, so a run can be repeated) the command imports ``https://arxiv.org/pdf/<id>`` through
-the normal import path, builds its vectors, saves the converted cases (see
-``arie_core.harness.qasper``) and runs them in strict mode, exactly as chat answers.
+by id, so a run can be repeated; ``--kind`` keeps only papers with a question of that
+evidence kind, S23b) the command imports ``https://arxiv.org/pdf/<id>`` through the normal
+import path, builds its vectors, saves the converted cases (see ``arie_core.harness.qasper``)
+and runs them in strict mode, exactly as chat answers.
 
 Prints one JSON line per answer, then a last line with the paper and question counts and the
 summary over every answer, shaped like ``eval_paper``'s. Papers that fail to import are
@@ -33,12 +34,13 @@ from arie_core.harness.qasper import (
     DEV_MEMBER,
     MAX_ARCHIVE_BYTES,
     ORIGIN,
+    SELECT_KINDS,
     QasperPaper,
     arxiv_pdf_url,
     convert_questions,
     extract_dev,
-    first_papers,
     parse_dev,
+    select_papers,
 )
 
 from arie_api.paper_eval import MODES
@@ -114,9 +116,9 @@ async def build_vectors(runtime: ResearchRuntime, paper_id: str) -> bool:
     return False
 
 
-async def evaluate(papers: int, mode: str = "strict") -> bool:
+async def evaluate(papers: int, mode: str = "strict", kind: str = "any") -> bool:
     dev = await load_dev()
-    selected = first_papers(dev, papers)
+    selected = select_papers(dev, papers, kind)
     runtime = ResearchRuntime(ROOT)
     importer: asyncio.Task[None] | None = None
     counts: Counter[str] = Counter(papers=len(selected))
@@ -143,9 +145,7 @@ async def evaluate(papers: int, mode: str = "strict") -> bool:
                 counts["has_other_cases"] += 1
                 print("  skipped: the paper has other saved cases", file=sys.stderr, flush=True)
                 continue
-            cases, outcome = convert_questions(
-                paper_id, dev[qasper_id], evaluations.chunks(paper)
-            )
+            cases, outcome = convert_questions(paper_id, dev[qasper_id], evaluations.chunks(paper))
             conversion.update(outcome)
             if not cases:
                 counts["no_cases"] += 1
@@ -176,7 +176,9 @@ async def evaluate(papers: int, mode: str = "strict") -> bool:
         json.dumps(
             {
                 "status": "complete" if ok else "incomplete",
-                "message": f"Qasper dev, first {len(selected)} papers, {mode} mode",
+                "message": f"Qasper dev, first {len(selected)} papers"
+                + ("" if kind == "any" else f" with a {kind} question")
+                + f", {mode} mode",
                 "settings": settings,
                 "papers": dict(sorted(counts.items())),
                 "conversion": dict(sorted(conversion.items())),
@@ -191,6 +193,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate answers on a Qasper dev slice.")
     parser.add_argument("papers", type=int, help="how many papers, taken in id order")
     parser.add_argument("--mode", choices=MODES, default="strict", help="answer path to score")
+    parser.add_argument(
+        "--kind",
+        choices=SELECT_KINDS,
+        default="any",
+        help="only papers with a question of this evidence kind (default: any paper)",
+    )
     args = parser.parse_args(argv)
     if args.papers < 1:
         parser.exit(2, "error: papers must be at least 1\n")
@@ -199,7 +207,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    raise SystemExit(0 if asyncio.run(evaluate(args.papers, args.mode)) else 1)
+    raise SystemExit(0 if asyncio.run(evaluate(args.papers, args.mode, args.kind)) else 1)
 
 
 if __name__ == "__main__":

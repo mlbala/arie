@@ -109,5 +109,9 @@ def test_the_dev_split_is_read_from_the_cache_without_downloading(tmp_path: Path
 def test_the_command_scores_strict_by_default_and_explain_on_request() -> None:
     assert parse_args(["30"]).mode == "strict"
     assert parse_args(["5", "--mode", "explain"]).mode == "explain"
+    assert parse_args(["30"]).kind == "any"
+    assert parse_args(["20", "--kind", "figure"]).kind == "figure"
+    with pytest.raises(SystemExit):
+        parse_args(["5", "--kind", "chart"])
     with pytest.raises(SystemExit):
         parse_args(["5", "--mode", "loud"])

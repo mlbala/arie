@@ -20,11 +20,18 @@ Each question also gets an evidence kind (S21) from the annotators' evidence par
 Qasper marks a table or figure as ``FLOAT SELECTED: Table 2: ...``. Every count is kept in
 total and per kind (``fact:table``), so the report shows how many table and figure
 questions exist even when their spans are not in the extracted text.
+
+Every question whose annotators cite a float (S23b) also gets a ``float_ref`` case, whatever
+its answer type: it passes when the answer cites a chunk of one of the cited figures or tables
+(``expected_floats``). ``select_papers`` picks a slice by evidence kind, since Qasper's first
+papers hold almost no figure questions.
 """
 
 from __future__ import annotations
 
 import io
+import itertools
+import re
 import tarfile
 import unicodedata
 from collections import Counter
@@ -44,6 +51,9 @@ ORIGIN = "qasper"
 EVIDENCE_KINDS = ("text", "table", "figure")
 _FIGURE_PREFIXES = ("FLOAT SELECTED: Figure", "FLOAT SELECTED: Fig")
 _TABLE_PREFIX = "FLOAT SELECTED: Table"
+# The kind and number of a cited float, for example "Figure 3", "Fig. A1" or "Table 2".
+_FLOAT = re.compile(r"FLOAT SELECTED:\s*(Figure|Fig\.?|Table)\s*([A-Z]?\d+)")
+SELECT_KINDS = ("any", *EVIDENCE_KINDS)
 
 
 class QasperAnswer(msgspec.Struct, frozen=True):
@@ -103,6 +113,40 @@ def first_papers(papers: Mapping[str, QasperPaper], count: int) -> list[str]:
     return sorted(papers)[: max(count, 0)]
 
 
+def select_papers(papers: Mapping[str, QasperPaper], count: int, kind: str = "any") -> list[str]:
+    """``count`` paper ids in sorted order; with a ``kind`` other than ``any``, only papers with
+    at least one question of that evidence kind (``evidence_kind``)."""
+    if kind == "any":
+        return first_papers(papers, count)
+    if kind not in EVIDENCE_KINDS:
+        raise ValueError(f"Unknown evidence kind: {kind}")
+    matching = (
+        paper_id
+        for paper_id in sorted(papers)
+        if any(
+            evidence_kind([annotation.answer for annotation in item.answers]) == kind
+            for item in papers[paper_id].qas
+        )
+    )
+    return list(itertools.islice(matching, max(count, 0)))
+
+
+def expected_floats(answers: Sequence[QasperAnswer]) -> list[str]:
+    """The figures and tables the answering annotators cite, as ``Figure 3`` or ``Table A1``,
+    in order and without repeats. Annotators who marked the question unanswerable are skipped.
+    """
+    found: list[str] = []
+    for answer in answers:
+        if answer.unanswerable:
+            continue
+        for item in answer.evidence:
+            match = _FLOAT.match(item.strip())
+            if match:
+                name = "Table" if match[1] == "Table" else "Figure"
+                found.append(f"{name} {match[2]}")
+    return list(dict.fromkeys(found))
+
+
 def _kind(answer: QasperAnswer) -> str:
     if answer.unanswerable:
         return "unanswerable"
@@ -154,8 +198,9 @@ def convert_questions(
 
     Returns the cases and a count per outcome: ``questions``, ``fact``, ``abstain``,
     ``skipped_yes_no``, ``skipped_free_form``, ``skipped_empty``, ``dropped_span_too_short``
-    and ``dropped_span_not_in_text``, each also per evidence kind as ``<outcome>:<kind>``.
-    Chunks of other papers are ignored (I1).
+    ``dropped_span_not_in_text`` and ``float_ref``, each also per evidence kind as
+    ``<outcome>:<kind>``. A ``float_ref`` case is added next to whatever else the question
+    gives. Chunks of other papers are ignored (I1).
     """
     chunks = [(*_loose(row.text), row.text) for row in rows if row.paper_id == paper_id]
     counts: Counter[str] = Counter()
@@ -170,6 +215,20 @@ def convert_questions(
         tally("questions")
         kinds = [_kind(annotation.answer) for annotation in item.answers]
         case_id = f"qasper-{item.question_id[:16]}"
+        floats = expected_floats([annotation.answer for annotation in item.answers])
+        if floats:
+            tally("float_ref")
+            cases.append(
+                PaperEvalCase(
+                    case_id=f"{case_id}-float",
+                    question=item.question,
+                    kind="float_ref",
+                    origin=ORIGIN,
+                    note=", ".join(floats),
+                    evidence_kind=evidence,
+                    floats=floats,
+                )
+            )
         if kinds and all(kind == "unanswerable" for kind in kinds):
             tally("abstain")
             cases.append(
@@ -183,9 +242,7 @@ def convert_questions(
                 )
             )
             continue
-        extractive = next(
-            (a.answer for a in item.answers if _kind(a.answer) == "extractive"), None
-        )
+        extractive = next((a.answer for a in item.answers if _kind(a.answer) == "extractive"), None)
         if extractive is None:
             other = next((kind for kind in kinds if kind != "unanswerable"), "empty")
             tally(f"skipped_{other}")
@@ -219,11 +276,14 @@ __all__ = [
     "DEV_MEMBER",
     "EVIDENCE_KINDS",
     "ORIGIN",
+    "SELECT_KINDS",
     "QasperPaper",
     "arxiv_pdf_url",
     "convert_questions",
     "evidence_kind",
+    "expected_floats",
     "extract_dev",
     "first_papers",
     "parse_dev",
+    "select_papers",
 ]
