@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from arie_core.plugin_api import ParsedDoc
+from arie_core.plugin_api import Figure, ParsedDoc
 from arie_core.registry.manager import RegistryManager
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,6 +42,40 @@ async def test_pymupdf4llm_returns_one_section_per_page(
     assert parsed.paper_id == "2510.01234" and parsed.metadata["page_count"] == "2"
     assert "Gated memory retrieval." in parsed.sections[0]
     assert "Results on Cedar." in parsed.sections[1]
+
+
+@pytest.mark.asyncio
+async def test_pymupdf4llm_returns_captioned_figures_with_page_offsets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pymupdf = importlib.import_module("pymupdf")
+    document = pymupdf.open()
+    document.new_page().insert_text((72, 72), "A first page of plain text.", fontsize=11)
+    page = document.new_page()
+    page.insert_text((72, 72), "As Figure 1 shows, accuracy rises with size.", fontsize=11)
+    page.draw_rect(pymupdf.Rect(100, 120, 400, 300), color=(0, 0, 0), fill=(0.8, 0.2, 0.2))
+    page.draw_line((120, 140), (380, 280))
+    page.insert_text((100, 320), "Figure 1: Accuracy versus model size.", fontsize=10)
+    page.insert_text((72, 360), "More body text follows here.", fontsize=11)
+    pdf = tmp_path / "2510.01235.pdf"
+    document.save(str(pdf))
+    monkeypatch.setenv("ARIE_PDF_WORKER", "1")
+    parsed: ParsedDoc = await parser("pymupdf4llm").parse(None, str(pdf))
+    assert isinstance(parsed.figures, list) and all(isinstance(f, Figure) for f in parsed.figures)
+    assert len(parsed.figures) == 1
+    figure = parsed.figures[0]
+    assert (figure.number, figure.page, figure.caption) == (
+        "1",
+        2,
+        "Figure 1: Accuracy versus model size.",
+    )
+    assert parsed.sections[1][figure.caption_start : figure.caption_end] == figure.caption
+    x0, y0, x1, y1 = figure.box
+    assert x0 < 110 and y0 < 130 and x1 > 390 and y1 > 290
+    assert parsed.metadata["figure_boxes_uncaptioned"] == "0"
+    # A page of text alone has no figures.
+    plain = await parser("pymupdf4llm").parse(None, write_pdf(tmp_path / "p.pdf", ["Text."]))
+    assert plain.figures == []
 
 
 @pytest.mark.asyncio

@@ -106,6 +106,10 @@ class EvidenceChunk(msgspec.Struct, frozen=True):
     # Set on load when the guard classifier scored the chunk at or over its threshold
     # (``injection.evidence_chunks``, ADR 0014); such a chunk is never evidence.
     untrusted: bool = False
+    # Set on load from the stored chunk (ADR 0015): the figure whose caption this chunk holds,
+    # and the other figures its text names. Both are the paper's own words, never a description.
+    figure: str = ""
+    mentions: tuple[str, ...] = ()
 
 
 class Excerpt(msgspec.Struct, frozen=True):
