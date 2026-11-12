@@ -811,7 +811,7 @@ missed key facts, flagged citations, the judge's reasons and your thumbs-down re
 | `make web-check` | `oxlint`, TypeScript and Vitest for `web/` |
 | `make eval-llm` | Source-grounding evaluation against the configured LLM |
 | `make eval-paper PAPER=<id>` | Evaluate answers on one ingested paper (see [Evaluate answers on one paper](#evaluate-answers-on-one-paper)) |
-| `make eval-qasper N=<papers>` | Import the first N Qasper dev papers and score strict answers to their questions |
+| `make eval-qasper N=<papers> [KIND=figure\|table]` | Import the first N Qasper dev papers (with `KIND`, only papers with a figure or table question) and score strict answers to their questions |
 | `make optimize-prompts PROMPT=explain MAX_CALLS=200` | Propose better explain writer rules offline under a hard cap on model calls, and write them as a candidate prompt file (see [Improve the explain prompt offline](#improve-the-explain-prompt-offline)) |
 | `make figures-backfill` | Add figure records to papers indexed before they existed: re-parse each stored PDF and keep only its figures, with pages, chunks and vectors unchanged (`ARGS="--all"` also refreshes papers that already have figures) |
 | `make pdf-report` | Run the structural PDF check over every stored PDF, each in its own process, and print counts per rule and the largest object, page and filter-depth values; changes nothing |
