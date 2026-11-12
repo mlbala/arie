@@ -26,7 +26,7 @@ from arie_core.harness.guide import (
 )
 from arie_core.harness.reader import EvidenceChunk
 from arie_core.harness.session import StreamBudget
-from arie_core.pipeline.pack import PaperPack, build_pack
+from arie_core.pipeline.pack import PaperPack, build_pack, fence_pack
 from arie_core.plugin_api import LLM
 from conftest import ScriptedModel
 
@@ -146,10 +146,10 @@ async def test_write_guide_sends_the_pack_after_the_shared_header_and_validates(
 
     assert result.status == COMPLETE and result.guide is not None
     assert result.guide.prompt_version == "guide.v1"
-    assert result.guide.revision == "hash:4:p1"
+    assert result.guide.revision == "hash:4:p2"
     request = model.requests[0]
     assert request.system_prompt == load_explain_prompts(ROOT).shared_header
-    assert request.prompt.startswith(pack.text.rstrip("\n"))
+    assert request.prompt.startswith(fence_pack(pack.text))
     assert request.max_output_tokens == GUIDE_OUTPUT_TOKENS
     assert PAPER not in request.prompt and "Other paper text" not in request.prompt
     # The stored form round-trips.

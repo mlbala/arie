@@ -39,6 +39,7 @@ from arie_core.harness.session import (
 )
 from arie_core.pipeline.pack import (
     PaperPack,
+    fence_pack,
     marker_numbers,
     pack_chunks,
     pack_fits,
@@ -152,9 +153,9 @@ def strip_markers(text: str) -> str:
 
 
 def build_guide_prompt(header: str, pack_text: str, rules: str) -> LLMRequest:
-    """Header as system prompt, then the pack bytes and the guide rules. Pure."""
+    """Header as system prompt, then the fenced pack and the guide rules. Pure."""
     return LLMRequest(
-        prompt=pack_text.rstrip("\n") + "\n\n" + rules.strip() + "\n",
+        prompt=fence_pack(pack_text) + "\n\n" + rules.strip() + "\n",
         system_prompt=header,
         tools=[],
         max_output_tokens=GUIDE_OUTPUT_TOKENS,

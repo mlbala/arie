@@ -115,7 +115,7 @@ def rollouts(model: ScriptedRoles, cap: int) -> ExplainRollouts:
 
 def sandbox(tmp_path: Path) -> Path:
     (tmp_path / "prompts").mkdir()
-    shutil.copy(ROOT / "prompts" / "explain.v1.yaml", tmp_path / "prompts" / "explain.v1.yaml")
+    shutil.copy(ROOT / "prompts" / "explain.v2.yaml", tmp_path / "prompts" / "explain.v2.yaml")
     return tmp_path
 
 
@@ -164,23 +164,23 @@ async def test_the_candidate_is_written_beside_the_released_prompt_and_nothing_l
     tmp_path: Path,
 ) -> None:
     root = sandbox(tmp_path)
-    released = (root / "prompts" / "explain.v1.yaml").read_bytes()
+    released = (root / "prompts" / "explain.v2.yaml").read_bytes()
     report, _ = await search(ScriptedRoles(f"```\n{better_rules()}\n```"), root)
 
-    assert report.candidate == "explain.v2" and report.candidate_path == "prompts/explain.v2.yaml"
+    assert report.candidate == "explain.v3" and report.candidate_path == "prompts/explain.v3.yaml"
     assert report.train_new > report.train_old
     assert report.held_out_new["score"] > report.held_out_old["score"]
     assert report.held_out_old["fact_recall_prose"] == 0.0
     assert report.held_out_new["fact_recall_prose"] == 1.0
-    written = load_explain_prompts(root, 2)
+    written = load_explain_prompts(root, 3)
     assert BETTER in written.writer_rules
     assert written.shared_header == load_explain_prompts(root).shared_header
     # The released file is unchanged and is still what every role loads.
-    assert (root / "prompts" / "explain.v1.yaml").read_bytes() == released
-    assert load_explain_prompts(root).version == "explain.v1"
+    assert (root / "prompts" / "explain.v2.yaml").read_bytes() == released
+    assert load_explain_prompts(root).version == "explain.v2"
     assert sorted(p.name for p in (root / "prompts").iterdir()) == [
-        "explain.v1.yaml",
         "explain.v2.yaml",
+        "explain.v3.yaml",
     ]
 
 
@@ -193,7 +193,7 @@ async def test_rules_that_cannot_be_used_cost_no_model_call_and_write_no_file(
     report, _ = await search(model, root)
 
     assert report.candidate == "" and "nothing better" in report.note
-    assert [p.name for p in (root / "prompts").iterdir()] == ["explain.v1.yaml"]
+    assert [p.name for p in (root / "prompts").iterdir()] == ["explain.v2.yaml"]
     assert report.held_out_new == report.held_out_old
     assert not any("Be brief." in r.prompt for r in model.requests if "Question:" in r.prompt)
     assert model.reflections()

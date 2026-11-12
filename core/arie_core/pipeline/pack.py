@@ -4,6 +4,10 @@ Explain mode puts the pack at the front of the prompt so the writer, the judge a
 can reuse one cached prefix (ADR 0010). ``N`` is the number in the chunk id
 ``<paper_id>:<N>``. The pack is pure: the same inputs always give the same bytes, and it
 reads nothing but its arguments.
+
+Paper text is untrusted (ADR 0013). Chunks that read as instructions to the assistant are left
+out, as on the strict path, and every role sends the pack inside ``<paper>`` fences
+(``fence_pack``) that paper text cannot open or close.
 """
 
 from __future__ import annotations
@@ -14,13 +18,22 @@ from decimal import Decimal
 
 import msgspec
 
-from arie_core.harness.reader import EvidenceChunk, annotate_sections, eligible
+from arie_core.harness.reader import (
+    EvidenceChunk,
+    annotate_sections,
+    eligible,
+    is_untrusted_instruction,
+)
 from arie_core.harness.session import estimate_tokens
 
 # Bump when the layout changes, so stored packs are rebuilt.
-PACK_FORMAT = "p1"
+PACK_FORMAT = "p2"
 
 _MARKER = re.compile(r"\[c(\d+)\]")
+# A fence tag, or one spelled to look like it, inside paper text.
+_FENCE = re.compile(r"<(?=\s*/?\s*paper\b)", re.IGNORECASE)
+FENCE_OPEN = "<paper>"
+FENCE_CLOSE = "</paper>"
 
 
 def _has_text(row: EvidenceChunk) -> bool:
@@ -48,6 +61,23 @@ def escape_markers(text: str) -> str:
     return _MARKER.sub(r"[\\c\1]", text)
 
 
+def escape_paper(text: str) -> str:
+    """Escape paper text for the pack: literal markers, and ``<paper>`` tags as ``&lt;paper>``.
+
+    So text inside a PDF can neither cite as ARIE nor close the fence around the paper.
+    """
+    return _FENCE.sub("&lt;", escape_markers(text))
+
+
+def fence_pack(pack_text: str) -> str:
+    """The pack as every explain-mode role sends it: between ``<paper>`` and ``</paper>``.
+
+    Pure and the same for every role, so the writer, judge and guide share one cached prefix.
+    """
+    body = pack_text.strip("\n")
+    return f"{FENCE_OPEN}\n{body}\n{FENCE_CLOSE}"
+
+
 def marker_numbers(text: str) -> tuple[int, ...]:
     """Chunk numbers of the real markers in a pack. Paper text is escaped, so only ours match."""
     return tuple(int(match[1]) for match in _MARKER.finditer(text))
@@ -64,13 +94,19 @@ def pack_chunks(paper_id: str, chunks: Sequence[EvidenceChunk]) -> list[tuple[in
 
     Chunks of other papers are ignored (I1). Contents listings, credits, references and
     acknowledgements are left out by ``eligible``, the rule the strict answer path uses, and so
-    are chunks that are only a heading. Everything else stays, equations and captions
-    included: the pack is the whole paper, not a selection of prose.
+    are chunks that are only a heading. Chunks that read as instructions to the assistant
+    (``is_untrusted_instruction``) are left out too, as on the strict path. Everything else
+    stays, equations and captions included: the pack is the whole paper, not a selection of
+    prose.
     """
     numbered: list[tuple[int, EvidenceChunk]] = []
     for row in chunks:
         number = chunk_number(paper_id, row.chunk_id)
-        if row.paper_id == paper_id and number is not None:
+        if (
+            row.paper_id == paper_id
+            and number is not None
+            and not is_untrusted_instruction(row.text)
+        ):
             numbered.append((number, row))
     # Page order, not input order, so the bytes don't depend on how the rows were loaded.
     numbered.sort(key=lambda item: (item[1].page_start, item[1].char_start, item[0]))
@@ -87,9 +123,9 @@ def render_blocks(numbered: Sequence[tuple[int, EvidenceChunk]]) -> list[str]:
     blocks: list[str] = []
     section = ""
     for number, row in numbered:
-        block = f"[c{number}] {escape_markers(row.text.strip())}"
+        block = f"[c{number}] {escape_paper(row.text.strip())}"
         if row.section and row.section != section:
-            block = f"Section: {escape_markers(row.section)}\n{block}"
+            block = f"Section: {escape_paper(row.section)}\n{block}"
         section = row.section or section
         blocks.append(block)
     return blocks
@@ -105,15 +141,16 @@ def build_pack(
     """Title, abstract, section outline, then every kept chunk (``pack_chunks``) as ``[cN]``.
 
     ``revision`` identifies the paper version (the vector index's
-    ``<dedup_hash>:<chunk_count>``).
+    ``<dedup_hash>:<chunk_count>``). An abstract that reads as instructions to the assistant is
+    left out, like such a chunk.
     """
     kept = pack_chunks(paper_id, chunks)
     outline = list(dict.fromkeys(row.section for _, row in kept if row.section))
-    parts = [f"Title: {escape_markers(title.strip())}"]
-    if abstract.strip():
-        parts.append(f"Abstract:\n{escape_markers(abstract.strip())}")
+    parts = [f"Title: {escape_paper(title.strip())}"]
+    if abstract.strip() and not is_untrusted_instruction(abstract):
+        parts.append(f"Abstract:\n{escape_paper(abstract.strip())}")
     if outline:
-        parts.append("Outline:\n" + "\n".join(f"- {escape_markers(name)}" for name in outline))
+        parts.append("Outline:\n" + "\n".join(f"- {escape_paper(name)}" for name in outline))
     parts.extend(render_blocks(kept))
 
     text = "\n\n".join(parts) + "\n"

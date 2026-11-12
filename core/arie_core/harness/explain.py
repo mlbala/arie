@@ -38,6 +38,7 @@ from arie_core.harness.session import (
 from arie_core.harness.trace import AnswerTrace
 from arie_core.pipeline.pack import (
     PaperPack,
+    fence_pack,
     marker_numbers,
     pack_chunks,
     pack_fits,
@@ -52,6 +53,8 @@ logger = logging.getLogger(__name__)
 # Output tokens of the writer call per depth (ADR 0010).
 OUTPUT_TOKENS = {"brief": 600, "standard": 1200, "detailed": 2500}
 HISTORY_TURNS = 6
+# The released explain prompt every role loads (prompts/explain.v<N>.yaml).
+EXPLAIN_PROMPT_VERSION = 2
 _QUESTION_CHARS = 700
 _ANSWER_CHARS = 4000
 # Our markers and escaped paper markers, with the spaces before them, stripped from history.
@@ -110,11 +113,13 @@ class ExplainResult(msgspec.Struct, frozen=True, kw_only=True):
     pack_text: str = ""
 
 
-def load_explain_prompts(project_root: Path, version: int = 1) -> ExplainPrompts:
+def load_explain_prompts(
+    project_root: Path, version: int = EXPLAIN_PROMPT_VERSION
+) -> ExplainPrompts:
     """Load ``prompts/explain.v<version>.yaml``; fail closed on a missing or invalid part.
 
-    Every role reads version 1. A later file is a candidate from the offline optimizer (S17)
-    and is loaded only by that script until a person switches the default.
+    Every role reads ``EXPLAIN_PROMPT_VERSION``. A later file is a candidate from the offline
+    optimizer (S17) and is loaded only by that script until a person switches the default.
     """
     path = project_root / "prompts" / f"explain.v{version}.yaml"
     loaded: object = yaml.safe_load(path.read_text())
@@ -162,13 +167,13 @@ def build_prompt(
     target_words: int,
     max_output_tokens: int,
 ) -> LLMRequest:
-    """The writer request: header as system prompt; pack, rules, turns, question as prompt.
+    """The writer request: header as system prompt; fenced pack, rules, turns, question as prompt.
 
     Pure, so the same inputs give the same bytes, and nothing that changes per question comes
     before the turns. Only the last ``HISTORY_TURNS`` turns are kept, with markers stripped
     from their answers.
     """
-    parts = [pack_text.rstrip("\n"), writer_rules.strip()]
+    parts = [fence_pack(pack_text), writer_rules.strip()]
     history = [_turn_text(turn) for turn in turns[-HISTORY_TURNS:]]
     if history:
         parts.append(

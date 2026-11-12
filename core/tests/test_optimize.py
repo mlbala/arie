@@ -194,23 +194,23 @@ def test_a_candidate_file_is_the_seed_with_new_rules_and_nothing_loads_it_by_def
 ) -> None:
     prompts = tmp_path / "prompts"
     prompts.mkdir()
-    original = (ROOT / "prompts" / "explain.v1.yaml").read_text()
-    (prompts / "explain.v1.yaml").write_text(original)
+    original = (ROOT / "prompts" / "explain.v2.yaml").read_text()
+    (prompts / "explain.v2.yaml").write_text(original)
     seed = load_explain_prompts(tmp_path)
-    assert next_version(prompts, "explain") == 2
+    assert next_version(prompts, "explain") == 3
 
     rules = "Role: writer.\n- Cite as [c3]: always.\n\n  - Indented # not a comment"
-    (prompts / "explain.v2.yaml").write_text(render_candidate(seed, rules, 2, "Train 1 -> 2.\nok"))
+    (prompts / "explain.v3.yaml").write_text(render_candidate(seed, rules, 3, "Train 1 -> 2.\nok"))
 
-    candidate = load_explain_prompts(tmp_path, 2)
-    assert candidate.writer_rules == rules and candidate.version == "explain.v2"
+    candidate = load_explain_prompts(tmp_path, 3)
+    assert candidate.writer_rules == rules and candidate.version == "explain.v3"
     assert candidate.shared_header == seed.shared_header
     assert candidate.depth_words == seed.depth_words
-    assert "Train 1 -> 2. ok" in (prompts / "explain.v2.yaml").read_text()
+    assert "Train 1 -> 2. ok" in (prompts / "explain.v3.yaml").read_text()
     # The released prompt is untouched and is still the one every role loads.
-    assert (prompts / "explain.v1.yaml").read_text() == original
-    assert load_explain_prompts(tmp_path).version == "explain.v1"
-    assert next_version(prompts, "explain") == 3
+    assert (prompts / "explain.v2.yaml").read_text() == original
+    assert load_explain_prompts(tmp_path).version == "explain.v2"
+    assert next_version(prompts, "explain") == 4
 
 
 def test_a_prompt_file_whose_version_disagrees_with_its_name_fails_closed(tmp_path: Path) -> None:
