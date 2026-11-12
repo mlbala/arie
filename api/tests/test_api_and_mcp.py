@@ -144,9 +144,14 @@ def client(
 
     async def seed() -> None:
         await initialize()
+        pdf = tmp_path / "papers" / "paper-1.pdf"
+        pdf.parent.mkdir(parents=True, exist_ok=True)
+        pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
         for identifier, status in (("paper-1", "INDEXED"), ("paper-2", "SKIPPED")):
+            stored = {"file_path": str(pdf)} if identifier == "paper-1" else {}
             await runtime.save_paper(
                 dict(
+                    **stored,
                     id=identifier,
                     title="Cedar research",
                     source="arxiv",
@@ -209,6 +214,18 @@ def test_papers_feed_and_detail(client: _APIClient) -> None:
     assert body["page_count"] == 1
     assert body["id"] == first["id"]
     assert "file_path" not in body
+
+
+def test_the_pdf_is_served_as_an_inert_download_the_browser_cannot_run(
+    client: _APIClient,
+) -> None:
+    response = client.get("/v1/papers/paper-1/pdf")
+    assert response.status_code == 200 and response.content.startswith(b"%PDF-")
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    policy = response.headers["content-security-policy"]
+    assert "sandbox" in policy and "default-src 'none'" in policy
+    assert client.get("/v1/papers/paper-2/pdf").status_code == 404
 
 
 def test_question_stream_emits_verified_claims_only(client: _APIClient) -> None:
