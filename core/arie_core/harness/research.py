@@ -17,6 +17,7 @@ from arie_core.harness.reader import (
     retrieve,
 )
 from arie_core.plugin_api import Ctx
+from arie_core.plugin_api.figures import figure_mentions
 
 
 class ReadingResult(msgspec.Struct, frozen=True):
@@ -66,6 +67,47 @@ def _pool(
     return tuple(dict.fromkeys(row for row in found if _usable(row)))[:POOL_SIZE]
 
 
+# Rows a figure link may add: its caption chunk and up to two other chunks that mention it.
+FIGURE_MENTIONS = 2
+
+
+def link_figures(
+    plan: AnswerPlan, rows: Sequence[EvidenceChunk], scoped: Sequence[EvidenceChunk]
+) -> list[EvidenceChunk]:
+    """Bring one figure's own words next to the row that reaches it (ADR 0015).
+
+    A question reaches a figure when it names one ("What does Figure 3 show?") or when the
+    top-ranked row is that figure's caption. A lower-ranked caption or a passing mention does
+    not trigger a link: on Qasper that displaced text rows the answer needed (S22). The
+    figure's caption chunk and up to ``FIGURE_MENTIONS`` other chunks that mention it are
+    inserted right after the first row referring to it (after the top row when none does).
+    Overviews and papers without figure tags keep ``rows`` unchanged; limits are the caller's.
+    """
+    result = list(rows)
+    if plan.overview or not result or not any(row.figure for row in scoped):
+        return result
+    captions = {row.figure: row for row in scoped if row.figure}
+
+    def refers(row: EvidenceChunk, number: str) -> bool:
+        return row.figure == number or number in row.mentions
+
+    wanted = [n for n in figure_mentions(plan.question) if n in captions]
+    wanted += [result[0].figure] if result[0].figure in captions else []
+    if not wanted:
+        return result
+    number = wanted[0]
+    at = next((i for i, row in enumerate(result) if refers(row, number)), 0)
+    anchor = result[at]
+    others = [
+        row
+        for row in scoped
+        if number in row.mentions and row.figure != number and row != anchor
+    ][:FIGURE_MENTIONS]
+    linked = [row for row in (captions[number], *others) if row not in result[: at + 1]]
+    rest = [row for row in result[at + 1 :] if row not in linked]
+    return [*result[: at + 1], *linked, *rest]
+
+
 def read_for_answer(
     ctx: Ctx,
     paper_id: str,
@@ -106,6 +148,7 @@ def read_for_answer(
     vector_rank = {chunk_id: rank for rank, chunk_id in enumerate(vector_ids)}
     complex_task = plan.task in {"comparison", "synthesis", "critique", "methodology"}
     if plan.depth != "detailed" and not complex_task and not plan.sections:
+        selected = link_figures(plan, selected, scoped)
         return ReadingResult(
             tuple(row for row in selected[:10] if row.paper_id == paper_id),
             tuple(actions),
@@ -171,9 +214,11 @@ def read_for_answer(
             score += 16
         return score
 
-    ordered = [
-        row for row in sorted(candidates, key=rank, reverse=True) if row.paper_id == paper_id
-    ]
+    ordered = link_figures(
+        plan,
+        [row for row in sorted(candidates, key=rank, reverse=True) if row.paper_id == paper_id],
+        scoped,
+    )
     return ReadingResult(
         tuple(select_rows(plan, ordered)),
         tuple(actions),

@@ -83,12 +83,30 @@ class ChunkRow(msgspec.Struct, frozen=True):
     token_count: int = 0
 
 
+class Figure(msgspec.Struct, frozen=True):
+    """A figure the parser found: where it is drawn and the paper's own caption (ADR 0015).
+
+    ``number`` is the caption's label ("3", "A1"); ``page`` is 1-based; ``box`` is
+    ``(x0, y0, x1, y1)`` in PDF points. ``caption_start``/``caption_end`` address the caption
+    in that page's text (``ParsedDoc.sections[page - 1]``), or are -1 when it was not found.
+    """
+
+    number: str
+    page: int
+    box: tuple[float, float, float, float]
+    caption: str
+    caption_start: int = -1
+    caption_end: int = -1
+
+
 class ParsedDoc(msgspec.Struct, frozen=True):
     paper_id: str
     title: str
     source: str
     sections: list[str] = []
     metadata: dict[str, str] = {}
+    # Captioned figures only; parsers that cannot locate figures leave this empty.
+    figures: list[Figure] = []
 
 
 class Evidence(msgspec.Struct, frozen=True):

@@ -1,4 +1,4 @@
-.PHONY: check lint boundaries types test test-unit test-api test-contracts web-check eval-llm eval-paper eval-qasper guides optimize-prompts pdf-report
+.PHONY: check lint boundaries types test test-unit test-api test-contracts web-check eval-llm eval-paper eval-qasper guides optimize-prompts pdf-report figures-backfill
 
 # Everything CI runs for Python: lint, import boundaries, strict types, all test suites.
 check: lint boundaries types test
@@ -61,3 +61,9 @@ optimize-prompts:
 # make pdf-report
 pdf-report:
 	uv run python -m arie_api.pdf_report
+
+# Adds figure records (ADR 0015) to papers indexed before S22: re-parses each stored PDF in
+# the worker pool and keeps only its figures; pages, chunks and vectors stay unchanged:
+# make figures-backfill (ARGS="--all" refreshes papers that already have figures)
+figures-backfill:
+	uv run python -m arie_api.backfill_figures $(ARGS)

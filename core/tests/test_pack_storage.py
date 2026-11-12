@@ -7,12 +7,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+import msgspec
 import pikepdf
 import pytest
 from arie_api.models import ANSWER_SLOTS, AnswerModel
 from arie_api.runtime import ResearchRuntime, context
 from arie_api.runtime import packs as packs_module
-from arie_core.contracts import ParsedDoc
+from arie_core.contracts import Figure, ParsedDoc
 from arie_core.pipeline.pack import PaperPack, escape_markers, marker_numbers
 from arie_core.plugin_api import ScrapedPaperInput
 from arie_core.registry.manager import ArieConfig
@@ -275,6 +276,35 @@ async def test_sync_saves_the_hidden_text_count_and_warns_once(
         assert saved and saved["status"] == "INDEXED" and saved["hidden_text_chars"] == 42
         warnings = [r.getMessage() for r in caplog.records if "hidden text" in r.getMessage()]
         assert warnings == ["Removed 42 hidden text characters from resumed"]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_sync_stores_figures_and_tags_caption_and_mention_chunks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = runtime_at(tmp_path)
+    await runtime.initialize()
+    scraped, parsed = resumable(tmp_path)
+    parsed.update(pages=[])
+    page = "As Figure 1 shows, accuracy rises.\n\nFigure 1: Accuracy by size.\n\nNo figure here."
+    start = page.index("Figure 1:")
+    figure = Figure("1", 1, (1.0, 2.0, 3.0, 4.0), "Figure 1: Accuracy by size.", start, start + 27)
+
+    async def parse_pdf(file_path: str) -> ParsedDoc:
+        del file_path
+        return ParsedDoc("resumed", "", "", [page], {"page_count": "1"}, [figure])
+
+    monkeypatch.setattr(runtime, "parse_pdf", parse_pdf)
+    try:
+        await runtime.save_paper(parsed)
+        job = await ingest(runtime, scraped)
+        assert job["indexed"] == 1 and job["failed"] == 0
+        saved = await runtime.get_paper("resumed")
+        assert saved and msgspec.convert(saved["figures"], list[Figure]) == [figure]
+        tags = [(c.get("figure"), c.get("mentions")) for c in saved["chunks"]]
+        assert tags == [(None, ["1"]), ("1", None), (None, None)]
     finally:
         runtime.close()
 

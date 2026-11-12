@@ -13,10 +13,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
+import msgspec
 import yaml
 from arie_core.contracts import ParsedDoc
 from arie_core.pipeline import IngestionPipeline, PdfRejected
 from arie_core.pipeline.chunker import chunk_spans
+from arie_core.pipeline.figures import chunk_figure_tags, figure_records
 from arie_core.plugin_api import (
     PagedSourcePlugin,
     ScrapedPaperInput,
@@ -490,15 +492,18 @@ class SyncJobs(VectorIndex):
                     extraction_metadata=parsed.metadata,
                     hidden_text_chars=hidden,
                     outline=json.loads(parsed.metadata.get("outline_json", "[]")),
+                    figures=msgspec.to_builtins(parsed.figures),
                 )
                 await self.save_paper(document)
             await self.update_job(
                 job, phase="indexing", message="Building page-scoped evidence chunks"
             )
             chunks: list[Document] = []
+            figures = figure_records(document.get("figures") or [])
             for page in pages:
                 # Every offset addresses the canonical extracted Markdown for this exact page.
                 for start, end in chunk_spans(page["text"]):
+                    text = page["text"][start:end]
                     chunks.append(
                         dict(
                             paper_id=paper.paper_id,
@@ -506,7 +511,9 @@ class SyncJobs(VectorIndex):
                             page_start=page["number"],
                             char_start=start,
                             char_end=end,
-                            text=page["text"][start:end],
+                            text=text,
+                            # Only set keys: a chunk without figures is stored as before.
+                            **chunk_figure_tags(text, page["number"], start, end, figures),
                         )
                     )
             if not chunks:
