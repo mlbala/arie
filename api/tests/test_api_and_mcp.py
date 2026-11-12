@@ -453,7 +453,7 @@ def test_an_explain_rating_records_the_explain_prompt_and_trace(
     turn_id = str(_events(streamed, "done")[0]["turn_id"])
     rated = client.put(_turn_url(turn_id), json={"rating": "down", "reasons": ["not_in_paper"]})
     body = rated.json()
-    assert body["mode"] == "explain" and body["prompt_version"] == "explain.v1"
+    assert body["mode"] == "explain" and body["prompt_version"] == "explain.v2"
     assert body["trace_id"] == answer["trace_id"] and body["trace_id"].startswith("explain:")
 
 
@@ -698,7 +698,7 @@ def test_an_explain_request_streams_text_then_the_answer_citations_and_usage(
     assert "".join(item["text"] for item in _events(text, "delta")) == "".join(ANSWER)
 
     [answer] = _events(text, "answer")
-    assert answer["mode"] == "explained_answer" and answer["prompt_version"] == "explain.v1"
+    assert answer["mode"] == "explained_answer" and answer["prompt_version"] == "explain.v2"
     evaluation = answer["evaluation"]
     assert evaluation["task"] == "explain" and evaluation["complete"] is True
     assert evaluation["depth"] == "standard" and evaluation["paged"] is False
@@ -935,7 +935,7 @@ def test_an_explain_evaluation_scores_the_written_text_and_stores_cache_and_firs
     assert result["evidence_hit"] is True and result["grounded"] is True
     assert result["cache_hit_rate"] == 0.75 and result["first_token_seconds"] is not None
     assert result["citation_valid_rate"] == 1.0 and result["background_share"] == 0.0
-    assert result["trace"]["prompt_version"] == "explain.v1"
+    assert result["trace"]["prompt_version"] == "explain.v2"
     summary = run["summary"]["configured"]
     assert summary["mean_cache_hit_rate"] == 0.75 and summary["passed_written"] == 1
     assert summary["mean_citation_valid_rate"] == 1.0 and summary["mean_background_share"] == 0.0

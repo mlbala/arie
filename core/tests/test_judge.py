@@ -29,6 +29,7 @@ from arie_core.harness.judge import (
     parse_verdicts,
 )
 from arie_core.harness.session import StreamBudget
+from arie_core.pipeline.pack import fence_pack
 from arie_core.plugin_api import LLM, Ctx
 from conftest import ScriptedModel, StreamStep
 
@@ -158,7 +159,7 @@ async def test_the_prompt_keeps_the_writers_prefix_and_sends_markers_not_chunk_t
         target_words=350,
         max_output_tokens=1200,
     )
-    prefix = PACK_TEXT.rstrip("\n") + "\n\n"
+    prefix = fence_pack(PACK_TEXT) + "\n\n"
     assert request.system_prompt == writer.system_prompt == explain.shared_header
     assert request.prompt.startswith(prefix) and writer.prompt.startswith(prefix)
     assert judge.support_rules in request.prompt
