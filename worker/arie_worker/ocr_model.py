@@ -3,9 +3,9 @@
 RapidOCR's wheel bundles a Chinese+English recognition model; ARIE swaps in the English
 PP-OCRv4 one (95 characters: ASCII letters, digits, punctuation and space), keeping the
 bundled detection and orientation models. The file is not in the wheel or in git: ``make
-ocr-model`` (or the image build with the ``ocr`` extra) downloads it once to
-``ingestion.figure_ocr_model`` and checks its SHA-256. The runtime refuses to start with
-``ingestion.figure_ocr`` on unless that file is present and matches; each worker checks it
+ocr-model`` (or ``make setup``, or the image build) downloads it once to
+``ingestion.figure_ocr_model`` and checks its SHA-256. Without that file, or with another,
+the runtime still starts and skips OCR with one warning (ADR 0019); each worker checks it
 again before loading it.
 
 usage: python -m arie_worker.ocr_model [path]   (default: models/ocr/en_PP-OCRv4_rec_infer.onnx)

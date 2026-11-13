@@ -37,7 +37,7 @@ PAGE = "Figure 2: Accuracy by model size.\n\nOur model is more accurate than the
 MODEL = Path(__file__).resolve().parents[2] / DEFAULT_REC_MODEL
 needs_engine = pytest.mark.skipif(
     not (ocr_available() and MODEL.is_file()),
-    reason="needs `uv sync --extra ocr` and `make ocr-model`",
+    reason="needs `make setup` (or `make ocr-model`)",
 )
 
 

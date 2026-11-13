@@ -23,6 +23,7 @@ from arie_core.contracts import LLMDelta, LLMRequest, LLMResponse, TokenUsage
 from arie_core.harness.feedback import REASONS
 from arie_core.harness.reader import EvidenceChunk, Excerpt
 from arie_core.harness.trace import STAGES
+from arie_core.pipeline.figures import CAPTURE_KEY, CAPTURE_STEPS
 from arie_core.plugin_api import Ctx
 from arie_core.registry.manager import AnswerConfig, ArieConfig, EvalConfig, JudgeConfig
 from fastapi.testclient import TestClient
@@ -166,7 +167,13 @@ def client(
         crop.parent.mkdir()
         crop.write_bytes(PNG)
         for identifier, status in (("paper-1", "INDEXED"), ("paper-2", "SKIPPED")):
-            stored = {"file_path": str(pdf), "figures": FIGURES} if identifier == "paper-1" else {}
+            # Captured already (S26), so the background figure catch-up leaves it alone.
+            captured = {CAPTURE_KEY: dict(CAPTURE_STEPS)}
+            stored = (
+                {"file_path": str(pdf), "figures": FIGURES, **captured}
+                if identifier == "paper-1"
+                else {}
+            )
             await runtime.save_paper(
                 dict(
                     **stored,

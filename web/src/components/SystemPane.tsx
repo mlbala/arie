@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, ChevronRight, Database, HardDrive, Layers3, ListOrdered, ShieldAlert, ShieldCheck, Trash2, X } from "lucide-react";
+import { Activity, ChevronRight, Database, HardDrive, Image as FigureIcon, Layers3, ListOrdered, ShieldAlert, ShieldCheck, Trash2, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
-import { deletePaper, getStorageHealth, type AnswerModelHealth, type PaperSummary } from "../api/client";
+import { deletePaper, getStorageHealth, type AnswerModelHealth, type FigureCaptureHealth, type PaperSummary } from "../api/client";
 
 const SOURCE_TOOLS_KEY = "arie.ui.sourceTools";
 
@@ -60,7 +60,7 @@ export function StorageHealth() {
   const health = useStorageHealth();
   const data = health.data;
   const modelDegraded = [data?.entailment, data?.reranker, data?.guard].some((model) => model?.status === "degraded");
-  const allHealthy = data?.database.status === "healthy" && data.file_storage.status === "healthy" && !modelDegraded;
+  const allHealthy = data?.database.status === "healthy" && data.file_storage.status === "healthy" && !modelDegraded && data.figures?.status !== "degraded";
   return (
           <details className="system-section storage-section">
             <summary><HardDrive size={14} /><span>Storage & health</span><span className={`storage-status ${allHealthy ? "healthy" : ""}`}>{health.error ? "Unavailable" : data ? allHealthy ? "Healthy" : modelDegraded ? "Model degraded" : "Check status" : "Checking"}</span></summary>
@@ -77,6 +77,7 @@ export function StorageHealth() {
             {data?.entailment && <AnswerModelCard icon={<ShieldCheck size={14} />} title="Claim checker" purpose="Tier 3 entailment" model={data.entailment} />}
             {data?.reranker && <AnswerModelCard icon={<ListOrdered size={14} />} title="Passage reranker" purpose="question relevance" model={data.reranker} />}
             {data?.guard && <AnswerModelCard icon={<ShieldAlert size={14} />} title="Injection guard" purpose="paper text screening" model={data.guard} />}
+            {data?.figures && <FigureCaptureCard figures={data.figures} />}
             <article><div><HardDrive size={14} /><strong>PDF storage</strong><span className={`health-pill ${data?.file_storage.status ?? "unknown"}`}>{data?.file_storage.status ?? "Checking"}</span></div>
               <p>{data?.file_storage.provider ?? "—"} · {bytes(data?.file_storage.size_bytes)}{data?.file_storage.status === "partial" ? " (partial)" : ""}</p>
               <small>{data?.file_storage.files ?? "—"} PDF files · {bytes(data?.file_storage.disk_free_bytes)} free</small>
@@ -86,6 +87,17 @@ export function StorageHealth() {
             </div>
           </details>
 
+  );
+}
+
+/** Figure capture: papers caught up, papers with no stored PDF, and whether OCR can run. */
+function FigureCaptureCard({ figures }: { figures: FigureCaptureHealth }) {
+  const ocr = figures.ocr === "on" ? "OCR on" : figures.ocr === "off" ? "OCR off" : "OCR unavailable";
+  return (
+    <article><div><FigureIcon size={14} /><strong>Figure capture</strong><span className={`health-pill ${figures.status}`}>{figures.status}</span></div>
+      <p>{figures.papers_captured ?? "—"} of {figures.papers_total ?? "—"} papers · {ocr}</p>
+      <small>{figures.detail}</small>
+    </article>
   );
 }
 
