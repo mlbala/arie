@@ -215,8 +215,9 @@ describe("verified answer stream", () => {
   });
 
   it("names the figure an abstention points to and links its crop without showing it inline", async () => {
-    const message = "Not stated in the text; see Figure 2 (p. 5).";
-    const hint = { paper_id: "paper-1", number: "2", page: 5, message, crop_url: "/v1/papers/paper-1/figures/2.png" };
+    const message = "I could not find verified evidence in this paper.";
+    const fact = "The closest passage refers to Figure 2 (p. 5).";
+    const hint = { paper_id: "paper-1", number: "2", page: 5, message: fact, crop_url: "/v1/papers/paper-1/figures/2.png" };
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(
@@ -232,8 +233,8 @@ describe("verified answer stream", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "What is this paper about?" }));
     expect(await screen.findByText(message)).toBeInTheDocument();
-    // The message is shown once; the hint adds only the link to the paper's own crop.
-    expect(screen.getAllByText(message)).toHaveLength(1);
+    // The abstention keeps its text; the hint adds where the closest passage points, and a link.
+    expect(screen.getByText(fact, { exact: false })).toBeInTheDocument();
     const link = screen.getByRole("link", { name: "Open Figure 2 (p. 5)" });
     expect(link.getAttribute("href")).toContain("/v1/papers/paper-1/figures/2.png");
     expect(container.querySelector(".chat-thread img, .answer-card img")).toBeNull();

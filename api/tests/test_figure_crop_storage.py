@@ -168,12 +168,12 @@ def test_a_strict_fallback_on_a_figure_caption_names_the_figure_and_links_its_cr
             "paper_id": "p1",
             "number": "2",
             "page": 1,
-            "message": "Not stated in the text; see Figure 2 (p. 1).",
+            "message": "The closest passage refers to Figure 2 (p. 1).",
             "crop_url": "/v1/papers/p1/figures/2.png",
         }
-        # The caption alone does not answer: the abstention names the figure instead.
+        # The caption alone does not answer: the abstention keeps its text, the hint adds a fact.
         [abstention] = _events(response.text, "abstention")
-        assert abstention["message"] == hint["message"]
+        assert abstention["message"].startswith("I could not find verified evidence")
         [answer] = _events(response.text, "answer")
         assert answer["evaluation"]["trace"]["figure_hint"] == "2"
         assert client.get(hint["crop_url"]).content.startswith(b"\x89PNG")
