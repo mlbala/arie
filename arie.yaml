@@ -31,6 +31,7 @@ explain:
 #   pdf_check: {enabled: true, max_objects: 60000, max_pages: 600, max_filter_depth: 10}
 #   hidden_text: true
 #   figure_ocr: false   # OCR words in bitmap figures; needs `uv sync --extra ocr`
+#   figure_ocr_model: models/ocr/en_PP-OCRv4_rec_infer.onnx   # fetched by `make ocr-model`
 # Embedder defaults; min_score is the cosine floor calibrated for each model.
 embedding_providers:
   fastembed: {model: BAAI/bge-small-en-v1.5, min_score: 0.6}
