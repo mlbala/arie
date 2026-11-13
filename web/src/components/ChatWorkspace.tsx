@@ -14,7 +14,7 @@ import {
   ThumbsUp,
   X,
 } from "lucide-react";
-import { FEEDBACK_REASONS, apiUrl, getChat, getGuide, rateAnswer, type AnswerRating, type CitationRange, type FeedbackReason, type PaperGuideView, type PaperSummary, type RatingDetail } from "../api/client";
+import { FEEDBACK_REASONS, apiUrl, figureNumbers, getChat, getGuide, rateAnswer, type AnswerRating, type CitationRange, type FeedbackReason, type PaperGuideView, type PaperSummary, type RatingDetail } from "../api/client";
 import {
   mergeSentences,
   normalizeCitations,
@@ -76,6 +76,14 @@ interface ChatEntry {
   citations?: ExplainCitation[] | undefined;
   sentences?: SentenceStatus[] | undefined;
   incomplete?: boolean | undefined;
+  /** Strict mode (S24): the figure a non-answer points to, named and linked, never described. */
+  figureHint?: FigureHint | undefined;
+}
+interface FigureHint {
+  number: string;
+  page: number;
+  message: string;
+  cropUrl: string | null;
 }
 interface RequestCallbacks {
   onStart: (controller: AbortController) => void;
@@ -470,6 +478,16 @@ function ChatPanel({
                   {entry.message && (
                     <p className="answer-notice">{entry.message}</p>
                   )}
+                  {entry.figureHint && (
+                    <p className="figure-hint">
+                      {entry.figureHint.message !== entry.message && <>{entry.figureHint.message} </>}
+                      {entry.figureHint.cropUrl && (
+                        <a href={apiUrl(entry.figureHint.cropUrl)} target="_blank" rel="noreferrer">
+                          Open Figure {entry.figureHint.number} (p. {entry.figureHint.page})
+                        </a>
+                      )}
+                    </p>
+                  )}
                   {entry.error && (
                     <p className="answer-error" role="alert">
                       {entry.error}
@@ -678,6 +696,7 @@ function ExplainedAnswer({ entry, paperId, onCitation }: { entry: ChatEntry; pap
       char_start: cited.charStart,
       char_end: cited.charEnd,
       chunk_id: cited.chunkId,
+      ...(cited.figures.length ? { figures: cited.figures } : {}),
     });
   };
   return <div className="explained-answer">
@@ -741,6 +760,16 @@ function applyAnswerEvent(entry: ChatEntry, kind: string | undefined, parsed: Re
     requiredAspects: Array.isArray(evaluation.required_aspects) ? evaluation.required_aspects.length : 0,
   };
   if (kind === "abstention") return { ...entry, message: String(parsed.message) };
+  if (kind === "figure_hint" && typeof parsed.number === "string" && typeof parsed.page === "number")
+    return {
+      ...entry,
+      figureHint: {
+        number: parsed.number.slice(0, 16),
+        page: parsed.page,
+        message: String(parsed.message ?? ""),
+        cropUrl: typeof parsed.crop_url === "string" && parsed.crop_url.startsWith("/v1/papers/") ? parsed.crop_url : null,
+      },
+    };
   if (kind === "done") return {
     ...entry,
     mode: String(parsed.mode ?? ""),
@@ -794,7 +823,12 @@ function normalizeCitation(value: unknown): CitationRange | undefined {
   )
     return undefined;
   const chunkId = "chunk_id" in value && typeof value.chunk_id === "string" && value.chunk_id.length <= 256 ? value.chunk_id : undefined;
-  return { page_start, char_start, char_end, ...(chunkId ? { chunk_id: chunkId } : {}) };
+  const figures = "figures" in value ? figureNumbers(value.figures) : [];
+  return {
+    page_start, char_start, char_end,
+    ...(chunkId ? { chunk_id: chunkId } : {}),
+    ...(figures.length ? { figures } : {}),
+  };
 }
 
 /** A quoted Markdown table keeps its rows on separate lines. */

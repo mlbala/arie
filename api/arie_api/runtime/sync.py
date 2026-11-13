@@ -494,6 +494,13 @@ class SyncJobs(VectorIndex):
                     outline=json.loads(parsed.metadata.get("outline_json", "[]")),
                     figures=msgspec.to_builtins(parsed.figures),
                 )
+                try:
+                    await self.store_figure_crops(document)
+                except Exception:
+                    # Crops are a view of the figure (S24); the paper indexes without them.
+                    logger.warning(
+                        "Could not render figure crops for %s", paper.paper_id, exc_info=True
+                    )
                 await self.save_paper(document)
             await self.update_job(
                 job, phase="indexing", message="Building page-scoped evidence chunks"

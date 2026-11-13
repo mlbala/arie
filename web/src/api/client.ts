@@ -43,11 +43,29 @@ export interface CitationRange {
   label?: string | undefined;
   quote?: string | undefined;
   chunk_id?: string | undefined;
+  /** Figures the cited chunk captions or names (S24); the drawer shows their crops. */
+  figures?: string[] | undefined;
+}
+
+/** A figure as the paper response lists it; the crop is the paper's own figure, never a description. */
+export interface PaperFigure {
+  number: string;
+  page: number;
+  caption: string;
+  has_crop: boolean;
+  crop_url: string | null;
 }
 
 export interface Paper extends PaperSummary {
   outline: string[];
   pdf_url?: string | undefined;
+  figures?: PaperFigure[] | undefined;
+}
+
+/** Figure numbers from a citation: short strings only, at most eight. */
+export function figureNumbers(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((n): n is string => typeof n === "string" && n.length > 0 && n.length <= 16).slice(0, 8);
 }
 
 export interface PaperPage {

@@ -1,4 +1,4 @@
-.PHONY: check lint boundaries types test test-unit test-api test-contracts web-check eval-llm eval-paper eval-qasper guides optimize-prompts pdf-report figures-backfill
+.PHONY: check lint boundaries types test test-unit test-api test-contracts web-check eval-llm eval-paper eval-qasper guides optimize-prompts pdf-report figures-backfill figure-crops
 
 # Everything CI runs for Python: lint, import boundaries, strict types, all test suites.
 check: lint boundaries types test
@@ -69,3 +69,7 @@ pdf-report:
 # make figures-backfill (ARGS="--all" refreshes papers that already have figures)
 figures-backfill:
 	uv run python -m arie_api.backfill_figures $(ARGS)
+
+# Render figure crops for stored papers that have figures (S24); no parsing.
+figure-crops:
+	uv run python -m arie_api.backfill_figures --crops

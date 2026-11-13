@@ -14,6 +14,7 @@ from contextlib import aclosing
 
 import msgspec
 from arie_core.harness.explain import ExplainResult
+from arie_core.pipeline.figures import chunk_figures
 
 from arie_api.runtime import Document, ResearchRuntime
 
@@ -130,6 +131,8 @@ async def explain_events(
                         "char_end": row["char_end"],
                         # The span is the whole chunk: an explain answer cites chunks, not quotes.
                         "checked": cited.marker in cited_markers and cited.marker not in flagged,
+                        # The figures this chunk captions or names; the drawer shows their crops.
+                        "figures": chunk_figures(row.get("figure"), row.get("mentions")),
                     }
                 )
         yield emit("citations", paper_id=paper_id, citations=citations)

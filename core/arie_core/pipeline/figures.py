@@ -71,6 +71,14 @@ def chunk_figure_tags(
     return tags
 
 
+def chunk_figures(figure: object, mentions: object) -> list[str]:
+    """A chunk's figure numbers for its citation: the one it captions, then the ones it names."""
+    numbers = [figure] if isinstance(figure, str) and figure else []
+    if isinstance(mentions, list | tuple):
+        numbers += [str(n) for n in cast(Sequence[object], mentions) if str(n) not in numbers]
+    return numbers
+
+
 def figure_records(rows: Sequence[Mapping[str, object]]) -> list[Figure]:
     """Stored figure dicts (``paper.figures``) back as ``Figure``s; malformed rows are skipped."""
     figures: list[Figure] = []
