@@ -311,12 +311,44 @@ async def test_sync_stores_figures_and_tags_caption_and_mention_chunks(
         runtime.close()
 
 
+def test_figure_ocr_refuses_to_start_without_the_pinned_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = runtime_at(tmp_path)
+    base.close()
+    model = tmp_path / "rec.onnx"
+
+    def start(figure_ocr: bool = True) -> None:
+        ingestion = base.config.ingestion.model_copy(
+            update={"figure_ocr": figure_ocr, "figure_ocr_model": str(model)}
+        )
+        ResearchRuntime(ROOT, base.config.model_copy(update={"ingestion": ingestion})).close()
+
+    monkeypatch.setattr(runtime_base, "ocr_available", lambda: False)
+    with pytest.raises(RuntimeError, match="uv sync --extra ocr"):
+        start()
+    monkeypatch.setattr(runtime_base, "ocr_available", lambda: True)
+    with pytest.raises(RuntimeError, match=r"figure_ocr: OCR model not found.*make ocr-model"):
+        start()
+    model.write_bytes(b"a different model")
+    with pytest.raises(RuntimeError, match="expected e8770c96"):
+        start()
+    start(figure_ocr=False)  # off: the model is never looked at
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("figure_ocr", [False, True])
 async def test_figure_ocr_adds_one_ocr_chunk_only_when_on(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, figure_ocr: bool
 ) -> None:
     monkeypatch.setattr(runtime_base, "ocr_available", lambda: True)
+    checked: list[Path] = []
+
+    def verify_model(path: Path) -> Path:
+        checked.append(path)
+        return path
+
+    monkeypatch.setattr(runtime_base, "verify_model", verify_model)
     base = runtime_at(tmp_path)
     ingestion = base.config.ingestion.model_copy(update={"figure_ocr": figure_ocr})
     runtime = ResearchRuntime(ROOT, base.config.model_copy(update={"ingestion": ingestion}))
@@ -327,15 +359,15 @@ async def test_figure_ocr_adds_one_ocr_chunk_only_when_on(
     page = "As Figure 1 shows, accuracy rises.\n\nFigure 1: Accuracy by size.\n\nNo figure here."
     start = page.index("Figure 1:")
     figure = Figure("1", 1, (1.0, 2.0, 3.0, 4.0), "Figure 1: Accuracy by size.", start, start + 27)
-    calls: list[list[tuple[int, Any]]] = []
+    calls: list[tuple[list[tuple[int, Any]], str]] = []
 
     async def parse_pdf(file_path: str) -> ParsedDoc:
         del file_path
         return ParsedDoc("resumed", "", "", [page], {"page_count": "1"}, [figure])
 
-    async def ocr_figures(file_path: str, figures: list[tuple[int, Any]]) -> OcrTexts:
+    async def ocr_figures(file_path: str, figures: list[tuple[int, Any]], model: str) -> OcrTexts:
         del file_path
-        calls.append(figures)
+        calls.append((figures, model))
         return OcrTexts({0: "ACCURACY\n92.5"})
 
     monkeypatch.setattr(runtime, "parse_pdf", parse_pdf)
@@ -358,14 +390,16 @@ async def test_figure_ocr_adds_one_ocr_chunk_only_when_on(
         ]
         if not figure_ocr:
             # Off: OCR never runs and the stored chunks and figures are those of S24.
-            assert calls == [] and saved["chunks"] == page_chunks
+            assert calls == [] and checked == [] and saved["chunks"] == page_chunks
             assert "ocr_text" not in saved["figures"][0]
             # OCR chunks stored while it was on are not evidence once it is off.
             stale = {**page_chunks[0], "chunk_id": "resumed:3", "ocr": True, "figure": "1"}
             rows = await runtime.evidence({**saved, "chunks": [*page_chunks, stale]})
             assert [row.chunk_id for row in rows] == ["resumed:0", "resumed:1", "resumed:2"]
             return
-        assert calls == [[(1, (1.0, 2.0, 3.0, 4.0))]]
+        model = ROOT / "models" / "ocr" / "en_PP-OCRv4_rec_infer.onnx"
+        assert checked == [model]  # checked once, at startup
+        assert calls == [([(1, (1.0, 2.0, 3.0, 4.0))], str(model))]
         assert saved["chunks"][:3] == page_chunks
         assert saved["chunks"][3:] == [
             {

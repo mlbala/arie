@@ -156,11 +156,24 @@ class ExtractionPool(SupervisedPool):
         )
 
     async def ocr_figures(
-        self, file_path: str, figures: Sequence[tuple[int, Box]], limits: OcrLimits | None = None
+        self,
+        file_path: str,
+        figures: Sequence[tuple[int, Box]],
+        model: str,
+        limits: OcrLimits | None = None,
     ) -> OcrTexts:
-        """OCR bitmap figures in a PDF worker (S25), under the parse time and memory limits."""
+        """OCR bitmap figures in a PDF worker (S25), under the parse time and memory limits.
+
+        ``model`` is the English recognition model's path (ADR 0018).
+        """
         return await self.submit(
-            self.timeout_sec, ocr_figures, file_path, list(figures), limits or OcrLimits()
+            self.timeout_sec,
+            ocr_figures,
+            file_path,
+            list(figures),
+            limits or OcrLimits(),
+            None,
+            model,
         )
 
 
