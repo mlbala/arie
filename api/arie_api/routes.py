@@ -464,7 +464,6 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
                             paper_id=paper_id,
                             message=(
                                 run.guardrail.message
-                                or (hint.message if hint is not None else "")
                                 or "I could not find verified evidence in this paper "
                                 "to answer that question."
                             ),
