@@ -26,6 +26,8 @@ data/
 *.pdf
 *.part
 *.sock
+# The OCR recognition model fetched by `make ocr-model` (ADR 0018)
+/models/
 # Model caches created by running ARIE or its tests outside Docker
 hf/
 models/
