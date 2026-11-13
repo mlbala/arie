@@ -1256,6 +1256,53 @@
         "summary": "Paper Evaluation Run"
       }
     },
+    "/v1/papers/{paper_id}/figures/{number}.png": {
+      "get": {
+        "description": "The paper's own figure crop (S24). The file comes from this paper's record only (I1).",
+        "operationId": "paper_figure_v1_papers__paper_id__figures__number__png_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "paper_id",
+            "required": true,
+            "schema": {
+              "title": "Paper Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "number",
+            "required": true,
+            "schema": {
+              "title": "Number",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Paper Figure"
+      }
+    },
     "/v1/papers/{paper_id}/guide": {
       "get": {
         "description": "The paper's cited guide, with a citation per marker, or its build status.\n\n``status`` is ``ready`` (``guide`` and ``citations`` set), ``pending`` (queued, or\nfailed and waiting for a retry; ``error`` names the last failure) or ``missing``.",

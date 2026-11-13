@@ -33,6 +33,20 @@ SOURCE = (
 )
 
 
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+# Figure 2 has a crop (S24); Figure 3 was skipped by the renderer.
+FIGURES = [
+    {
+        "number": "2",
+        "page": 1,
+        "box": [0.0, 0.0, 10.0, 10.0],
+        "caption": "Figure 2: Cedar.",
+        "crop": "paper-1.figures/0.png",
+    },
+    {"number": "3", "page": 1, "box": [0.0, 0.0, 10.0, 10.0], "caption": "Figure 3: Size."},
+]
+
+
 class _APIClient(Protocol):
     def get(self, url: str) -> httpx.Response: ...
     def post(self, url: str, *, json: object) -> httpx.Response: ...
@@ -147,8 +161,11 @@ def client(
         pdf = tmp_path / "papers" / "paper-1.pdf"
         pdf.parent.mkdir(parents=True, exist_ok=True)
         pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
+        crop = tmp_path / "papers" / "paper-1.figures" / "0.png"
+        crop.parent.mkdir()
+        crop.write_bytes(PNG)
         for identifier, status in (("paper-1", "INDEXED"), ("paper-2", "SKIPPED")):
-            stored = {"file_path": str(pdf)} if identifier == "paper-1" else {}
+            stored = {"file_path": str(pdf), "figures": FIGURES} if identifier == "paper-1" else {}
             await runtime.save_paper(
                 dict(
                     **stored,
@@ -228,6 +245,41 @@ def test_the_pdf_is_served_as_an_inert_download_the_browser_cannot_run(
     assert client.get("/v1/papers/paper-2/pdf").status_code == 404
 
 
+def test_a_figure_crop_is_served_inert_and_only_from_its_own_paper(client: _APIClient) -> None:
+    response = client.get("/v1/papers/paper-1/figures/2.png")
+    assert response.status_code == 200 and response.content == PNG
+    assert response.headers["content-type"] == "image/png"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    policy = response.headers["content-security-policy"]
+    assert "sandbox" in policy and "default-src 'none'" in policy
+    # An unknown figure, a figure without a crop, and another paper's id: all 404.
+    assert client.get("/v1/papers/paper-1/figures/9.png").status_code == 404
+    assert client.get("/v1/papers/paper-1/figures/3.png").status_code == 404
+    assert client.get("/v1/papers/paper-2/figures/2.png").status_code == 404
+    assert client.get("/v1/papers/paper-1/figures/..%2Fpaper-1.pdf.png").status_code == 404
+
+
+def test_the_paper_lists_its_figures_without_storage_keys(client: _APIClient) -> None:
+    body = client.get("/v1/papers/paper-1").json()
+    assert body["figures"] == [
+        {
+            "number": "2",
+            "page": 1,
+            "caption": "Figure 2: Cedar.",
+            "has_crop": True,
+            "crop_url": "/v1/papers/paper-1/figures/2.png",
+        },
+        {
+            "number": "3",
+            "page": 1,
+            "caption": "Figure 3: Size.",
+            "has_crop": False,
+            "crop_url": None,
+        },
+    ]
+    assert client.get("/v1/papers/paper-2").json()["figures"] == []
+
+
 def test_question_stream_emits_verified_claims_only(client: _APIClient) -> None:
     response = client.post(
         "/v1/papers/paper-1/questions",
@@ -248,7 +300,10 @@ def test_question_stream_emits_verified_claims_only(client: _APIClient) -> None:
         citation = claim["citation"]
         assert SOURCE[citation["char_start"] : citation["char_end"]] == claim["quote"]
         assert "tier_1" in claim["tier_checks"]
+        # A plain text chunk names no figure, and the answer gets no figure hint (S24).
+        assert citation["figures"] == []
     assert "event: done" in text
+    assert "event: figure_hint" not in text
 
 
 def test_override_preserves_protected_fields(client: _APIClient) -> None:
@@ -730,6 +785,7 @@ def test_an_explain_request_streams_text_then_the_answer_citations_and_usage(
             "char_start": 0,
             "char_end": len(SOURCE),
             "checked": True,
+            "figures": [],
         }
     ]
     [checks] = _events(text, "checks")

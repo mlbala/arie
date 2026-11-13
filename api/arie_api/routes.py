@@ -16,6 +16,7 @@ from urllib.parse import quote
 import msgspec
 from arie_core.harness.intent import DialogueTurn
 from arie_core.harness.session import EXPLAIN_SECONDS, JUDGE_SECONDS
+from arie_core.pipeline.figures import chunk_figures
 from arie_core.registry.sync import SyncConfig
 from arie_core.sched import EventLoopLagMonitor, supervised
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -125,6 +126,26 @@ class PluginRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     plugin: str
     config: dict[str, object] = Field(default_factory=dict)
+
+
+def figure_url(paper_id: str, number: str) -> str:
+    return f"/v1/papers/{quote(paper_id, safe='')}/figures/{quote(number, safe='')}.png"
+
+
+def public_figures(paper_id: str, paper: Document) -> list[Document]:
+    """The paper's figures as the API lists them: no boxes, offsets or storage keys (S24)."""
+    return [
+        {
+            "number": str(figure.get("number", "")),
+            "page": figure.get("page"),
+            "caption": figure.get("caption", ""),
+            "has_crop": bool(figure.get("crop")),
+            "crop_url": (
+                figure_url(paper_id, str(figure.get("number", ""))) if figure.get("crop") else None
+            ),
+        }
+        for figure in cast(list[Document], paper.get("figures") or [])
+    ]
 
 
 def _event(kind: str, **payload: Any) -> str:
@@ -304,6 +325,26 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
         path = await asyncio.to_thread(resolve_pdf)
         return FileResponse(path, media_type="application/pdf", headers=PDF_HEADERS)
 
+    @app.get("/v1/papers/{paper_id:path}/figures/{number}.png")
+    async def paper_figure(paper_id: str, number: str) -> FileResponse:
+        """The paper's own figure crop (S24). The file comes from this paper's record only (I1)."""
+        paper = await document(paper_id)
+        keys = [
+            figure.get("crop")
+            for figure in cast(list[Document], paper.get("figures") or [])
+            if str(figure.get("number", "")) == number and figure.get("crop")
+        ]
+
+        def resolve_crop() -> Path:
+            for key in keys:
+                path = active().crop_path(key)
+                if path is not None and path.is_file():
+                    return path
+            raise HTTPException(status_code=404, detail="Figure crop not found")
+
+        path = await asyncio.to_thread(resolve_crop)
+        return FileResponse(path, media_type="image/png", headers=PDF_HEADERS)
+
     @app.get("/v1/papers/{paper_id:path}/pages/{page_number}")
     async def paper_page(paper_id: str, page_number: int) -> Document:
         paper = await document(paper_id)
@@ -390,7 +431,9 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
                             "trace": msgspec.to_builtins(result.trace),
                         },
                     )
+                    tags = {row.chunk_id: row for row in reading.rows}
                     for excerpt in excerpts:
+                        source = tags.get(excerpt.chunk_id)
                         yield emit(
                             "claim",
                             paper_id=paper_id,
@@ -406,19 +449,43 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
                                     "char_end": excerpt.char_end,
                                     "chunk_id": excerpt.chunk_id,
                                     "label": f"p. {excerpt.page_start}",
+                                    "figures": chunk_figures(
+                                        source.figure if source else "",
+                                        source.mentions if source else (),
+                                    ),
                                 },
                                 "tier_checks": list(excerpt.checks),
                             },
                         )
+                    hint = run.figure_hint
                     if not excerpts:
                         yield emit(
                             "abstention",
                             paper_id=paper_id,
                             message=(
                                 run.guardrail.message
+                                or (hint.message if hint is not None else "")
                                 or "I could not find verified evidence in this paper "
                                 "to answer that question."
                             ),
+                        )
+                    if hint is not None:
+                        # Names the figure and links the paper's own crop; never describes it.
+                        crop = next(
+                            (
+                                f
+                                for f in public_figures(paper_id, paper)
+                                if f["number"] == hint.number and f["has_crop"]
+                            ),
+                            None,
+                        )
+                        yield emit(
+                            "figure_hint",
+                            paper_id=paper_id,
+                            number=hint.number,
+                            page=hint.page,
+                            message=hint.message,
+                            crop_url=crop["crop_url"] if crop is not None else None,
                         )
                     yield emit(
                         "done",
@@ -501,6 +568,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
         result["pdf_url"] = (
             None if paper.get("pdf_deleted") else f"/v1/papers/{quote(paper_id, safe='')}/pdf"
         )
+        result["figures"] = public_figures(paper_id, paper)
         return result
 
     @app.delete("/v1/papers/{paper_id:path}")

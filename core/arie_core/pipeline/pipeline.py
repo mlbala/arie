@@ -12,6 +12,7 @@ from typing import BinaryIO, cast
 from urllib.parse import urlparse
 
 import httpx
+import msgspec
 
 from arie_core.contracts import ParsedDoc
 from arie_core.plugin_api import Ctx, FileStorage, ScrapedPaperInput
@@ -244,13 +245,9 @@ class IngestionPipeline:
         try:
             parsed = await self._run_worker_parse(file_path)
             if parsed.paper_id != paper_id:
-                parsed = ParsedDoc(
-                    paper_id=paper_id,
-                    title=parsed.title,
-                    source=parsed.source,
-                    sections=parsed.sections,
-                    metadata=parsed.metadata,
-                )
+                # Parsers name the paper after the stored file (its storage hash). Replace only
+                # the id: rebuilding the struct field by field dropped ``figures`` (S24).
+                parsed = msgspec.structs.replace(parsed, paper_id=paper_id)
             self._paper_states[paper_id] = IngestionStage.PARSED
             self._parse_failures.pop(paper_id, None)
             return parsed

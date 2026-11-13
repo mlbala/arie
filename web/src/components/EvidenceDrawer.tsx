@@ -78,6 +78,12 @@ export function EvidenceDrawer({ paperId, citation, onClose }: Props) {
       : citation.char_end <= text.length &&
         text.slice(citation.char_start, citation.char_end) === citation.quote);
   const pdf = apiUrl(`/v1/papers/${encodeURIComponent(paperId)}/pdf`);
+  // The paper's own figure crops for the cited chunk's figures (S24); shown, never described.
+  const cited = new Set(citation?.figures ?? []);
+  const crops = (paperQuery.data?.figures ?? [])
+    .filter((figure) => figure.has_crop && figure.crop_url && cited.has(figure.number))
+    .filter((figure, i, all) => all.findIndex((f) => f.number === figure.number) === i)
+    .slice(0, 3);
   return (
     <div
       className="evidence-backdrop"
@@ -117,6 +123,21 @@ export function EvidenceDrawer({ paperId, citation, onClose }: Props) {
             <span>Verified excerpt · page {citation.page_start}</span>
           </blockquote>
         )}
+        {crops.map((figure) => (
+          <figure className="evidence-figure" key={figure.number}>
+            <button
+              type="button"
+              aria-label={`Open Figure ${figure.number} on page ${figure.page} of the PDF`}
+              onClick={() => {
+                setPage(figure.page);
+                if (!paperQuery.data?.pdf_deleted) setTab("pdf");
+              }}
+            >
+              <img src={apiUrl(figure.crop_url ?? "")} alt={`Figure ${figure.number} as drawn in the paper`} loading="lazy" />
+            </button>
+            <figcaption>{figure.caption || `Figure ${figure.number}`} · page {figure.page}</figcaption>
+          </figure>
+        ))}
         <div className="evidence-tabs">
           <button
             aria-pressed={tab === "extracted"}

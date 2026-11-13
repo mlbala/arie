@@ -213,6 +213,31 @@ describe("verified answer stream", () => {
     );
     expect(await screen.findByText(message)).toBeInTheDocument();
   });
+
+  it("names the figure an abstention points to and links its crop without showing it inline", async () => {
+    const message = "Not stated in the text; see Figure 2 (p. 5).";
+    const hint = { paper_id: "paper-1", number: "2", page: 5, message, crop_url: "/v1/papers/paper-1/figures/2.png" };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        streamResponse([
+          `event: abstention\ndata: ${JSON.stringify({ paper_id: "paper-1", message })}\n\n`,
+          `event: figure_hint\ndata: ${JSON.stringify(hint)}\n\n`,
+          'event: done\ndata: {"paper_id":"paper-1"}\n\n',
+        ]),
+      ),
+    );
+    const { container } = render(
+      <ChatWorkspace papers={papers} activePaperId="paper-1" onSelectPaper={vi.fn()} onClosePaper={vi.fn()} onCitation={vi.fn()} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "What is this paper about?" }));
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    // The message is shown once; the hint adds only the link to the paper's own crop.
+    expect(screen.getAllByText(message)).toHaveLength(1);
+    const link = screen.getByRole("link", { name: "Open Figure 2 (p. 5)" });
+    expect(link.getAttribute("href")).toContain("/v1/papers/paper-1/figures/2.png");
+    expect(container.querySelector(".chat-thread img, .answer-card img")).toBeNull();
+  });
 });
 
 it("renders reviewed summary text with its source and discards empty supporting quotes", async () => {

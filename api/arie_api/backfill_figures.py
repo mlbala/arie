@@ -5,6 +5,8 @@ worker pool; only the parse's figures are kept (ADR 0015). Captions are found ag
 stored page text and chunks gain ``figure``/``mentions`` tags. Pages, chunk text, ids and
 offsets are unchanged, so vectors, guard scores and paper packs stay valid. ``--all``
 also refreshes papers that already have figures, and adds S23's figure-text spans and tags.
+Each parsed paper also gets its figure crops (S24). ``--crops`` (``make figure-crops``) only
+renders crops for papers that already have figures, without parsing them again.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ from arie_api.runtime.base import Document, context
 ROOT = Path(__file__).resolve().parents[2]
 
 
-async def backfill(refresh: bool = False) -> Counter[str]:
+async def backfill(refresh: bool = False, crops_only: bool = False) -> Counter[str]:
     runtime = ResearchRuntime(ROOT)
     counts: Counter[str] = Counter()
     try:
@@ -35,6 +37,12 @@ async def backfill(refresh: bool = False) -> Counter[str]:
         )
         for row in rows:
             paper = await runtime.get_paper(str(row["paper_id"]))
+            if crops_only:
+                if paper is not None and paper.get("figures"):
+                    counts.update(await runtime.store_figure_crops(paper))
+                    await runtime.save_paper(paper)
+                    counts["papers"] += 1
+                continue
             if paper is None or ("figures" in paper and not refresh):
                 counts["skipped_done"] += paper is not None
                 continue
@@ -48,7 +56,9 @@ async def backfill(refresh: bool = False) -> Counter[str]:
                 counts["parse_failed"] += 1
                 print(f"{paper['id']}: parse failed: {exc}")
                 continue
+            await runtime.remove_figure_crops(paper)
             missing = attach_figures(cast(dict[str, object], paper), parsed.figures)
+            counts.update(await runtime.store_figure_crops(paper))
             await runtime.save_paper(paper)
             counts["papers"] += 1
             counts["papers_with_figures"] += bool(parsed.figures)
@@ -82,8 +92,9 @@ async def backfill(refresh: bool = False) -> Counter[str]:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Add figure records to indexed papers.")
     parser.add_argument("--all", action="store_true", help="also refresh papers with figures")
+    parser.add_argument("--crops", action="store_true", help="only render figure crops")
     args = parser.parse_args()
-    print(json.dumps(dict(sorted(asyncio.run(backfill(args.all)).items()))))
+    print(json.dumps(dict(sorted(asyncio.run(backfill(args.all, args.crops)).items()))))
 
 
 if __name__ == "__main__":
