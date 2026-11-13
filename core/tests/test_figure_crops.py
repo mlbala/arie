@@ -10,7 +10,7 @@ from typing import Any
 import msgspec
 import pytest
 from arie_api.runtime import context
-from arie_core.harness.figure_hint import FigureHint, figure_hint
+from arie_core.harness.figure_hint import FigureHint, figure_hint, figure_pages
 from arie_core.harness.orchestrator import answer_question
 from arie_core.harness.reader import EvidenceChunk
 from arie_core.pipeline.figures import chunk_figures
@@ -94,15 +94,35 @@ def test_an_abstention_whose_top_row_is_the_caption_names_the_figure_and_page() 
     assert figure_hint("source_excerpts", "p", [DRAWN, PLAIN]) == FigureHint("2", 5)
 
 
-def test_no_hint_without_a_top_figure_row_or_for_an_answer() -> None:
-    assert figure_hint("abstention", "p", [PLAIN, CAPTION]) is None
-    assert figure_hint("abstention", "p", [MENTION, CAPTION]) is None
+def test_the_best_figure_passage_in_the_top_three_names_its_figure() -> None:
+    pages = figure_pages([PLAIN, MENTION, CAPTION, DRAWN])
+    assert pages == {"2": 5}
+    # A caption or a mention below a plain passage still counts, within the top 3.
+    assert figure_hint("abstention", "p", [PLAIN, CAPTION]) == FigureHint("2", 5)
+    # A mention names the figure; the page is the figure's own, from its caption chunk.
+    hint = figure_hint("source_excerpts", "p", [PLAIN, MENTION, CAPTION], pages)
+    assert hint == FigureHint("2", 5)
+    # Two figures mentioned: the first one is named.
+    both = row("c5", "Figures 3 and 2 compare both runs.", 6, mentions=["3", "2"])
+    assert figure_hint("abstention", "p", [both, CAPTION], pages) == FigureHint("3", 0)
+
+
+def test_a_mentioned_figure_without_a_caption_chunk_gets_no_page() -> None:
+    hint = figure_hint("abstention", "p", [MENTION])
+    assert hint == FigureHint("2", 0)
+    assert hint is not None and hint.message == "Not stated in the text; see Figure 2."
+
+
+def test_no_hint_below_the_top_three_or_for_an_answer() -> None:
+    plain = [msgspec.structs.replace(PLAIN, chunk_id=f"c{i}") for i in range(3)]
+    assert figure_hint("abstention", "p", [*plain, CAPTION]) is None
     assert figure_hint("abstention", "p", []) is None
     assert figure_hint("answer", "p", [CAPTION]) is None
     assert figure_hint("extractive_summary", "p", [CAPTION]) is None
-    # Another paper's caption is never the top row of this one.
+    # Another paper's rows never count, and do not take a place in the top 3.
     other = msgspec.structs.replace(CAPTION, paper_id="q")
     assert figure_hint("abstention", "p", [other, PLAIN]) is None
+    assert figure_hint("abstention", "p", [other, *plain[:2], MENTION]) == FigureHint("2", 0)
 
 
 @pytest.mark.asyncio

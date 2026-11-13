@@ -9,7 +9,7 @@ from pathlib import Path
 import msgspec
 
 from arie_core.harness.answer import PROJECT_ROOT, AnswerResult, compose_answer
-from arie_core.harness.figure_hint import FigureHint, figure_hint
+from arie_core.harness.figure_hint import FigureHint, figure_hint, figure_pages
 from arie_core.harness.guardrails import InputDecision, inspect_question
 from arie_core.harness.injection import is_untrusted
 from arie_core.harness.intent import AnswerPlan, DialogueTurn, plan_answer
@@ -118,7 +118,7 @@ async def answer_question(
     )
     # compose_answer traced the stages it ran; this trace adds the earlier ones and the total.
     trace = session.trace(answer.mode, answer.fallback_reason, time.monotonic() - started)
-    hint = figure_hint(answer.mode, paper_id, reading.rows)
+    hint = figure_hint(answer.mode, paper_id, reading.rows, figure_pages(scoped))
     if hint is not None:
         trace = msgspec.structs.replace(trace, figure_hint=hint.number)
     return ResearchAnswer(

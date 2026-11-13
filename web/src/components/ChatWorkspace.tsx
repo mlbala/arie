@@ -483,7 +483,7 @@ function ChatPanel({
                       {entry.figureHint.message !== entry.message && <>{entry.figureHint.message} </>}
                       {entry.figureHint.cropUrl && (
                         <a href={apiUrl(entry.figureHint.cropUrl)} target="_blank" rel="noreferrer">
-                          Open Figure {entry.figureHint.number} (p. {entry.figureHint.page})
+                          Open Figure {entry.figureHint.number}{entry.figureHint.page > 0 ? ` (p. ${entry.figureHint.page})` : ""}
                         </a>
                       )}
                     </p>
