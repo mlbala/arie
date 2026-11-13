@@ -422,12 +422,8 @@ dependencies = [
     { name = "psutil" },
     { name = "pydantic" },
     { name = "pymupdf" },
-    { name = "types-psutil" },
-]
-
-[package.optional-dependencies]
-ocr = [
     { name = "rapidocr-onnxruntime" },
+    { name = "types-psutil" },
 ]
 
 [package.metadata]
@@ -437,10 +433,9 @@ requires-dist = [
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "pydantic", specifier = ">=2.10.0" },
     { name = "pymupdf", specifier = ">=1.26,<2" },
-    { name = "rapidocr-onnxruntime", marker = "extra == 'ocr'", specifier = ">=1.4.4,<2" },
+    { name = "rapidocr-onnxruntime", specifier = ">=1.4.4,<2" },
     { name = "types-psutil", specifier = ">=7.0.0" },
 ]
-provides-extras = ["ocr"]
 
 [[package]]
 name = "arie-workspace"
@@ -479,9 +474,6 @@ dependencies = [
 docling = [
     { name = "arie-plugin-parser-docling" },
 ]
-ocr = [
-    { name = "arie-worker", extra = ["ocr"] },
-]
 
 [package.dev-dependencies]
 dev = [
@@ -513,7 +505,6 @@ requires-dist = [
     { name = "arie-plugin-vector-exact", editable = "plugins/vector-exact" },
     { name = "arie-sdk", editable = "sdk" },
     { name = "arie-worker", editable = "worker" },
-    { name = "arie-worker", extras = ["ocr"], marker = "extra == 'ocr'", editable = "worker" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "httpx", extras = ["http2"], specifier = ">=0.28.0" },
     { name = "msgspec", specifier = ">=0.19.0" },
@@ -524,7 +515,7 @@ requires-dist = [
     { name = "uvicorn", specifier = ">=0.30.0" },
     { name = "uvloop", marker = "sys_platform != 'win32'", specifier = ">=0.21.0" },
 ]
-provides-extras = ["docling", "ocr"]
+provides-extras = ["docling"]
 
 [package.metadata.requires-dev]
 dev = [

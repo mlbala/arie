@@ -156,6 +156,13 @@ class StorageMonitor:
                 "status": "unavailable",
                 "detail": f"Guard check failed: {exc or type(exc).__name__}",
             }
+        try:
+            figures = runtime.figure_capture_status()
+        except Exception as exc:
+            figures = {
+                "status": "unavailable",
+                "detail": f"Figure capture check failed: {exc or type(exc).__name__}",
+            }
         return {
             "checked_at": datetime.now(UTC).isoformat(),
             "database": db,
@@ -163,4 +170,5 @@ class StorageMonitor:
             "vector_store": vector,
             **runtime.models.status(),
             "guard": guard,
+            "figures": figures,
         }

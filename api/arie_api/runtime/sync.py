@@ -18,7 +18,14 @@ import yaml
 from arie_core.contracts import ParsedDoc
 from arie_core.pipeline import IngestionPipeline, PdfRejected
 from arie_core.pipeline.chunker import chunk_spans
-from arie_core.pipeline.figures import chunk_figure_tags, figure_records, ocr_chunks
+from arie_core.pipeline.figures import (
+    CAPTURE_KEY,
+    CAPTURE_STEPS,
+    capture_due,
+    chunk_figure_tags,
+    figure_records,
+    ocr_chunks,
+)
 from arie_core.plugin_api import (
     PagedSourcePlugin,
     ScrapedPaperInput,
@@ -37,10 +44,10 @@ from arie_api.runtime.base import (
     context,
     logger,
 )
-from arie_api.runtime.vectors import VectorIndex
+from arie_api.runtime.figures import FigureCapture
 
 
-class SyncJobs(VectorIndex):
+class SyncJobs(FigureCapture):
     """Sync and import jobs: discovery, download, extraction and live events."""
 
     async def update_job(self, job: Document, **changes: Any) -> None:
@@ -494,21 +501,10 @@ class SyncJobs(VectorIndex):
                     outline=json.loads(parsed.metadata.get("outline_json", "[]")),
                     figures=msgspec.to_builtins(parsed.figures),
                 )
-                try:
-                    await self.store_figure_crops(document)
-                except Exception:
-                    # Crops are a view of the figure (S24); the paper indexes without them.
-                    logger.warning(
-                        "Could not render figure crops for %s", paper.paper_id, exc_info=True
-                    )
-                if self.config.ingestion.figure_ocr:
-                    try:
-                        await self.store_figure_ocr(document)
-                    except Exception:
-                        # OCR text is extra evidence (S25); the paper indexes without it.
-                        logger.warning(
-                            "Could not OCR the figures of %s", paper.paper_id, exc_info=True
-                        )
+                # The parse captured the figures; crops and OCR text follow (S24, S25). A failed
+                # step is logged and left unrecorded, so the figure catch-up retries it (S26).
+                document[CAPTURE_KEY] = {"figures": CAPTURE_STEPS["figures"]}
+                await self.capture_paper(document, capture_due(document, self.ocr_ready()))
                 await self.save_paper(document)
             await self.update_job(
                 job, phase="indexing", message="Building page-scoped evidence chunks"
@@ -555,6 +551,7 @@ class SyncJobs(VectorIndex):
                 )
             self.vector_wakeup.set()
             self.guard_wakeup.set()
+            self.capture_wakeup.set()
             # The guide builder (``guides.py``) writes this paper's guide when no answer runs.
             self.guide_pending[paper.paper_id] = None
             self.guide_wakeup.set()

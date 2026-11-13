@@ -30,7 +30,7 @@ explain:
 # ingestion:
 #   pdf_check: {enabled: true, max_objects: 60000, max_pages: 600, max_filter_depth: 10}
 #   hidden_text: true
-#   figure_ocr: false   # OCR words in bitmap figures; needs `uv sync --extra ocr`
+#   figure_ocr: true    # OCR words in bitmap figures (default on); false turns it off
 #   figure_ocr_model: models/ocr/en_PP-OCRv4_rec_infer.onnx   # fetched by `make ocr-model`
 # Embedder defaults; min_score is the cosine floor calibrated for each model.
 embedding_providers:

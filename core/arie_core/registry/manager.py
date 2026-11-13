@@ -185,16 +185,17 @@ class IngestionConfig(BaseModel):
     """Checks on downloaded papers (ADR 0013).
 
     ``hidden_text`` redacts text a reader cannot see from a copy the parser reads (SPEC 6.2).
-    ``figure_ocr`` reads the words in bitmap figures with OCR in the PDF worker (S25); it needs
-    the ``ocr`` extra and is off by default. ``figure_ocr_model`` is the English recognition
-    model it loads, relative to the project root unless absolute; ``make ocr-model`` fetches
-    it once and the runtime checks its pinned SHA-256 (ADR 0018).
+    ``figure_ocr`` reads the words in bitmap figures with OCR in the PDF worker (S25); it is on
+    by default (S26, ADR 0019) and can be turned off. ``figure_ocr_model`` is the English
+    recognition model it loads, relative to the project root unless absolute; ``make setup``
+    or ``make ocr-model`` fetches it once and the runtime checks its pinned SHA-256 (ADR 0018).
+    A missing model only skips OCR, with a warning; ARIE still starts.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     pdf_check: PdfCheckConfig = Field(default_factory=PdfCheckConfig)
     hidden_text: bool = True
-    figure_ocr: bool = False
+    figure_ocr: bool = True
     figure_ocr_model: str = "models/ocr/en_PP-OCRv4_rec_infer.onnx"
 
 

@@ -581,6 +581,18 @@ export interface GuardHealth extends AnswerModelHealth {
   untrusted_chunks?: number;
 }
 
+/** Figures, crops and OCR text of every stored paper, kept current in the background (S26). */
+export interface FigureCaptureHealth {
+  status: string;
+  detail: string;
+  ocr?: "on" | "off" | "unavailable";
+  ocr_problem?: string | null;
+  papers_captured?: number;
+  papers_total?: number;
+  papers_pending?: number;
+  papers_no_pdf?: number;
+}
+
 export interface StorageHealth {
   checked_at: string;
   database: {
@@ -598,6 +610,7 @@ export interface StorageHealth {
   entailment?: AnswerModelHealth;
   reranker?: AnswerModelHealth;
   guard?: GuardHealth;
+  figures?: FigureCaptureHealth;
   active_jobs: SyncJob[];
 }
 

@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
-from arie_core.pipeline.figures import OCR_KEY, ocr_targets
+from arie_core.pipeline.figures import CAPTURE_KEY, OCR_KEY, ocr_targets
 from arie_core.pipeline.topics import TOPICS, topic_tags
 from arie_core.plugin_api import FileStorage
 from arie_core.registry.sync import SyncConfig
@@ -200,6 +200,9 @@ class LibraryStore(RuntimeBase):
         summary["chunk_count"] = len(paper.get("chunks", []))
         summary["page_count"] = len(paper.get("pages", []))
         summary["revision"] = paper.get("dedup_hash", "")
+        if CAPTURE_KEY in paper:
+            # The figure catch-up reads this without loading the paper (S26).
+            summary[CAPTURE_KEY] = paper[CAPTURE_KEY]
         await self.db.execute(
             context(paper["id"]),
             """INSERT INTO arie_library
@@ -294,6 +297,16 @@ class LibraryStore(RuntimeBase):
         path = (root / key).resolve()
         return path if path.is_relative_to(root) and path != root else None
 
+    async def stored_pdf(self, document: Document) -> Path | None:
+        """The paper's stored PDF inside the storage root, or None when it is not there."""
+        root = self.storage_root.resolve()
+
+        def find() -> Path | None:
+            pdf = Path(str(document.get("file_path") or "")).resolve()
+            return pdf if pdf.is_relative_to(root) and pdf.is_file() else None
+
+        return await asyncio.to_thread(find)
+
     async def store_figure_crops(self, document: Document) -> dict[str, int]:
         """Render the paper's figure crops in a PDF worker and store them (S24, SPEC 5).
 
@@ -304,12 +317,7 @@ class LibraryStore(RuntimeBase):
         figures = cast(list[Document], document.get("figures") or [])
         await self.remove_figure_crops(document)
         root = self.storage_root.resolve()
-
-        def stored_pdf() -> Path | None:
-            pdf = Path(str(document.get("file_path") or "")).resolve()
-            return pdf if pdf.is_relative_to(root) and pdf.is_file() else None
-
-        pdf = await asyncio.to_thread(stored_pdf) if figures else None
+        pdf = await self.stored_pdf(document) if figures else None
         if pdf is None:
             return {}
         boxes = [_crop_box(figure) for figure in figures]
@@ -333,13 +341,7 @@ class LibraryStore(RuntimeBase):
         for figure in figures:
             figure.pop(OCR_KEY, None)
         targets = ocr_targets(figures)
-        root = self.storage_root.resolve()
-
-        def stored_pdf() -> Path | None:
-            pdf = Path(str(document.get("file_path") or "")).resolve()
-            return pdf if pdf.is_relative_to(root) and pdf.is_file() else None
-
-        pdf = await asyncio.to_thread(stored_pdf) if targets else None
+        pdf = await self.stored_pdf(document) if targets else None
         if pdf is None:
             return {}
         started = time.monotonic()

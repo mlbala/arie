@@ -1,6 +1,7 @@
 """OCR text for bitmap figures (S25): words printed inside a figure the PDF draws as an image.
 
-Off by default (``ingestion.figure_ocr``). Each figure whose record has no drawn words
+On by default since S26 (``ingestion.figure_ocr``, ADR 0019). Each figure whose record has no
+drawn words
 (``Figure.text_spans`` is empty) is rendered from its box, clipped to the page, and read by
 RapidOCR, one line per detected text box in the engine's reading order. The render uses the
 crop settings (150 dpi, longest side at most 1,600 px), and text detection works on that
@@ -8,8 +9,8 @@ render without enlarging it. Recognition uses the pinned English
 model (``arie_worker.ocr_model``, ADR 0018), so the engine emits only ASCII; letters from
 other scripts are still stripped as a backstop. Lines under ``min_score`` or with no ASCII
 letter or digit are dropped, and the text is cut at ``max_chars``. This runs only in the PDF
-worker pool, under the parse time and memory limits (ADR 0005, 0013); the engine is an
-optional extra (``uv sync --extra ocr``) loaded once per worker process.
+worker pool, under the parse time and memory limits (ADR 0005, 0013); the engine is a worker
+dependency loaded once per worker process.
 
 The result is a transcription of the paper's image, not the paper's text layer (ADR 0015,
 S25 amendment): strict answers may show it only as a labelled excerpt, never as a claim.
@@ -62,7 +63,7 @@ class OcrTexts:
 
 
 def ocr_available() -> bool:
-    """Whether the optional OCR engine is installed; never imports it (API process)."""
+    """Whether the OCR engine is installed; never imports it (API process)."""
     return importlib.util.find_spec("rapidocr_onnxruntime") is not None
 
 

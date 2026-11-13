@@ -195,6 +195,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
             imports = group.create_task(supervised(service.run_imports)())
             vectors = group.create_task(supervised(service.run_vector_index)())
             guard = group.create_task(supervised(service.run_guard)())
+            figures = group.create_task(supervised(service.run_figure_capture)())
             guides = group.create_task(supervised(service.run_guides)())
             models = group.create_task(supervised(service.models.warm)())
             evaluations = group.create_task(supervised(service.evaluations.serve)())
@@ -206,7 +207,15 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
                 yield
             finally:
                 for task in (
-                    worker, imports, vectors, guard, guides, models, evaluations, lag_monitor
+                    worker,
+                    imports,
+                    vectors,
+                    guard,
+                    figures,
+                    guides,
+                    models,
+                    evaluations,
+                    lag_monitor,
                 ):
                     task.cancel()
                 service.close()
