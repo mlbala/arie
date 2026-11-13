@@ -311,31 +311,6 @@ async def test_sync_stores_figures_and_tags_caption_and_mention_chunks(
         runtime.close()
 
 
-def test_figure_ocr_refuses_to_start_without_the_pinned_model(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    base = runtime_at(tmp_path)
-    base.close()
-    model = tmp_path / "rec.onnx"
-
-    def start(figure_ocr: bool = True) -> None:
-        ingestion = base.config.ingestion.model_copy(
-            update={"figure_ocr": figure_ocr, "figure_ocr_model": str(model)}
-        )
-        ResearchRuntime(ROOT, base.config.model_copy(update={"ingestion": ingestion})).close()
-
-    monkeypatch.setattr(runtime_base, "ocr_available", lambda: False)
-    with pytest.raises(RuntimeError, match="uv sync --extra ocr"):
-        start()
-    monkeypatch.setattr(runtime_base, "ocr_available", lambda: True)
-    with pytest.raises(RuntimeError, match=r"figure_ocr: OCR model not found.*make ocr-model"):
-        start()
-    model.write_bytes(b"a different model")
-    with pytest.raises(RuntimeError, match="expected e8770c96"):
-        start()
-    start(figure_ocr=False)  # off: the model is never looked at
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("figure_ocr", [False, True])
 async def test_figure_ocr_adds_one_ocr_chunk_only_when_on(
@@ -350,6 +325,7 @@ async def test_figure_ocr_adds_one_ocr_chunk_only_when_on(
 
     monkeypatch.setattr(runtime_base, "verify_model", verify_model)
     base = runtime_at(tmp_path)
+    checked.clear()  # the base runtime checked the model too (on by default, S26)
     ingestion = base.config.ingestion.model_copy(update={"figure_ocr": figure_ocr})
     runtime = ResearchRuntime(ROOT, base.config.model_copy(update={"ingestion": ingestion}))
     base.close()

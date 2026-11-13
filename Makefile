@@ -1,4 +1,9 @@
-.PHONY: check lint boundaries types test test-unit test-api test-contracts web-check eval-llm eval-paper eval-qasper guides optimize-prompts pdf-report figures-backfill figure-crops figure-ocr ocr-model
+.PHONY: setup check lint boundaries types test test-unit test-api test-contracts web-check eval-llm eval-paper eval-qasper guides optimize-prompts pdf-report figures-backfill figure-crops figure-ocr ocr-model
+
+# First install: Python packages, then the pinned OCR model that figure capture uses (S26).
+setup:
+	uv sync
+	$(MAKE) ocr-model
 
 # Everything CI runs for Python: lint, import boundaries, strict types, all test suites.
 check: lint boundaries types test
@@ -74,7 +79,7 @@ figures-backfill:
 figure-crops:
 	uv run python -m arie_api.backfill_figures --crops
 
-# make figure-ocr: OCR text for bitmap figures of stored papers (needs ingestion.figure_ocr: true)
+# make figure-ocr: OCR text for bitmap figures of stored papers (the background catch-up does this)
 figure-ocr:
 	uv run python -m arie_api.backfill_figures --ocr
 

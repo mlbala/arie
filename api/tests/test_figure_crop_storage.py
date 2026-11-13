@@ -12,6 +12,7 @@ import httpx
 import pytest
 from arie_api.routes import create_app
 from arie_api.runtime import Document, ResearchRuntime
+from arie_core.pipeline.figures import CAPTURE_KEY, CAPTURE_STEPS
 from arie_core.registry.manager import ArieConfig
 from fastapi.testclient import TestClient
 
@@ -145,6 +146,8 @@ def test_a_strict_fallback_on_a_figure_caption_names_the_figure_and_links_its_cr
             )
         ]
         await runtime.store_figure_crops(paper)
+        # Captured already (S26), so the background figure catch-up leaves it alone.
+        paper[CAPTURE_KEY] = dict(CAPTURE_STEPS)
         await runtime.save_paper(paper)
 
     async def idle() -> None:

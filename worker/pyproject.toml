@@ -8,12 +8,11 @@ dependencies = [
     "psutil>=7.0.0",
     "pymupdf>=1.26,<2",
     "pydantic>=2.10.0",
+    # OCR for figures drawn as bitmaps (``ingestion.figure_ocr``, on by default since S26);
+    # the English recognition model is fetched by ``make ocr-model`` (ADR 0018).
+    "rapidocr-onnxruntime>=1.4.4,<2",
     "types-psutil>=7.0.0",
 ]
-
-[project.optional-dependencies]
-# OCR for figures drawn as bitmaps (``ingestion.figure_ocr``, S25); models ship in the wheel.
-ocr = ["rapidocr-onnxruntime>=1.4.4,<2"]
 
 [build-system]
 requires = ["hatchling"]
