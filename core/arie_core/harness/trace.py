@@ -30,7 +30,8 @@ class AnswerTrace(msgspec.Struct, frozen=True, kw_only=True):
     ``tokens`` counts what the provider reported over every model call of the answer.
     ``prompt_version`` is empty when no prompt was sent. ``rerank_skipped_busy`` is true when
     reranking was skipped because the answer worker still ran a call its caller had abandoned
-    (SPEC section 13.4).
+    (SPEC section 13.4). ``figure_hint`` is the figure number a strict abstention or excerpt
+    fallback points the reader to (S24), or empty.
     """
 
     seconds: StageSeconds = StageSeconds()
@@ -40,6 +41,7 @@ class AnswerTrace(msgspec.Struct, frozen=True, kw_only=True):
     mode: str = ""
     fallback_reason: str = ""
     rerank_skipped_busy: bool = False
+    figure_hint: str = ""
 
 
 __all__ = ["STAGES", "AnswerTrace", "StageSeconds"]

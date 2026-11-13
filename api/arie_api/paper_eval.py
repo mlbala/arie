@@ -487,6 +487,7 @@ class PaperEvaluations:
             seconds=time.monotonic() - started,
             reranked=run.reading.reranked,
             requested_mode=mode,
+            hint=run.figure_hint.message if run.figure_hint is not None else "",
         )
 
     async def _explain(
