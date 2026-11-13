@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 
@@ -14,6 +15,7 @@ from arie_core.plugin_api import ParsedDoc, Parser
 from arie_core.registry.manager import PdfCheckConfig, RegistryManager
 from pydantic import BaseModel, ConfigDict, Field
 
+from arie_worker.figure_crops import Box, CropLimits, Crops, render_crops
 from arie_worker.hidden_text import strip_hidden
 from arie_worker.pdf_check import check_pdf
 from arie_worker.pool import (
@@ -142,6 +144,14 @@ class ExtractionPool(SupervisedPool):
             file_path,
             self.pdf_check,
             self.hidden_text,
+        )
+
+    async def render_crops(
+        self, file_path: str, figures: Sequence[tuple[int, Box]], limits: CropLimits | None = None
+    ) -> Crops:
+        """Render figure crops in a PDF worker (S24); never in the API process."""
+        return await self.submit(
+            self.timeout_sec, render_crops, file_path, list(figures), limits or CropLimits()
         )
 
 

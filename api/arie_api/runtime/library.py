@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import cast
 
 from arie_core.pipeline.topics import TOPICS, topic_tags
+from arie_core.plugin_api import FileStorage
 from arie_core.registry.sync import SyncConfig
 from arie_core.registry.sync import months_ago as months_ago
 from arie_core.search import score_paper
@@ -22,6 +23,15 @@ from arie_api.runtime.base import (
     context,
     logger,
 )
+
+
+def _crop_box(figure: Document) -> tuple[int, tuple[float, float, float, float]]:
+    """A stored figure's ``(page, box)``; a malformed one gets page 0, which the worker skips."""
+    box = figure.get("box")
+    values = [float(v) for v in cast(list[float], box)] if isinstance(box, list | tuple) else []
+    if len(values) != 4:
+        return 0, (0.0, 0.0, 0.0, 0.0)
+    return int(figure.get("page") or 0), (values[0], values[1], values[2], values[3])
 
 
 class LibraryStore(RuntimeBase):
@@ -234,6 +244,8 @@ class LibraryStore(RuntimeBase):
                 return target
 
             tombstone = await asyncio.to_thread(stage)
+            # Crop files go once the database write succeeds; a failed write keeps them.
+            crops = self._take_crops(paper)
             try:
                 if pdf_only:
                     paper.update(pdf_deleted=True)
@@ -252,6 +264,7 @@ class LibraryStore(RuntimeBase):
                 raise
             if tombstone is not None:
                 await asyncio.to_thread(tombstone.unlink, missing_ok=True)
+            await self._unlink_crops(crops)
             if not pdf_only:
                 await self._forget_vectors(paper_id)
                 await self.db.execute(
@@ -270,6 +283,65 @@ class LibraryStore(RuntimeBase):
                     (paper_id,),
                 )
                 await self.evaluations.forget(paper_id)
+
+    def crop_path(self, key: object) -> Path | None:
+        """A stored crop key as a path inside the storage root, or None (S24)."""
+        if not isinstance(key, str) or not key:
+            return None
+        root = self.storage_root.resolve()
+        path = (root / key).resolve()
+        return path if path.is_relative_to(root) and path != root else None
+
+    async def store_figure_crops(self, document: Document) -> dict[str, int]:
+        """Render the paper's figure crops in a PDF worker and store them (S24, SPEC 5).
+
+        Crops go through the files plugin (atomic writes, I4) to ``<pdf>.figures/<i>.png``
+        next to the stored PDF; each figure record gains ``crop``, its storage key. Earlier
+        crops are removed first. The caller saves the document. Returns the counts.
+        """
+        figures = cast(list[Document], document.get("figures") or [])
+        await self.remove_figure_crops(document)
+        root = self.storage_root.resolve()
+
+        def stored_pdf() -> Path | None:
+            pdf = Path(str(document.get("file_path") or "")).resolve()
+            return pdf if pdf.is_relative_to(root) and pdf.is_file() else None
+
+        pdf = await asyncio.to_thread(stored_pdf) if figures else None
+        if pdf is None:
+            return {}
+        boxes = [_crop_box(figure) for figure in figures]
+        crops = await self.pool.render_crops(str(pdf), boxes)
+        folder = pdf.relative_to(root).with_suffix(".figures").as_posix()
+        storage = cast(FileStorage, self.file_storage)
+        for index, png in sorted(crops.images.items()):
+            key = f"{folder}/{index}.png"
+            await storage.write(context(str(document.get("id", "figures"))), key, png)
+            figures[index]["crop"] = key
+        return {"crops": len(crops.images), **crops.skipped}
+
+    async def remove_figure_crops(self, document: Document) -> None:
+        """Delete the paper's stored crops and drop their keys from its figure records."""
+        await self._unlink_crops(self._take_crops(document))
+
+    def _take_crops(self, document: Document) -> list[Path]:
+        """Drop the crop keys from the figure records; return the files they named."""
+        paths: list[Path] = []
+        for figure in cast(list[Document], document.get("figures") or []):
+            path = self.crop_path(figure.pop("crop", None))
+            if path is not None:
+                paths.append(path)
+        return paths
+
+    async def _unlink_crops(self, paths: list[Path]) -> None:
+        def remove() -> None:
+            for path in paths:
+                path.unlink(missing_ok=True)
+            for folder in {path.parent for path in paths}:
+                if folder.suffix == ".figures" and folder.is_dir() and not any(folder.iterdir()):
+                    folder.rmdir()
+
+        await asyncio.to_thread(remove)
 
     async def _forget_vectors(self, paper_id: str) -> None:
         """Best-effort cleanup after a paper is deleted; orphans never match a live paper."""

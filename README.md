@@ -787,9 +787,10 @@ missed key facts, flagged citations, the judge's reasons and your thumbs-down re
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /v1/papers`, `GET /v1/papers/{id}` | Library and one paper |
+| `GET /v1/papers`, `GET /v1/papers/{id}` | Library and one paper (with its `figures`: number, page, caption, `has_crop`) |
 | `POST /v1/papers/{id}/questions` | Ask a question; answers stream as server-sent events (`progress`, `answer`, `claim`, `abstention`, `done`, `error`). Body `mode` is `strict` (default) or `explain`, which streams `delta` text, then `citations`, `checks` (a verdict per sentence) and `judge` (the model's verdict per cited sentence, unless `judge.chat` is `off`) instead of `claim`s |
 | `GET /v1/papers/{id}/pdf`, `.../pages/{n}`, `.../chat` | Original PDF, extracted page, chat history |
+| `GET /v1/papers/{id}/figures/{number}.png` | The paper's own figure crop, shown in the evidence drawer; 404 if the figure has none |
 | `DELETE /v1/chat` | Delete the saved chat of every paper (`{"deleted": n}`); papers, guides and ratings are kept |
 | `GET /v1/papers/{id}/guide` | The paper's cited reading guide (`ready`, `pending` or `missing`), shown as the chat's opening message |
 | `PUT /v1/papers/{id}/chat/{turn_id}/feedback` | Rate a saved answer `up`, `down` or `null`, with an optional note and, for `down`, `reasons` |
@@ -814,6 +815,7 @@ missed key facts, flagged citations, the judge's reasons and your thumbs-down re
 | `make eval-qasper N=<papers> [KIND=figure\|table]` | Import the first N Qasper dev papers (with `KIND`, only papers with a figure or table question) and score strict answers to their questions |
 | `make optimize-prompts PROMPT=explain MAX_CALLS=200` | Propose better explain writer rules offline under a hard cap on model calls, and write them as a candidate prompt file (see [Improve the explain prompt offline](#improve-the-explain-prompt-offline)) |
 | `make figures-backfill` | Add figure records to papers indexed before they existed: re-parse each stored PDF and keep only its figures, with pages, chunks and vectors unchanged (`ARGS="--all"` also refreshes papers that already have figures) |
+| `make figure-crops` | Render the figure crops of stored papers that have figures, in the PDF worker, without parsing |
 | `make pdf-report` | Run the structural PDF check over every stored PDF, each in its own process, and print counts per rule and the largest object, page and filter-depth values; changes nothing |
 | `make guides` | Build missing paper guides one at a time (`ARGS="<id> ..."` rebuilds those papers); the server builds them only for papers it indexes |
 

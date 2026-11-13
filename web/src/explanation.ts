@@ -1,5 +1,6 @@
 /** Explain-mode answers: parse their events and render the streamed Markdown safely (SPEC 11). */
 import MarkdownIt from "markdown-it";
+import { figureNumbers } from "./api/client";
 
 /** One sentence verdict; `start` and `end` index the answer text, markers included. */
 export interface SentenceStatus {
@@ -18,6 +19,7 @@ export interface ExplainCitation {
   charStart: number;
   charEnd: number;
   checked: boolean;
+  figures: string[];
 }
 
 // No raw HTML, and nothing that loads or links out: a paper could steer the model into
@@ -155,10 +157,13 @@ export function normalizeCitations(value: unknown): ExplainCitation[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((item: unknown) => {
     if (typeof item !== "object" || item === null) return [];
-    const { marker, chunk_id, page, char_start, char_end, checked } = item as Record<string, unknown>;
+    const { marker, chunk_id, page, char_start, char_end, checked, figures } = item as Record<string, unknown>;
     if (typeof marker !== "number" || typeof chunk_id !== "string" || typeof page !== "number"
       || typeof char_start !== "number" || typeof char_end !== "number" || !Number.isInteger(page)
       || page < 1 || char_start < 0 || char_end <= char_start) return [];
-    return [{ marker, chunkId: chunk_id, page, charStart: char_start, charEnd: char_end, checked: checked === true }];
+    return [{
+      marker, chunkId: chunk_id, page, charStart: char_start, charEnd: char_end, checked: checked === true,
+      figures: figureNumbers(figures),
+    }];
   });
 }

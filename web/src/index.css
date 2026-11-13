@@ -1603,6 +1603,16 @@ button:disabled {
 .answer-error {
   color: var(--red);
 }
+.figure-hint {
+  margin-left: 35px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+.figure-hint a {
+  color: inherit;
+  text-decoration: underline;
+}
 .excerpt-mode {
   margin-left: 35px;
   color: var(--muted);
@@ -1864,6 +1874,34 @@ button:disabled {
 .citation-selection span {
   font-size: 9px;
   color: var(--muted);
+}
+.evidence-figure {
+  margin: 0 26px 20px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  overflow: hidden;
+}
+.evidence-figure button {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: #fff;
+  cursor: zoom-in;
+}
+.evidence-figure img {
+  display: block;
+  max-width: 100%;
+  max-height: 260px;
+  margin: 0 auto;
+  object-fit: contain;
+}
+.evidence-figure figcaption {
+  padding: 8px 12px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+  background: var(--canvas);
 }
 .evidence-tabs {
   display: flex;
