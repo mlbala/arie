@@ -182,14 +182,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
                 yield
             finally:
                 for task in (
-                    worker,
-                    imports,
-                    vectors,
-                    guard,
-                    guides,
-                    models,
-                    evaluations,
-                    lag_monitor,
+                    worker, imports, vectors, guard, guides, models, evaluations, lag_monitor
                 ):
                     task.cancel()
                 service.close()
