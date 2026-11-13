@@ -18,7 +18,7 @@ import yaml
 from arie_core.contracts import ParsedDoc
 from arie_core.pipeline import IngestionPipeline, PdfRejected
 from arie_core.pipeline.chunker import chunk_spans
-from arie_core.pipeline.figures import chunk_figure_tags, figure_records
+from arie_core.pipeline.figures import chunk_figure_tags, figure_records, ocr_chunks
 from arie_core.plugin_api import (
     PagedSourcePlugin,
     ScrapedPaperInput,
@@ -501,6 +501,14 @@ class SyncJobs(VectorIndex):
                     logger.warning(
                         "Could not render figure crops for %s", paper.paper_id, exc_info=True
                     )
+                if self.config.ingestion.figure_ocr:
+                    try:
+                        await self.store_figure_ocr(document)
+                    except Exception:
+                        # OCR text is extra evidence (S25); the paper indexes without it.
+                        logger.warning(
+                            "Could not OCR the figures of %s", paper.paper_id, exc_info=True
+                        )
                 await self.save_paper(document)
             await self.update_job(
                 job, phase="indexing", message="Building page-scoped evidence chunks"
@@ -525,6 +533,11 @@ class SyncJobs(VectorIndex):
                     )
             if not chunks:
                 raise ValueError("PDF extraction produced no searchable evidence")
+            if self.config.ingestion.figure_ocr:
+                # After the page chunks, so their ids are unchanged; off stores nothing new.
+                chunks.extend(
+                    ocr_chunks(paper.paper_id, document.get("figures") or [], len(chunks))
+                )
             document.update(
                 status="INDEXED",
                 chunks=chunks,

@@ -120,7 +120,11 @@ export function EvidenceDrawer({ paperId, citation, onClose }: Props) {
           <blockquote className="citation-selection">
             <Quote size={16} />
             <p>{shown(citation.quote)}</p>
-            <span>Verified excerpt · page {citation.page_start}</span>
+            <span>
+              {citation.ocr
+                ? `OCR text from Figure ${citation.figures?.[0] ?? "?"} · page ${citation.page_start} · check it against the figure`
+                : `Verified excerpt · page ${citation.page_start}`}
+            </span>
           </blockquote>
         )}
         {crops.map((figure) => (

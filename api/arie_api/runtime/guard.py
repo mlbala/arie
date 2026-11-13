@@ -69,9 +69,12 @@ class PaperGuard(LibraryStore):
         """The paper's chunks, re-filtered by its id (I1), with ``untrusted`` from its scores.
 
         A chunk dict that already carries a score (the evaluation's planted chunk) keeps it.
+        Stored OCR chunks (S25) are left out while ``ingestion.figure_ocr`` is off.
         """
         paper_id = str(paper["id"])
         rows = cast(list[Document], paper.get("chunks", []))
+        if not self.config.ingestion.figure_ocr:
+            rows = [row for row in rows if not row.get("ocr")]
         scores: dict[str, float] = {}
         if self.guard_model is not None:
             stored = await self._stored_row(context(paper_id), paper_id)

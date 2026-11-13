@@ -98,12 +98,18 @@ def pack_chunks(paper_id: str, chunks: Sequence[EvidenceChunk]) -> list[tuple[in
     are chunks that are only a heading. Chunks that read as instructions to the assistant
     (``is_untrusted``: the regex, or a guard score over its threshold) are left out too, as on
     the strict path. Everything else stays, equations and captions included: the pack is the
-    whole paper, not a selection of prose.
+    whole paper, not a selection of prose. OCR text of bitmap figures (S25) is not the paper's
+    text layer, so it stays out.
     """
     numbered: list[tuple[int, EvidenceChunk]] = []
     for row in chunks:
         number = chunk_number(paper_id, row.chunk_id)
-        if row.paper_id == paper_id and number is not None and not is_untrusted(row):
+        if (
+            row.paper_id == paper_id
+            and number is not None
+            and not is_untrusted(row)
+            and not row.ocr
+        ):
             numbered.append((number, row))
     # Page order, not input order, so the bytes don't depend on how the rows were loaded.
     numbered.sort(key=lambda item: (item[1].page_start, item[1].char_start, item[0]))

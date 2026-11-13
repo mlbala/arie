@@ -68,10 +68,10 @@ class _Document(Protocol):
     def close(self) -> None: ...
 
 
-_open_pdf = cast(Callable[[str], _Document], pymupdf.open)
+open_pdf = cast(Callable[[str], _Document], pymupdf.open)
 
 
-def _clip(page: _Page, box: Box) -> Box | None:
+def clip_box(page: _Page, box: Box) -> Box | None:
     """``box`` clipped to the page, or None when less than a point is left on either side."""
     edge = page.rect
     x0, y0 = max(box[0], edge.x0), max(box[1], edge.y0)
@@ -87,7 +87,7 @@ def render_crops(
     limits = limits or CropLimits()
     images: dict[int, bytes] = {}
     skipped: Counter[str] = Counter()
-    doc = _open_pdf(file_path)
+    doc = open_pdf(file_path)
     try:
         for index, (page_number, box) in enumerate(figures):
             if len(images) >= limits.max_crops:
@@ -97,7 +97,7 @@ def render_crops(
                 skipped["bad_box"] += 1
                 continue
             page = doc[page_number - 1]
-            clip = _clip(page, box)
+            clip = clip_box(page, box)
             if clip is None:
                 skipped["bad_box"] += 1
                 continue
@@ -122,4 +122,4 @@ def render_crops(
     return Crops(images, dict(skipped))
 
 
-__all__ = ["CropLimits", "Crops", "render_crops"]
+__all__ = ["Box", "CropLimits", "Crops", "clip_box", "open_pdf", "render_crops"]
