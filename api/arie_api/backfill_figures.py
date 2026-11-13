@@ -63,7 +63,9 @@ async def backfill(refresh: bool = False, crops_only: bool = False) -> Counter[s
             counts["papers"] += 1
             counts["papers_with_figures"] += bool(parsed.figures)
             counts["figures"] += len(parsed.figures)
-            counts["boxes_uncaptioned"] += int(parsed.metadata.get("figure_boxes_uncaptioned", "0"))
+            counts["boxes_uncaptioned"] += int(
+                parsed.metadata.get("figure_boxes_uncaptioned", "0")
+            )
             counts["captions_not_in_stored_text"] += missing
             counts["caption_chunks"] += sum(
                 "figure" in chunk and not chunk.get("figure_text")

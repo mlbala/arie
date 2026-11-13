@@ -923,7 +923,9 @@ def test_judge_chat_off_makes_no_judge_call_and_sends_no_judge_events(
     assert "judge" not in [event["event"] for event in turn["events"]]
 
 
-def test_an_answer_that_cites_nothing_is_not_judged(client: _APIClient, llm: list[object]) -> None:
+def test_an_answer_that_cites_nothing_is_not_judged(
+    client: _APIClient, llm: list[object]
+) -> None:
     model = _StreamingLLM(["Cedar is a model for verification."], JUDGE)
     llm.append(model)
     text = _explain(client).text
@@ -958,7 +960,9 @@ def test_strict_stays_the_default_and_the_config_and_request_choose_the_mode(
     )
     # A paper that is not indexed is refused in either mode.
     for mode in ("strict", "explain"):
-        waiting = client.post("/v1/papers/paper-2/questions", json={"question": "Q", "mode": mode})
+        waiting = client.post(
+            "/v1/papers/paper-2/questions", json={"question": "Q", "mode": mode}
+        )
         assert waiting.status_code == 409
 
 
