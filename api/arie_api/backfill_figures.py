@@ -6,7 +6,9 @@ stored page text and chunks gain ``figure``/``mentions`` tags. Pages, chunk text
 offsets are unchanged, so vectors, guard scores and paper packs stay valid. ``--all``
 also refreshes papers that already have figures, and adds S23's figure-text spans and tags.
 Each parsed paper also gets its figure crops (S24). ``--crops`` (``make figure-crops``) only
-renders crops for papers that already have figures, without parsing them again.
+renders crops for papers that already have figures, without parsing them again. With
+``ingestion.figure_ocr`` on, each parsed paper's bitmap figures are read by OCR (S25), and
+``--ocr`` (``make figure-ocr``) does only that for papers that already have figures.
 """
 
 from __future__ import annotations
@@ -14,11 +16,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 from collections import Counter
 from pathlib import Path
 from typing import cast
 
-from arie_core.pipeline.figures import attach_figures
+from arie_core.pipeline.figures import attach_figures, ocr_chunks
 
 from arie_api.runtime import ResearchRuntime
 from arie_api.runtime.base import Document, context
@@ -26,17 +29,44 @@ from arie_api.runtime.base import Document, context
 ROOT = Path(__file__).resolve().parents[2]
 
 
-async def backfill(refresh: bool = False, crops_only: bool = False) -> Counter[str]:
+async def refresh_ocr(runtime: ResearchRuntime, paper: Document) -> Counter[str]:
+    """OCR the paper's bitmap figures again and replace its OCR chunks (S25)."""
+    chunks = [c for c in cast(list[Document], paper.get("chunks") or []) if not c.get("ocr")]
+    counts: Counter[str] = Counter(await runtime.store_figure_ocr(paper))
+    added = ocr_chunks(str(paper["id"]), paper.get("figures") or [], len(chunks))
+    paper["chunks"] = [*chunks, *added]
+    counts["ocr_chunks"] += len(added)
+    print(
+        f"{paper['id']}: OCR {counts['ocr_texts']} of {counts['ocr_targets']} figures, "
+        f"{counts['ocr_ms']} ms",
+        file=sys.stderr,
+        flush=True,
+    )
+    return counts
+
+
+async def backfill(
+    refresh: bool = False, crops_only: bool = False, ocr_only: bool = False
+) -> Counter[str]:
     runtime = ResearchRuntime(ROOT)
     counts: Counter[str] = Counter()
     try:
         await runtime.initialize()
+        ocr = runtime.config.ingestion.figure_ocr
+        if ocr_only and not ocr:
+            raise SystemExit("--ocr needs ingestion.figure_ocr: true in arie.yaml")
         rows = await runtime.db.fetch(
             context("figures"),
             "SELECT paper_id FROM arie_library WHERE status = 'INDEXED' ORDER BY paper_id",
         )
         for row in rows:
             paper = await runtime.get_paper(str(row["paper_id"]))
+            if ocr_only:
+                if paper is not None and paper.get("figures"):
+                    counts.update(await refresh_ocr(runtime, paper))
+                    await runtime.save_paper(paper)
+                    counts["papers"] += 1
+                continue
             if crops_only:
                 if paper is not None and paper.get("figures"):
                     counts.update(await runtime.store_figure_crops(paper))
@@ -59,6 +89,8 @@ async def backfill(refresh: bool = False, crops_only: bool = False) -> Counter[s
             await runtime.remove_figure_crops(paper)
             missing = attach_figures(cast(dict[str, object], paper), parsed.figures)
             counts.update(await runtime.store_figure_crops(paper))
+            if ocr:
+                counts.update(await refresh_ocr(runtime, paper))
             await runtime.save_paper(paper)
             counts["papers"] += 1
             counts["papers_with_figures"] += bool(parsed.figures)
@@ -93,8 +125,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Add figure records to indexed papers.")
     parser.add_argument("--all", action="store_true", help="also refresh papers with figures")
     parser.add_argument("--crops", action="store_true", help="only render figure crops")
+    parser.add_argument("--ocr", action="store_true", help="only OCR bitmap figures (S25)")
     args = parser.parse_args()
-    print(json.dumps(dict(sorted(asyncio.run(backfill(args.all, args.crops)).items()))))
+    counts = asyncio.run(backfill(args.all, args.crops, args.ocr))
+    print(json.dumps(dict(sorted(counts.items()))))
 
 
 if __name__ == "__main__":

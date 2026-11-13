@@ -6,11 +6,13 @@ import asyncio
 import heapq
 import json
 import os
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
+from arie_core.pipeline.figures import OCR_KEY, ocr_targets
 from arie_core.pipeline.topics import TOPICS, topic_tags
 from arie_core.plugin_api import FileStorage
 from arie_core.registry.sync import SyncConfig
@@ -319,6 +321,37 @@ class LibraryStore(RuntimeBase):
             await storage.write(context(str(document.get("id", "figures"))), key, png)
             figures[index]["crop"] = key
         return {"crops": len(crops.images), **crops.skipped}
+
+    async def store_figure_ocr(self, document: Document) -> dict[str, int]:
+        """OCR the paper's bitmap figures in a PDF worker and keep the text (S25, SPEC 6.2).
+
+        Only figures with no drawn words (``ocr_targets``) are read. Each one with text gains
+        ``ocr_text``; earlier OCR text is dropped first. The caller saves the document and builds
+        the chunks (``ocr_chunks``). Returns the counts and the time taken in milliseconds.
+        """
+        figures = cast(list[Document], document.get("figures") or [])
+        for figure in figures:
+            figure.pop(OCR_KEY, None)
+        targets = ocr_targets(figures)
+        root = self.storage_root.resolve()
+
+        def stored_pdf() -> Path | None:
+            pdf = Path(str(document.get("file_path") or "")).resolve()
+            return pdf if pdf.is_relative_to(root) and pdf.is_file() else None
+
+        pdf = await asyncio.to_thread(stored_pdf) if targets else None
+        if pdf is None:
+            return {}
+        started = time.monotonic()
+        result = await self.pool.ocr_figures(str(pdf), [_crop_box(figures[i]) for i in targets])
+        for position, text in result.texts.items():
+            figures[targets[position]][OCR_KEY] = text
+        return {
+            "ocr_targets": len(targets),
+            "ocr_texts": len(result.texts),
+            "ocr_ms": round((time.monotonic() - started) * 1000),
+            **{f"ocr_{reason}": n for reason, n in result.skipped.items()},
+        }
 
     async def remove_figure_crops(self, document: Document) -> None:
         """Delete the paper's stored crops and drop their keys from its figure records."""

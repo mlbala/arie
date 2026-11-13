@@ -828,6 +828,7 @@ function normalizeCitation(value: unknown): CitationRange | undefined {
     page_start, char_start, char_end,
     ...(chunkId ? { chunk_id: chunkId } : {}),
     ...(figures.length ? { figures } : {}),
+    ...("ocr" in value && value.ocr === true ? { ocr: true } : {}),
   };
 }
 

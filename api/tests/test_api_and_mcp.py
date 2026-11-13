@@ -16,11 +16,12 @@ import pytest
 from arie_api import eval_paper
 from arie_api.export_openapi import export_openapi
 from arie_api.mcp_server import create_scope_handle, verify_scope_handle
-from arie_api.routes import Reason, create_app
+from arie_api.routes import Reason, create_app, strict_citation
 from arie_api.runtime import ResearchRuntime
 from arie_api.runtime.base import RuntimeBase
 from arie_core.contracts import LLMDelta, LLMRequest, LLMResponse, TokenUsage
 from arie_core.harness.feedback import REASONS
+from arie_core.harness.reader import EvidenceChunk, Excerpt
 from arie_core.harness.trace import STAGES
 from arie_core.plugin_api import Ctx
 from arie_core.registry.manager import AnswerConfig, ArieConfig, EvalConfig, JudgeConfig
@@ -304,6 +305,24 @@ def test_question_stream_emits_verified_claims_only(client: _APIClient) -> None:
         assert citation["figures"] == []
     assert "event: done" in text
     assert "event: figure_hint" not in text
+
+
+def test_an_ocr_excerpt_is_cited_as_ocr_text_from_its_figure() -> None:
+    text = "ACCURACY\n92.5"
+    ocr = EvidenceChunk("paper-1", "paper-1:4", text, 3, 0, len(text), figure="2", ocr=True)
+    excerpt = Excerpt(text, text, 3, 0, len(text), "paper-1:4")
+    assert strict_citation(excerpt, ocr) == {
+        "page_start": 3,
+        "char_start": 0,
+        "char_end": len(text),
+        "chunk_id": "paper-1:4",
+        "label": "OCR text from Figure 2, p. 3",
+        "figures": ["2"],  # the drawer always shows the figure's crop next to the text
+        "ocr": True,
+    }
+    page = EvidenceChunk("paper-1", "paper-1:0", text, 3, 0, len(text))
+    assert strict_citation(excerpt, page)["label"] == "p. 3"
+    assert "ocr" not in strict_citation(excerpt, page)
 
 
 def test_override_preserves_protected_fields(client: _APIClient) -> None:

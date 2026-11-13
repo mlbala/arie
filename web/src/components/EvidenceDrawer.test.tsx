@@ -60,7 +60,7 @@ const FIGURE_PAPER = {
   ],
 };
 
-function renderFigureDrawer(citation: { page_start: number; char_start: number; char_end: number; figures?: string[] }) {
+function renderFigureDrawer(citation: { page_start: number; char_start: number; char_end: number; figures?: string[]; quote?: string; ocr?: boolean }) {
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(
     String(input).includes("/pages/") ? { text: "Figure 2: Accuracy by model size. More text.", page_number: 3 } : FIGURE_PAPER,
   ), { headers: { "content-type": "application/json" } })));
@@ -79,6 +79,16 @@ it("shows the paper's own figure crop with its caption for a figure chunk and op
   fireEvent.click(screen.getByRole("button", { name: "Open Figure 2 on page 3 of the PDF" }));
   expect(screen.getByRole("button", { name: "Original PDF" })).toHaveAttribute("aria-pressed", "true");
   expect(screen.getByTitle("Original PDF, page 3")).toBeInTheDocument();
+  client.clear();
+});
+
+it("labels OCR text as read from the figure, shows its crop and highlights nothing on the page", async () => {
+  const { client } = renderFigureDrawer({ page_start: 3, char_start: 0, char_end: 13, quote: "ACCURACY 92.5", figures: ["2"], ocr: true });
+  expect(await screen.findByRole("img", { name: "Figure 2 as drawn in the paper" })).toBeInTheDocument();
+  expect(screen.getByText("OCR text from Figure 2 · page 3 · check it against the figure")).toBeInTheDocument();
+  expect(screen.queryByText(/Verified excerpt/)).not.toBeInTheDocument();
+  await screen.findByText(/Figure 2: Accuracy by model size\. More text\./);
+  expect(document.querySelector("mark")).toBeNull();
   client.clear();
 });
 

@@ -79,6 +79,59 @@ def chunk_figures(figure: object, mentions: object) -> list[str]:
     return numbers
 
 
+OCR_KEY = "ocr_text"
+
+
+def ocr_targets(rows: Sequence[Mapping[str, object]]) -> list[int]:
+    """Positions of the stored figures OCR may read (S25): those with no drawn words."""
+    return [
+        index
+        for index, record in enumerate(figure_records_by_index(rows))
+        if record is not None and not record.text_spans
+    ]
+
+
+def ocr_chunks(
+    paper_id: str, rows: Sequence[Mapping[str, object]], first: int
+) -> list[dict[str, object]]:
+    """One chunk per stored figure with OCR text (``ocr_text``, S25), numbered from ``first``.
+
+    The text is a transcription of the figure's image, not the paper's text layer, so its
+    offsets address the chunk's own text (0 to its length) on the figure's page. The chunk is
+    tagged ``figure``, ``figure_text`` (never a caption) and ``ocr``.
+    """
+    chunks: list[dict[str, object]] = []
+    for row, record in zip(rows, figure_records_by_index(rows), strict=True):
+        text = row.get(OCR_KEY)
+        if record is None or not isinstance(text, str) or not text.strip():
+            continue
+        chunks.append(
+            {
+                "paper_id": paper_id,
+                "chunk_id": f"{paper_id}:{first + len(chunks)}",
+                "page_start": record.page,
+                "char_start": 0,
+                "char_end": len(text),
+                "text": text,
+                "figure": record.number,
+                "figure_text": True,
+                "ocr": True,
+            }
+        )
+    return chunks
+
+
+def figure_records_by_index(rows: Sequence[Mapping[str, object]]) -> list[Figure | None]:
+    """Stored figure dicts as ``Figure``s in place; a malformed row is None."""
+    records: list[Figure | None] = []
+    for row in rows:
+        try:
+            records.append(msgspec.convert(row, Figure))
+        except msgspec.ValidationError:
+            records.append(None)
+    return records
+
+
 def figure_records(rows: Sequence[Mapping[str, object]]) -> list[Figure]:
     """Stored figure dicts (``paper.figures``) back as ``Figure``s; malformed rows are skipped."""
     figures: list[Figure] = []
@@ -97,6 +150,7 @@ def attach_figures(document: dict[str, object], parsed: Sequence[Figure]) -> int
     (-1 when a caption is not there). A figure-text span is kept only when it is exactly a
     picture-text block of the stored page. Chunks gain ``figure``/``figure_text``/``mentions``
     tags; their text, ids and offsets stay, so vectors, guard scores and packs remain valid.
+    OCR chunks are dropped, since they belong to the old records.
     Returns the number of captions not found in the stored text.
     """
     pages = cast(list[dict[str, object]], document.get("pages") or [])
@@ -113,6 +167,15 @@ def attach_figures(document: dict[str, object], parsed: Sequence[Figure]) -> int
             msgspec.structs.replace(figure, caption_start=start, caption_end=end, text_spans=spans)
         )
     document["figures"] = msgspec.to_builtins(figures)
+    # OCR chunks (S25) belong to the old figure records; the caller builds them again.
+    if any(
+        chunk.get("ocr") for chunk in cast(list[dict[str, object]], document.get("chunks") or [])
+    ):
+        document["chunks"] = [
+            chunk
+            for chunk in cast(list[dict[str, object]], document["chunks"])
+            if not chunk.get("ocr")
+        ]
     for chunk in cast(list[dict[str, object]], document.get("chunks") or []):
         chunk.pop("figure", None)
         chunk.pop("figure_text", None)

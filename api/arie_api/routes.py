@@ -15,6 +15,7 @@ from urllib.parse import quote
 
 import msgspec
 from arie_core.harness.intent import DialogueTurn
+from arie_core.harness.reader import EvidenceChunk, Excerpt
 from arie_core.harness.session import EXPLAIN_SECONDS, JUDGE_SECONDS
 from arie_core.pipeline.figures import chunk_figures
 from arie_core.registry.sync import SyncConfig
@@ -146,6 +147,29 @@ def public_figures(paper_id: str, paper: Document) -> list[Document]:
         }
         for figure in cast(list[Document], paper.get("figures") or [])
     ]
+
+
+def strict_citation(excerpt: Excerpt, source: EvidenceChunk | None) -> Document:
+    """A strict claim's citation: the exact page offsets, its label and the chunk's figures.
+
+    OCR text of a bitmap figure (S25) is labelled "OCR text from Figure N" and marked ``ocr``,
+    never passed off as the page's text; strict shows it only as an excerpt (ADR 0015).
+    """
+    ocr = source is not None and source.ocr
+    citation: Document = {
+        "page_start": excerpt.page_start,
+        "char_start": excerpt.char_start,
+        "char_end": excerpt.char_end,
+        "chunk_id": excerpt.chunk_id,
+        "label": f"p. {excerpt.page_start}",
+        "figures": chunk_figures(
+            source.figure if source else "", source.mentions if source else ()
+        ),
+    }
+    if ocr and source is not None:
+        citation.update(label=f"OCR text from Figure {source.figure}, p. {excerpt.page_start}")
+        citation["ocr"] = True
+    return citation
 
 
 def _event(kind: str, **payload: Any) -> str:
@@ -433,7 +457,6 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
                     )
                     tags = {row.chunk_id: row for row in reading.rows}
                     for excerpt in excerpts:
-                        source = tags.get(excerpt.chunk_id)
                         yield emit(
                             "claim",
                             paper_id=paper_id,
@@ -443,17 +466,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
                                 "label": excerpt.label,
                                 "paragraph": excerpt.paragraph,
                                 "quote": excerpt.quote,
-                                "citation": {
-                                    "page_start": excerpt.page_start,
-                                    "char_start": excerpt.char_start,
-                                    "char_end": excerpt.char_end,
-                                    "chunk_id": excerpt.chunk_id,
-                                    "label": f"p. {excerpt.page_start}",
-                                    "figures": chunk_figures(
-                                        source.figure if source else "",
-                                        source.mentions if source else (),
-                                    ),
-                                },
+                                "citation": strict_citation(excerpt, tags.get(excerpt.chunk_id)),
                                 "tier_checks": list(excerpt.checks),
                             },
                         )

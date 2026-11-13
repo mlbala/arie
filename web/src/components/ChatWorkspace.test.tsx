@@ -296,6 +296,23 @@ it("combines three verified statements into one paragraph before grouped sources
 });
 
 
+it("passes an OCR excerpt's flag and figure on to the evidence drawer", async () => {
+  const quote = "ACCURACY 92.5 on the test set";
+  const citation = { page_start: 3, char_start: 0, char_end: quote.length, label: "OCR text from Figure 2, p. 3", figures: ["2"], ocr: true };
+  const event = (kind: string, data: object) => `event: ${kind}\ndata: ${JSON.stringify(data)}\n\n`;
+  const wire = [
+    event("answer", { paper_id: "paper-1", mode: "reviewed_answer", heading: "Answer", evaluation: { reviewed_claims: 1, rejected_claims: 0, answer_relevant: true } }),
+    event("claim", { paper_id: "paper-1", verified: true, claim: { text: quote, quote, citation } }),
+    event("done", { paper_id: "paper-1", mode: "reviewed_answer" }),
+  ].join("");
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(wire)));
+  const onCitation = vi.fn();
+  render(<ChatWorkspace papers={papers} activePaperId="paper-1" onSelectPaper={vi.fn()} onClosePaper={vi.fn()} onCitation={onCitation} />);
+  fireEvent.click(screen.getByRole("button", { name: "What is this paper about?" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Source 1, page 3" }));
+  expect(onCitation).toHaveBeenCalledWith(expect.objectContaining({ page_start: 3, quote, figures: ["2"], ocr: true }));
+});
+
 it("sends paper-specific question history for follow-ups and renders detailed paragraphs", async () => {
   const event = (kind: string, data: object) => `event: ${kind}\ndata: ${JSON.stringify(data)}\n\n`;
   const quote = "The method uses isolated worker processes to read evidence.";

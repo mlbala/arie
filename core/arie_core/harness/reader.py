@@ -113,6 +113,9 @@ class EvidenceChunk(msgspec.Struct, frozen=True):
     figure: str = ""
     mentions: tuple[str, ...] = ()
     figure_text: bool = False
+    # ``ocr`` marks OCR text read from a bitmap figure (S25): a transcription of the paper's
+    # image, not its text layer. It also has ``figure_text``; strict shows it only as an excerpt.
+    ocr: bool = False
 
 
 class Excerpt(msgspec.Struct, frozen=True):

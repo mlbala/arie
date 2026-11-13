@@ -45,6 +45,8 @@ export interface CitationRange {
   chunk_id?: string | undefined;
   /** Figures the cited chunk captions or names (S24); the drawer shows their crops. */
   figures?: string[] | undefined;
+  /** OCR text read from a bitmap figure (S25): a transcription, shown next to its crop. */
+  ocr?: boolean | undefined;
 }
 
 /** A figure as the paper response lists it; the crop is the paper's own figure, never a description. */

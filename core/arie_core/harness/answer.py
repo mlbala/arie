@@ -314,7 +314,10 @@ async def _compose(
 
     if session.llm is None or not scoped:
         return await fallback()
-    windows = _source_windows(scoped, plan, max_bytes=8000 if session.calls else 8500)
+    # OCR text of a bitmap figure is a transcription, not the paper's text layer (ADR 0015,
+    # S25): ``fallback`` may show it as a labelled excerpt; it never supports a claim.
+    claimable = [row for row in scoped if not row.ocr]
+    windows = _source_windows(claimable, plan, max_bytes=8000 if session.calls else 8500)
     if not windows:
         return await fallback()
 

@@ -12,12 +12,14 @@ import pikepdf
 import pytest
 from arie_api.models import ANSWER_SLOTS, AnswerModel
 from arie_api.runtime import ResearchRuntime, context
+from arie_api.runtime import base as runtime_base
 from arie_api.runtime import packs as packs_module
 from arie_core.contracts import Figure, ParsedDoc
 from arie_core.pipeline.pack import PaperPack, escape_markers, marker_numbers
 from arie_core.plugin_api import ScrapedPaperInput
 from arie_core.registry.manager import ArieConfig
 from arie_core.registry.sync import SyncConfig
+from arie_worker.figure_ocr import OcrTexts
 from arie_worker.models import LocalModel
 from arie_worker.pdf_check import check_pdf
 from conftest import ScriptedModel
@@ -310,6 +312,81 @@ async def test_sync_stores_figures_and_tags_caption_and_mention_chunks(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("figure_ocr", [False, True])
+async def test_figure_ocr_adds_one_ocr_chunk_only_when_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, figure_ocr: bool
+) -> None:
+    monkeypatch.setattr(runtime_base, "ocr_available", lambda: True)
+    base = runtime_at(tmp_path)
+    ingestion = base.config.ingestion.model_copy(update={"figure_ocr": figure_ocr})
+    runtime = ResearchRuntime(ROOT, base.config.model_copy(update={"ingestion": ingestion}))
+    base.close()
+    await runtime.initialize()
+    scraped, parsed = resumable(tmp_path)
+    parsed.update(pages=[])
+    page = "As Figure 1 shows, accuracy rises.\n\nFigure 1: Accuracy by size.\n\nNo figure here."
+    start = page.index("Figure 1:")
+    figure = Figure("1", 1, (1.0, 2.0, 3.0, 4.0), "Figure 1: Accuracy by size.", start, start + 27)
+    calls: list[list[tuple[int, Any]]] = []
+
+    async def parse_pdf(file_path: str) -> ParsedDoc:
+        del file_path
+        return ParsedDoc("resumed", "", "", [page], {"page_count": "1"}, [figure])
+
+    async def ocr_figures(file_path: str, figures: list[tuple[int, Any]]) -> OcrTexts:
+        del file_path
+        calls.append(figures)
+        return OcrTexts({0: "ACCURACY\n92.5"})
+
+    monkeypatch.setattr(runtime, "parse_pdf", parse_pdf)
+    monkeypatch.setattr(runtime.pool, "ocr_figures", ocr_figures)
+    try:
+        await runtime.save_paper(parsed)
+        job = await ingest(runtime, scraped)
+        assert job["indexed"] == 1 and job["failed"] == 0
+        saved = await runtime.get_paper("resumed")
+        assert saved is not None
+        page_chunks = [
+            {"paper_id": "resumed", "chunk_id": f"resumed:{i}", "page_start": 1, **span}
+            for i, span in enumerate(
+                [
+                    {"char_start": 0, "char_end": 34, "text": page[:34], "mentions": ["1"]},
+                    {"char_start": 36, "char_end": 63, "text": page[36:63], "figure": "1"},
+                    {"char_start": 65, "char_end": len(page), "text": page[65:]},
+                ]
+            )
+        ]
+        if not figure_ocr:
+            # Off: OCR never runs and the stored chunks and figures are those of S24.
+            assert calls == [] and saved["chunks"] == page_chunks
+            assert "ocr_text" not in saved["figures"][0]
+            # OCR chunks stored while it was on are not evidence once it is off.
+            stale = {**page_chunks[0], "chunk_id": "resumed:3", "ocr": True, "figure": "1"}
+            rows = await runtime.evidence({**saved, "chunks": [*page_chunks, stale]})
+            assert [row.chunk_id for row in rows] == ["resumed:0", "resumed:1", "resumed:2"]
+            return
+        assert calls == [[(1, (1.0, 2.0, 3.0, 4.0))]]
+        assert saved["chunks"][:3] == page_chunks
+        assert saved["chunks"][3:] == [
+            {
+                "paper_id": "resumed",
+                "chunk_id": "resumed:3",
+                "page_start": 1,
+                "char_start": 0,
+                "char_end": 13,
+                "text": "ACCURACY\n92.5",
+                "figure": "1",
+                "figure_text": True,
+                "ocr": True,
+            }
+        ]
+        rows = await runtime.evidence(saved)
+        assert [row.chunk_id for row in rows if row.ocr] == ["resumed:3"]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_a_pack_failure_never_fails_an_indexed_paper(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -418,6 +495,7 @@ async def test_without_a_key_the_builder_waits_and_sync_queues_indexed_papers(
 ) -> None:
     runtime = runtime_at(tmp_path)
     await runtime.initialize()
+
     def no_llm(provider: str | None = None) -> None:
         del provider
 

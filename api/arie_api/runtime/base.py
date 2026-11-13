@@ -20,6 +20,7 @@ from arie_core.registry.manager import ArieConfig, RegistryManager
 from arie_core.registry.sync import months_ago as months_ago
 from arie_core.sched import ForegroundGate
 from arie_worker.extraction import ExtractionLimits, ExtractionPool
+from arie_worker.figure_ocr import ocr_available
 from arie_worker.models import LocalModel
 
 from arie_api.models import AnswerModels
@@ -92,6 +93,10 @@ class RuntimeBase:
             self.config.ingestion.pdf_check,
             self.config.ingestion.hidden_text,
         )
+        if self.config.ingestion.figure_ocr and not ocr_available():
+            raise RuntimeError(
+                "ingestion.figure_ocr needs the OCR engine: run `uv sync --extra ocr`"
+            )
         self.file_storage = self.instance("file_storage")
         self.jobs: dict[str, Document] = {}
         self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=4)

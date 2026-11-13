@@ -16,6 +16,7 @@ from arie_core.registry.manager import PdfCheckConfig, RegistryManager
 from pydantic import BaseModel, ConfigDict, Field
 
 from arie_worker.figure_crops import Box, CropLimits, Crops, render_crops
+from arie_worker.figure_ocr import OcrLimits, OcrTexts, ocr_figures
 from arie_worker.hidden_text import strip_hidden
 from arie_worker.pdf_check import check_pdf
 from arie_worker.pool import (
@@ -152,6 +153,14 @@ class ExtractionPool(SupervisedPool):
         """Render figure crops in a PDF worker (S24); never in the API process."""
         return await self.submit(
             self.timeout_sec, render_crops, file_path, list(figures), limits or CropLimits()
+        )
+
+    async def ocr_figures(
+        self, file_path: str, figures: Sequence[tuple[int, Box]], limits: OcrLimits | None = None
+    ) -> OcrTexts:
+        """OCR bitmap figures in a PDF worker (S25), under the parse time and memory limits."""
+        return await self.submit(
+            self.timeout_sec, ocr_figures, file_path, list(figures), limits or OcrLimits()
         )
 
 
