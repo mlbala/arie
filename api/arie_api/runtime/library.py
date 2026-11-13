@@ -343,7 +343,8 @@ class LibraryStore(RuntimeBase):
         if pdf is None:
             return {}
         started = time.monotonic()
-        result = await self.pool.ocr_figures(str(pdf), [_crop_box(figures[i]) for i in targets])
+        boxes = [_crop_box(figures[i]) for i in targets]
+        result = await self.pool.ocr_figures(str(pdf), boxes, str(self.ocr_model))
         for position, text in result.texts.items():
             figures[targets[position]][OCR_KEY] = text
         return {
