@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from arie_core.contracts import ParsedDoc
+from arie_core.contracts import Figure, ParsedDoc
 from arie_core.pipeline import IngestionPipeline
 from arie_core.pipeline.pipeline import MAX_PDF_BYTES
 from arie_core.plugin_api import ScrapedPaperInput
@@ -115,3 +115,33 @@ async def test_parse_document_quarantines_after_two_failures(tmp_path: Path) -> 
             await pipeline.parse_document(paper_id, str(tmp_path / "paper.pdf"))
 
     assert pipeline.is_quarantined(paper_id)
+
+
+@pytest.mark.asyncio
+async def test_parse_document_renames_the_paper_and_keeps_every_parsed_field(
+    tmp_path: Path,
+) -> None:
+    """Parsers name the paper after the stored file; only the id changes (figures were lost)."""
+    pipeline = IngestionPipeline(storage_root=tmp_path)
+    figure = Figure("2", 1, (10.0, 20.0, 110.0, 120.0), "Figure 2: Accuracy.", 0, 19)
+    parsed = ParsedDoc(
+        paper_id="b3dfc257979290a7",
+        title="Cedar",
+        source="",
+        sections=["Figure 2: Accuracy."],
+        metadata={"figure_count": "1"},
+        figures=[figure],
+    )
+
+    async def parse(_file_path: str) -> ParsedDoc:
+        return parsed
+
+    pipeline._run_worker_parse = parse  # type: ignore[assignment]
+    result = await pipeline.parse_document("1611.04798", str(tmp_path / "b3dfc257979290a7.pdf"))
+    assert result.paper_id == "1611.04798"
+    assert result.figures == [figure]
+    assert (result.title, result.sections, result.metadata) == (
+        parsed.title,
+        parsed.sections,
+        parsed.metadata,
+    )
