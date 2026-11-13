@@ -81,6 +81,44 @@ def chunk_figures(figure: object, mentions: object) -> list[str]:
 
 OCR_KEY = "ocr_text"
 
+CAPTURE_KEY = "capture_version"
+# What each capture step stores, by version (S26). Bump a step when its output changes: the
+# background catch-up then re-runs only that step for every stored paper. Re-running
+# ``figures`` replaces the records, so it re-runs ``crops`` and ``ocr`` too.
+CAPTURE_STEPS: dict[str, int] = {"figures": 1, "crops": 1, "ocr": 1}
+
+
+def capture_record(document: Mapping[str, object]) -> dict[str, int]:
+    """The capture steps a paper has run, by version (``capture_version``, S26).
+
+    A paper stored before S26 has no record, so it is read from what it holds: figure
+    records mean ``figures`` ran, and a crop on every figure means ``crops`` ran. OCR is
+    never assumed, since S25 removed the OCR text it measured.
+    """
+    stored = document.get(CAPTURE_KEY)
+    if isinstance(stored, Mapping):
+        items = cast(Mapping[object, object], stored).items()
+        return {str(step): version for step, version in items if isinstance(version, int)}
+    if "figures" not in document:
+        return {}
+    record = {"figures": 1}
+    rows = cast(list[object], document.get("figures") or [])
+    cropped = (
+        isinstance(row, Mapping) and cast(Mapping[str, object], row).get("crop") for row in rows
+    )
+    if all(cropped):
+        record["crops"] = 1
+    return record
+
+
+def capture_due(document: Mapping[str, object], ocr: bool) -> list[str]:
+    """The capture steps a paper is behind on, in run order; ``ocr`` only when OCR can run."""
+    record = capture_record(document)
+    steps = [step for step in CAPTURE_STEPS if ocr or step != "ocr"]
+    if record.get("figures", 0) < CAPTURE_STEPS["figures"]:
+        return steps
+    return [step for step in steps if record.get(step, 0) < CAPTURE_STEPS[step]]
+
 
 def ocr_targets(rows: Sequence[Mapping[str, object]]) -> list[int]:
     """Positions of the stored figures OCR may read (S25): those with no drawn words."""

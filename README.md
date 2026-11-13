@@ -104,7 +104,7 @@ need `--build`.
 Requires Python 3.14+, [uv](https://docs.astral.sh/uv/) and Node.js.
 
 ```sh
-uv sync
+make setup        # uv sync, then the pinned OCR model figure capture uses (make ocr-model)
 uv run uvicorn arie_api.routes:app --host 127.0.0.1 --port 8000 --loop uvloop
 ```
 
@@ -117,6 +117,13 @@ cd web && npm install && npm run dev
 The first start downloads the claim-checker model (about 280 MB) into the Hugging Face
 cache (`HF_HOME`, by default `~/.cache/huggingface`). Until it is ready, chat answers
 with exact source excerpts.
+
+Each paper's figures, figure crops and the OCR text of bitmap figures are captured when it
+is synced, with nothing to turn on. Papers stored before a capture step existed catch up in
+the background, one at a time and never while a question runs; the system pane shows the
+progress and how many papers have no stored PDF, so their figures are unknown. Without the
+OCR model ARIE still starts: it logs one warning, skips OCR only, and the system pane says
+"Figure OCR: model missing, run make ocr-model" until you fetch it.
 
 ## Architecture
 
@@ -563,7 +570,7 @@ evidence, unless it passes the verifier.
 | `llm_providers` | Default model, key variable, optional `base_url` and optional `context_tokens` (the context window explain mode plans for; defaults are 64,000 for DeepSeek and 128,000 for OpenAI and Gemini, and 32,000 for any other plugin or one with a `base_url`; they are conservative guesses, so set the real window) per LLM plugin. |
 | `embedding_providers` | Default model, similarity floor and key variable per embedder. |
 | `explain` | `max_pack_share` (default 0.6): the whole paper goes in the prompt only if its estimated tokens are at most this share of the model's `context_tokens`. |
-| `ingestion` | `pdf_check`: `enabled` (default true), `max_objects` (60,000), `max_pages` (600) and `max_filter_depth` (10). The structural check each stored PDF passes before it is parsed. `hidden_text` (default true): parse a copy without the text a reader cannot see. `make pdf-report` shows how the stored PDFs measure against these limits and how much hidden text each holds. `figure_ocr` (default false): read the words printed inside bitmap figures with OCR (RapidOCR with its English recognition model) in the PDF worker; needs `uv sync --extra ocr` and `make ocr-model`. `figure_ocr_model` (default `models/ocr/en_PP-OCRv4_rec_infer.onnx`): where that model lives; ARIE refuses to start with `figure_ocr` on unless the file matches its pinned checksum. Docker images built with `ARIE_EXTRAS=ocr` include it. OCR text is labelled "OCR text from Figure N", shown next to the figure's crop, and strict answers show it only as an excerpt, never as a claim. |
+| `ingestion` | `pdf_check`: `enabled` (default true), `max_objects` (60,000), `max_pages` (600) and `max_filter_depth` (10). The structural check each stored PDF passes before it is parsed. `hidden_text` (default true): parse a copy without the text a reader cannot see. `make pdf-report` shows how the stored PDFs measure against these limits and how much hidden text each holds. `figure_ocr` (default true): read the words printed inside bitmap figures with OCR (RapidOCR with its English recognition model) in the PDF worker; set it to false to turn OCR off. `figure_ocr_model` (default `models/ocr/en_PP-OCRv4_rec_infer.onnx`): where that model lives, fetched by `make setup` or `make ocr-model` and checked against its pinned checksum. If it is missing or does not match, ARIE starts anyway, skips OCR with one warning and checks again every 5 minutes. Docker images always include it. OCR text is labelled "OCR text from Figure N", shown next to the figure's crop, and strict answers show it only as an excerpt, never as a claim. |
 | `answer` | `default_mode` (`strict`, the default, or `explain`): the answer path of a question whose request sets no `mode`. |
 | `judge` | `chat` (`all`, the default, or `off`): whether each explain answer's cited sentences are judged in the chat with one extra model call on the writer's provider. Evaluations always judge. |
 | `eval` | `judge_provider` (an `llm_providers` name): the provider that compares explain with strict in evaluations. Unset, it is another provider whose key is set, else the writer's. |
@@ -814,9 +821,10 @@ missed key facts, flagged citations, the judge's reasons and your thumbs-down re
 | `make eval-paper PAPER=<id>` | Evaluate answers on one ingested paper (see [Evaluate answers on one paper](#evaluate-answers-on-one-paper)) |
 | `make eval-qasper N=<papers> [KIND=figure\|table]` | Import the first N Qasper dev papers (with `KIND`, only papers with a figure or table question) and score strict answers to their questions |
 | `make optimize-prompts PROMPT=explain MAX_CALLS=200` | Propose better explain writer rules offline under a hard cap on model calls, and write them as a candidate prompt file (see [Improve the explain prompt offline](#improve-the-explain-prompt-offline)) |
-| `make figures-backfill` | Add figure records to papers indexed before they existed: re-parse each stored PDF and keep only its figures, with pages, chunks and vectors unchanged (`ARGS="--all"` also refreshes papers that already have figures) |
+| `make setup` | `uv sync`, then `make ocr-model` |
+| `make figures-backfill` | By hand, what the background figure catch-up does: add figure records to papers indexed before they existed: re-parse each stored PDF and keep only its figures, with pages, chunks and vectors unchanged (`ARGS="--all"` also refreshes papers that already have figures) |
 | `make figure-crops` | Render the figure crops of stored papers that have figures, in the PDF worker, without parsing |
-| `make figure-ocr` | OCR the bitmap figures of stored papers that have figures (needs `ingestion.figure_ocr: true`, the `ocr` extra and the model) |
+| `make figure-ocr` | OCR the bitmap figures of stored papers that have figures (needs `ingestion.figure_ocr` on and the model) |
 | `make ocr-model` | Download the English OCR recognition model once to `models/ocr/` and check its SHA-256 |
 | `make pdf-report` | Run the structural PDF check over every stored PDF, each in its own process, and print counts per rule and the largest object, page and filter-depth values; changes nothing |
 | `make guides` | Build missing paper guides one at a time (`ARGS="<id> ..."` rebuilds those papers); the server builds them only for papers it indexes |

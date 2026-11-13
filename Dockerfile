@@ -48,11 +48,9 @@ COPY arie.yaml ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev \
         $(for extra in $(echo "$ARIE_EXTRAS" | tr ',' ' '); do printf -- '--extra %s ' "$extra"; done)
-# With the `ocr` extra, bake in its English recognition model, checked by SHA-256 (ADR 0018).
+# Bake in the figure OCR's English recognition model, checked by SHA-256 (ADR 0018, 0019).
 # It lives outside /app/data, so the data volume never hides it.
-RUN case ",$ARIE_EXTRAS," in *,ocr,*) \
-        /app/.venv/bin/python -m arie_worker.ocr_model models/ocr/en_PP-OCRv4_rec_infer.onnx ;; \
-    esac
+RUN /app/.venv/bin/python -m arie_worker.ocr_model models/ocr/en_PP-OCRv4_rec_infer.onnx
 
 FROM python:${PYTHON_VERSION}-slim AS api
 ENV PYTHONUNBUFFERED=1 \

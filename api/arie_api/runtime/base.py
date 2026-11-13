@@ -95,15 +95,10 @@ class RuntimeBase:
             self.config.ingestion.hidden_text,
         )
         self.ocr_model = root / self.config.ingestion.figure_ocr_model
-        if self.config.ingestion.figure_ocr:
-            if not ocr_available():
-                raise RuntimeError(
-                    "ingestion.figure_ocr needs the OCR engine: run `uv sync --extra ocr`"
-                )
-            try:
-                verify_model(self.ocr_model)
-            except OcrModelError as exc:
-                raise RuntimeError(f"ingestion.figure_ocr: {exc}") from None
+        # Why figure OCR cannot run, or None. Never stops ARIE (S26): figures and crops are
+        # still captured, and the figure catch-up checks again until the model is there.
+        self.ocr_problem: str | None = None
+        self.check_ocr()
         self.file_storage = self.instance("file_storage")
         self.jobs: dict[str, Document] = {}
         self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=4)
@@ -127,6 +122,30 @@ class RuntimeBase:
         # Held by every answer in flight; PDF parsing, embedding and guide builds wait on it
         # before starting new work, so a question never competes with them for the CPU (S16).
         self.foreground = ForegroundGate()
+
+    def check_ocr(self) -> str | None:
+        """Check the OCR engine and its pinned model; log one warning when that changes (S26)."""
+        problem: str | None = None
+        detail = ""
+        if self.config.ingestion.figure_ocr:
+            if not ocr_available():
+                problem, detail = "OCR engine missing, run uv sync", "rapidocr is not installed"
+            else:
+                try:
+                    verify_model(self.ocr_model)
+                except OcrModelError as exc:
+                    state = "checksum mismatch" if self.ocr_model.is_file() else "missing"
+                    problem, detail = f"model {state}, run make ocr-model", str(exc)
+        if problem is not None and problem != self.ocr_problem:
+            logger.warning("Figure OCR is skipped: %s (%s)", problem, detail)
+        elif problem is None and self.ocr_problem is not None:
+            logger.info("Figure OCR model found; OCR resumes")
+        self.ocr_problem = problem
+        return problem
+
+    def ocr_ready(self) -> bool:
+        """Whether figure OCR is on and can run now."""
+        return self.config.ingestion.figure_ocr and self.ocr_problem is None
 
     def llm_provider(self) -> str:
         """The name of the configured LLM plugin."""

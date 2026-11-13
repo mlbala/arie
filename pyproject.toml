@@ -34,8 +34,6 @@ dependencies = [
 [project.optional-dependencies]
 # Docling parser with OCR for scanned PDFs; pulls PyTorch models. `uv sync --extra docling`.
 docling = ["arie-plugin-parser-docling"]
-# OCR text for bitmap figures (`ingestion.figure_ocr`); RapidOCR on ONNX. `uv sync --extra ocr`.
-ocr = ["arie-worker[ocr]"]
 
 [dependency-groups]
 dev = [
