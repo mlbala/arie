@@ -355,6 +355,29 @@ it("sends paper-specific question history for follow-ups and renders detailed pa
   expect(JSON.parse(String(fetcher.mock.calls[5]![1].body))).toEqual({ question: "What is this paper about?", mode: "strict" });
 });
 
+it("shows a table row's header above its quote on hover and passes it to the drawer", async () => {
+  const quote = "| BERT | 85.1 | 90.2 |";
+  const context = "Table 1: Scores.\n| Model | F1 | EM |";
+  const citation = { page_start: 4, char_start: 30, char_end: 30 + quote.length, chunk_id: "paper-1:9", context };
+  const event = (kind: string, data: object) => `event: ${kind}\ndata: ${JSON.stringify(data)}\n\n`;
+  const wire = [
+    event("answer", { paper_id: "paper-1", mode: "reviewed_answer", heading: "Answer", evaluation: { reviewed_claims: 1, rejected_claims: 0, answer_relevant: true } }),
+    event("claim", { paper_id: "paper-1", verified: true, claim: { text: "BERT scores 85.1 F1.", quote, citation } }),
+    event("done", { paper_id: "paper-1", mode: "reviewed_answer" }),
+  ].join("");
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(wire)));
+  const onCitation = vi.fn();
+  render(<ChatWorkspace papers={papers} activePaperId="paper-1" onSelectPaper={vi.fn()} onClosePaper={vi.fn()} onCitation={onCitation} />);
+  fireEvent.click(screen.getByRole("button", { name: "What is this paper about?" }));
+  const chip = await screen.findByRole("button", { name: "Source 1, page 4" });
+  fireEvent.mouseEnter(chip);
+  const card = screen.getByRole("tooltip");
+  expect(card.querySelector(".quote-context pre")?.textContent).toBe(context);
+  expect(card.querySelector("blockquote")?.textContent).toBe(quote);
+  fireEvent.click(chip);
+  expect(onCitation).toHaveBeenCalledWith(expect.objectContaining({ quote, context }));
+});
+
 it("shows a source chip's page and quote on hover or focus, and still opens the source on click", async () => {
   const quote = "The method uses isolated worker processes to read evidence.";
   const citation = { page_start: 3, char_start: 10, char_end: 10 + quote.length, chunk_id: "paper-1:7" };

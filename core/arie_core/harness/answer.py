@@ -16,6 +16,7 @@ from arie_core.harness.intent import AnswerPlan, plan_answer
 from arie_core.harness.reader import (
     EvidenceChunk,
     Excerpt,
+    checked_text,
     locate_quote,
     prose_sentences,
     query_terms,
@@ -30,6 +31,7 @@ from arie_core.harness.verifier import (
     EvidenceVerifier,
     preserves_anchors,
 )
+from arie_core.pipeline.tables import table_context, table_layout
 from arie_core.plugin_api import LLM, Ctx
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -52,9 +54,13 @@ class AnswerResult(msgspec.Struct, frozen=True):
     trace: AnswerTrace = AnswerTrace()
 
 
+# The writer prompt; v2 (S27) reads a table row's caption and header as context.
+PLAYBOOK = "qa.v2.yaml"
+
+
 def load_playbook(project_root: Path) -> dict[str, str]:
     """Load the editable role prompts; fail closed on missing or invalid prompts."""
-    loaded: object = yaml.safe_load((project_root / "prompts" / "qa.v1.yaml").read_text())
+    loaded: object = yaml.safe_load((project_root / "prompts" / PLAYBOOK).read_text())
     if not isinstance(loaded, Mapping):
         raise ValueError("The QA playbook must be a mapping")
     data = cast(Mapping[str, object], loaded)
@@ -114,6 +120,41 @@ def table_excerpt(text: str, limit: int = TABLE_EXCERPT_BYTES) -> str:
     return "".join(kept).strip() if rows >= 3 else ""
 
 
+TABLE_ROW_UNITS = 3
+
+
+def table_row_units(row: EvidenceChunk, terms: set[str]) -> list[EvidenceChunk]:
+    """The data rows of a long table that best match the question, as writer units (S27).
+
+    A table that ``table_excerpt`` shows whole gives ``[]`` (it is used as before), and so does
+    one where no row shares a question term. Each unit's text is one exact data row with its
+    offsets, so its quote passes ``locate_quote``; ``context`` holds the table's caption and
+    header, which the writer and the checks read with the row but never quote.
+    """
+    layout = table_layout(row.text)
+    if layout is None or not layout.rows:
+        return []
+    shown = table_excerpt(row.text)
+    at = row.text.find(shown) if shown else -1
+    if at >= 0 and at + len(shown) >= layout.rows[-1][1]:
+        return []
+    scored = [
+        (len(terms & query_terms(row.text[start:end])), start, end) for start, end in layout.rows
+    ]
+    best = sorted((item for item in scored if item[0] > 0), key=lambda item: -item[0])
+    context = table_context(row.text, layout)
+    return [
+        msgspec.structs.replace(
+            row,
+            text=row.text[start:end],
+            char_start=row.char_start + start,
+            char_end=row.char_start + end,
+            context=context,
+        )
+        for _, start, end in best[:TABLE_ROW_UNITS]
+    ]
+
+
 def _source_windows(
     rows: Sequence[EvidenceChunk], plan: AnswerPlan, *, max_bytes: int = 3500
 ) -> list[EvidenceChunk]:
@@ -122,6 +163,7 @@ def _source_windows(
     terms = query_terms(plan.question)
     for row in rows[:10]:
         sentences = prose_sentences(row.text)
+        table_rows: list[EvidenceChunk] = []
         if (
             not sentences
             and 15 <= len(row.text.strip().encode("utf-8")) <= 650
@@ -129,8 +171,11 @@ def _source_windows(
             and ("|" in row.text or "=" in row.text)
         ):
             sentences = [row.text.strip()]
-        elif table := table_excerpt(row.text):
-            sentences.append(table)
+        else:
+            # A long table offers the rows that match the question, not its first rows (S27).
+            table_rows = table_row_units(row, terms)
+            if not table_rows and (table := table_excerpt(row.text)):
+                sentences.append(table)
 
         def score(text: str) -> int:
             purpose = bool(
@@ -151,7 +196,9 @@ def _source_windows(
                     char_end=row.char_start + start + len(sentence),
                 )
             )
-        groups.append(units)
+        if table_rows:
+            units = sorted([*units, *table_rows], key=lambda unit: score(unit.text), reverse=True)
+        groups.append(units[:4])
     windows: list[EvidenceChunk] = []
     used = 0
     limit = max(1000, min(max_bytes, 6500 - 2 * len(plan.question.encode("utf-8"))))
@@ -201,14 +248,16 @@ def fit_evidence(claims: Sequence[Excerpt], allowance: int) -> list[str]:
     them is support in the full citation shown to the user; trimming can only add
     rejections. Evidence that still cannot fit is empty, so its claim is rejected.
     """
-    quotes = [claim.quote for claim in claims]
+    quotes = [checked_text(claim) for claim in claims]
     if sum(len(quote.encode("utf-8")) for quote in quotes) <= allowance:
         return quotes
     share = max(0, allowance) // max(1, len(claims))
     fitted: list[str] = []
     for claim in claims:
         # Every sentence or line is a candidate, including tables, never a filtered subset.
-        sentences = [part for part in re.split(r"(?<=[.!?])\s+|\n+", claim.quote) if part.strip()]
+        sentences = [
+            part for part in re.split(r"(?<=[.!?])\s+|\n+", checked_text(claim)) if part.strip()
+        ]
         terms = query_terms(claim.text)
         ranked = sorted(
             range(len(sentences)),
@@ -345,6 +394,8 @@ async def _compose(
                             "source": i,
                             "section": row.section,
                             "page": row.page_start,
+                            # A table row's caption and header (S27); only the text is quoted.
+                            **({"context": row.context} if row.context else {}),
                             "text": row.text,
                         }
                         for i, row in enumerate(windows)
@@ -400,7 +451,9 @@ async def _compose(
                 continue
             start, end = span
             authoritative = row.text[start:end]
-            if not preserves_anchors(text, authoritative):
+            # A table row is checked with its caption and header, never other rows (S27).
+            checked = f"{row.context}\n{authoritative}" if row.context else authoritative
+            if not preserves_anchors(text, checked):
                 continue
             # One passage may support several separately stated points (the writer is told
             # to split sentences), but never the same point twice.
@@ -425,6 +478,7 @@ async def _compose(
                     label if label in allowed_labels else "Answer",
                     ("tier_1", "llm_review"),
                     paragraph,
+                    context=row.context,
                 )
             )
             rejected -= 1
@@ -440,7 +494,7 @@ async def _compose(
                 with session.stage("tier3"):
                     async with asyncio.timeout(budget):
                         scores = await EvidenceVerifier.tier_3_scores(
-                            entail, [(item.quote, item.text) for item in candidates]
+                            entail, [(checked_text(item), item.text) for item in candidates]
                         )
             except TimeoutError:
                 _tier_3_failed(ctx, "entailment_timeout", f"after {budget:.1f}s")

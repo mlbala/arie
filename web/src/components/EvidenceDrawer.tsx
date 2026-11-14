@@ -15,6 +15,7 @@ import {
   type CitationRange,
 } from "../api/client";
 import { withoutPictureMarkers as shown } from "../pictureText";
+import { QuoteContext } from "./CitationPopover";
 
 interface Props {
   paperId: string;
@@ -119,6 +120,7 @@ export function EvidenceDrawer({ paperId, citation, onClose }: Props) {
         {citation?.quote && (
           <blockquote className="citation-selection">
             <Quote size={16} />
+            {citation.context && <QuoteContext text={citation.context} />}
             <p>{shown(citation.quote)}</p>
             <span>
               {citation.ocr

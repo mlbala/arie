@@ -222,7 +222,7 @@ async def test_tier_3_fallbacks_log_one_warning_with_the_trace_id(
     assert reason in record.getMessage()
     assert (record.exc_info is not None) is traceback
     assert result.fallback_reason == result.trace.fallback_reason == reason
-    assert result.trace.prompt_version == "qa.v1" and result.trace.seconds.write >= 0.0
+    assert result.trace.prompt_version == "qa.v2" and result.trace.seconds.write >= 0.0
 
 
 @pytest.mark.asyncio

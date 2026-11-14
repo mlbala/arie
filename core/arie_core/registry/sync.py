@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import calendar
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
@@ -29,6 +30,9 @@ class SyncConfig(BaseModel):
     end_month: str | None = Field(default=None, pattern=r"^[0-9]{4}-(0[1-9]|1[0-2])$")
     batch_size: int = Field(default=20, ge=1, le=100, strict=True)
     max_papers: int = Field(default=100, ge=1, le=10000, strict=True)
+    # Library retention: after each sync keep only the newest N papers (None keeps all).
+    # Papers with evaluation questions are never removed and do not count toward N.
+    keep_papers: int | None = Field(default=None, ge=1, le=100000, strict=True)
 
     @model_validator(mode="after")
     def validate_window(self) -> SyncConfig:
@@ -83,3 +87,16 @@ class SyncConfig(BaseModel):
         if start > end:
             raise ValueError("Publication window starts in the future")
         return start, end
+
+
+def papers_to_prune(papers: Iterable[tuple[str, str]], protected: set[str], keep: int) -> list[str]:
+    """Paper ids beyond the ``keep`` newest, oldest last; ``protected`` ids are never listed.
+
+    ``papers`` are ``(paper_id, published_at)`` pairs; ties on the date keep the higher id, so
+    the choice is the same on every run. Protected papers do not count toward ``keep``.
+    """
+    ranked = sorted(
+        ((published, paper_id) for paper_id, published in papers if paper_id not in protected),
+        reverse=True,
+    )
+    return [paper_id for _, paper_id in ranked[keep:]]

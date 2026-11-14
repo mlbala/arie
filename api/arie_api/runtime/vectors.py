@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import cast
 
 from arie_core.contracts import VectorRow
+from arie_core.pipeline.embedding import embedding_units, vector_chunk_id, vector_revision
 from arie_core.plugin_api import (
     VectorStore,
 )
@@ -32,6 +33,10 @@ from arie_api.runtime.base import (
     logger,
 )
 from arie_api.runtime.packs import PaperPacks
+
+# Vector hits asked for per query, and the distinct chunks kept from them (S27).
+SEARCH_HITS = 12
+SEARCH_CHUNKS = 8
 
 
 class VectorIndex(PaperPacks):
@@ -127,7 +132,7 @@ class VectorIndex(PaperPacks):
         pending: list[str] = []
         for row in rows:
             summary = cast(Document, json.loads(str(row["summary_json"])))
-            revision = f"{summary.get('revision', '')}:{summary.get('chunk_count', 0)}"
+            revision = vector_revision(summary.get("revision", ""), summary.get("chunk_count", 0))
             if (row["vector_model"], row["vector_revision"]) != (self.embedder_id, revision):
                 pending.append(str(row["paper_id"]))
         return pending, len(rows)
@@ -150,36 +155,37 @@ class VectorIndex(PaperPacks):
         paper = await self.get_paper(paper_id)
         if paper is None or paper["status"] != "INDEXED":
             return
-        chunks: list[Document] = [
-            chunk
-            for chunk in paper.get("chunks", [])
-            if chunk.get("paper_id") == paper_id
-            and chunk.get("chunk_id")
-            and str(chunk.get("text", "")).strip()
-        ]
+        # Chunks with their context, long tables as row groups (S27); stored chunks unchanged.
+        units = embedding_units(paper_id, paper)
         ctx = context(f"vectors:{paper_id}", 600.0)
         # Do not drop the old vectors while a question may be reading them (S16).
         await self.foreground.wait_quiet()
         await self.vector_store.delete(ctx, filters={"paper_id": paper_id})
-        for start in range(0, len(chunks), EMBED_BATCH):
-            batch = chunks[start : start + EMBED_BATCH]
+        pages = {
+            str(chunk.get("chunk_id")): str(chunk.get("page_start", ""))
+            for chunk in paper.get("chunks", [])
+        }
+        for start in range(0, len(units), EMBED_BATCH):
+            batch = units[start : start + EMBED_BATCH]
             # One batch is the unit of waiting: a question that starts mid-paper gets the CPU
             # at the next batch boundary, and this paper resumes after it (S16).
             await self.foreground.wait_quiet()
-            vectors = await embedding.embed([str(chunk["text"]) for chunk in batch])
+            vectors = await embedding.embed([unit.text for unit in batch])
             await self.vector_store.upsert(
                 ctx,
                 [
                     VectorRow(
-                        id=str(chunk["chunk_id"]),
+                        id=unit.id,
                         vector=vector,
                         metadata={
                             "paper_id": paper_id,
                             "model": embedder_id,
-                            "page": str(chunk.get("page_start", "")),
+                            "page": pages.get(unit.chunk_id, ""),
+                            "chunk_id": unit.chunk_id,
+                            "kind": unit.kind,
                         },
                     )
-                    for chunk, vector in zip(batch, vectors, strict=True)
+                    for unit, vector in zip(batch, vectors, strict=True)
                 ],
             )
         await self.db.execute(
@@ -190,8 +196,8 @@ class VectorIndex(PaperPacks):
             (
                 paper_id,
                 embedder_id,
-                f"{paper.get('dedup_hash', '')}:{len(paper.get('chunks', []))}",
-                len(chunks),
+                vector_revision(paper.get("dedup_hash", ""), len(paper.get("chunks", []))),
+                len(units),
                 datetime.now(UTC).isoformat(),
             ),
         )
@@ -249,12 +255,21 @@ class VectorIndex(PaperPacks):
             return []
         best: dict[str, float] = {}
         for vector in await embedding.embed(list(queries), kill_after=6.0):
+            # A long table has several row-group vectors (S27): ask for more hits, map each
+            # back to its chunk and keep the first ``SEARCH_CHUNKS`` chunks per query.
             hits = await self.vector_store.search(
-                ctx, vector, 8, filters={"paper_id": paper_id, "model": embedder_id}
+                ctx, vector, SEARCH_HITS, filters={"paper_id": paper_id, "model": embedder_id}
             )
+            seen: list[str] = []
             for hit in hits:
-                if hit.payload.get("paper_id") == paper_id and hit.score >= floor:
-                    best[hit.id] = max(best.get(hit.id, hit.score), hit.score)
+                if hit.payload.get("paper_id") != paper_id or hit.score < floor:
+                    continue
+                chunk_id = vector_chunk_id(hit.id, hit.payload)
+                if chunk_id not in seen:
+                    if len(seen) == SEARCH_CHUNKS:
+                        break
+                    seen.append(chunk_id)
+                best[chunk_id] = max(best.get(chunk_id, hit.score), hit.score)
         return sorted(best, key=best.__getitem__, reverse=True)
 
     async def vector_status(self) -> Document:

@@ -3,9 +3,10 @@ profile: hybrid
 # UI: Sync options -> Save defaults writes this block atomically.
 sync:
   mode: relative
-  initial_months: 6
+  initial_months: 3
   batch_size: 20
   max_papers: 100
+  keep_papers: 100
 runtime_qos:
   slow_callback_threshold_ms: 15.0
   utility_worker_processes: 4  # PDF workers; capped to the CPUs Docker or the OS allows
@@ -27,7 +28,9 @@ explain:
 # change them, and run `make pdf-report` to see how the stored PDFs measure. hidden_text
 # removes text a reader cannot see (invisible, transparent, under 2 pt, white on blank,
 # off the page) from a copy before the parser reads it.
-# ingestion:
+# max_pdf_mb caps a downloaded PDF (default 25, the hard limit).
+ingestion:
+  max_pdf_mb: 10
 #   pdf_check: {enabled: true, max_objects: 60000, max_pages: 600, max_filter_depth: 10}
 #   hidden_text: true
 #   figure_ocr: true    # OCR words in bitmap figures (default on); false turns it off
@@ -46,7 +49,7 @@ plugins:
   # (or an installed package with an arie.plugins entry point), select it here, and run
   # `make test-contracts`. Other keys are passed to the plugin's constructor.
   # Set either `use` to none for keyword-only retrieval.
-  embedder:     {use: fastembed}  # local ONNX model in arie-worker; no API quota
+  embedder:     {use: fastembed, threads: 6}  # local ONNX model in arie-worker; no API quota
   vector_store: {use: exact, path: ./data/arie-vectors.db}
   # Tier 3 of the quote verifier: a local NLI model checks that each summary claim is
   # entailed by its own quote. Runs in arie-worker; the model (~280 MB) downloads on first
