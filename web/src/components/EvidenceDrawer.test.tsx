@@ -100,3 +100,26 @@ it("shows no figure for a text chunk", async () => {
   expect(document.querySelector(".evidence-figure")).toBeNull();
   client.clear();
 });
+
+it("shows a table row's header above its quote as context and highlights only the row", async () => {
+  const pageText = "Table 1: F1.\n| Model | F1 |\n| --- | --- |\n| ELMo | 80.2 |\n| BERT | 85.1 |\n";
+  const start = pageText.indexOf("| BERT");
+  const quote = "| BERT | 85.1 |";
+  const citation = {
+    page_start: 1, char_start: start, char_end: start + quote.length, chunk_id: "paper:2", quote,
+    context: "Table 1: F1.\n| Model | F1 |",
+  };
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(
+    String(input).endsWith("/pages/1")
+      ? { text: pageText, page_number: 1 }
+      : { id: "paper", title: "Paper", page_count: 1, pdf_deleted: false },
+  ), { headers: { "content-type": "application/json" } })));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { container } = render(<QueryClientProvider client={client}><EvidenceDrawer paperId="paper" citation={citation} onClose={vi.fn()} /></QueryClientProvider>);
+  await vi.waitFor(() => expect(container.querySelector("mark")).toHaveTextContent(quote));
+  const selection = container.querySelector(".citation-selection");
+  expect(selection?.querySelector(".quote-context pre")?.textContent).toBe("Table 1: F1.\n| Model | F1 |");
+  expect(selection?.querySelector("p")?.textContent).toBe(quote);
+  expect(screen.getByText("Table header · context, not quoted")).toBeInTheDocument();
+  client.clear();
+});

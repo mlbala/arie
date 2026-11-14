@@ -165,6 +165,34 @@ async def test_one_paper_is_embedded_only_when_its_vectors_are_not_current(
 
 
 @pytest.mark.asyncio
+async def test_long_table_row_groups_map_back_to_one_chunk(tmp_path: Path) -> None:
+    runtime, embedding = runtime_at(tmp_path)
+    rows = [f"| run-{i:03d} | translation | {i}.5 |" for i in range(200)]
+    rows[150] = "| run-150 | translation bleu french | 41.8 |"
+    table = "Table 2: Runs.\n\n| Run | Task | Score |\n| --- | --- | --- |\n" + "\n".join(rows)
+    await runtime.initialize()
+    try:
+        await runtime.save_paper(paper("a", ("Scanned pages are unsupported.", table)))
+        await runtime.ensure_paper_vectors("a")
+        embedded = embedding.calls[-1]
+        groups = [text for text in embedded if text.startswith("Table 2: Runs.")]
+        assert len(groups) > 3
+        assert all("| Run | Task | Score |" in text for text in groups)
+        assert runtime.vector_store is not None
+        query = (await embedding.embed(["french"]))[0]
+        stored = await runtime.vector_store.search(
+            context("t", 5.0), query, 50, filters={"paper_id": "a", "model": "concept:v1"}
+        )
+        assert {hit.payload["chunk_id"] for hit in stored} == {"a:0", "a:1"}
+        assert {hit.payload["kind"] for hit in stored} == {"prose", "table"}
+        assert "a:1#t3" in {hit.id for hit in stored}
+        # Every group matches "translation"; the chunk comes back once.
+        assert await runtime.semantic_search("a", ["french translation bleu"]) == ["a:1"]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_indexing_waits_for_a_question_but_the_questions_own_search_does_not(
     tmp_path: Path,
 ) -> None:

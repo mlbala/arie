@@ -244,8 +244,10 @@ async def test_settings_save_preserves_other_yaml_and_import_route_exists(tmp_pa
     runtime.root = tmp_path
     settings = SyncConfig(mode="range", start_month="2025-01", end_month="2025-06", max_papers=10)
     try:
+        keep = runtime.config.sync.keep_papers
         await runtime.save_sync_settings(settings)
-        assert ArieConfig.from_yaml(path).sync == settings
+        # The form does not send keep_papers, so the configured value carries over.
+        assert ArieConfig.from_yaml(path).sync == settings.model_copy(update={"keep_papers": keep})
         assert (
             "# Keep this comment" in path.read_text()
             and "# Keep plugin guidance" in path.read_text()
@@ -303,5 +305,23 @@ async def test_library_2026_windows_include_date_only_boundaries(tmp_path: Path)
             ):
                 assert (await client.get(f"/v1/papers?{query}")).status_code == 400
             assert (await client.get("/v1/papers?months=0")).status_code == 422
+    finally:
+        runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_saving_the_sync_form_keeps_library_retention(tmp_path: Path) -> None:
+    runtime = runtime_at(tmp_path)
+    await runtime.initialize()
+    path = tmp_path / "arie.yaml"
+    path.write_text("profile: hybrid\nsync:\n  initial_months: 6\n  keep_papers: 100\n")
+    runtime.root = tmp_path
+    runtime.config.sync = SyncConfig(keep_papers=100)
+    try:
+        await runtime.save_sync_settings(SyncConfig(initial_months=3))
+        assert ArieConfig.from_yaml(path).sync.keep_papers == 100
+        assert runtime.config.sync.keep_papers == 100
+        await runtime.save_sync_settings(SyncConfig(initial_months=3, keep_papers=50))
+        assert ArieConfig.from_yaml(path).sync.keep_papers == 50
     finally:
         runtime.close()

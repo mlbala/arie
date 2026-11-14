@@ -116,6 +116,9 @@ class EvidenceChunk(msgspec.Struct, frozen=True):
     # ``ocr`` marks OCR text read from a bitmap figure (S25): a transcription of the paper's
     # image, not its text layer. It also has ``figure_text``; strict shows it only as an excerpt.
     ocr: bool = False
+    # Set only on a table-row writer unit (S27): the table's caption and header lines, exact
+    # text of the same chunk. The writer and the checks read it with the row; never quoted.
+    context: str = ""
 
 
 class Excerpt(msgspec.Struct, frozen=True):
@@ -128,6 +131,17 @@ class Excerpt(msgspec.Struct, frozen=True):
     label: str = ""
     checks: tuple[str, ...] = ("tier_1",)
     paragraph: int = 0
+    # A table-row quote's caption and header (S27), shown above the quote, never part of it.
+    context: str = ""
+
+
+def checked_text(excerpt: Excerpt) -> str:
+    """What the checks read for a claim: its quote, after its table caption and header (S27).
+
+    For a table-row quote that is the caption, the header and that one row, all exact text of
+    the same chunk and never another row; for any other quote it is the quote alone.
+    """
+    return f"{excerpt.context}\n{excerpt.quote}" if excerpt.context else excerpt.quote
 
 
 def is_overview(question: str) -> bool:

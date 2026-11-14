@@ -73,7 +73,9 @@ class IngestionPipeline:
         allowed_hosts: tuple[str, ...] = ("export.arxiv.org", "arxiv.org"),
         parse_worker: Callable[[str], Awaitable[ParsedDoc]] | None = None,
         ctx: Ctx | None = None,
+        max_pdf_bytes: int = MAX_PDF_BYTES,
     ) -> None:
+        self.max_pdf_bytes = min(max_pdf_bytes, MAX_PDF_BYTES)
         self.storage_root = Path(storage_root)
         self.storage_root.mkdir(parents=True, exist_ok=True)
         self.allowed_hosts = allowed_hosts
@@ -184,16 +186,17 @@ class IngestionPipeline:
                 response.raise_for_status()
             length = response.headers.get("Content-Length")
             expected = int(length) if length is not None else None
-            if expected is not None and (expected < 0 or expected > MAX_PDF_BYTES):
-                raise ValueError("Content-Length exceeds the 25 MB limit")
+            limit = f"{self.max_pdf_bytes // (1024 * 1024)} MB"
+            if expected is not None and (expected < 0 or expected > self.max_pdf_bytes):
+                raise ValueError(f"Content-Length exceeds the {limit} limit")
             total = 0
             header = bytearray()
             digest = hashlib.sha256()
             with partial.open("wb") as handle:
                 async for chunk in response.aiter_bytes(CHUNK_SIZE_BYTES):
                     total += len(chunk)
-                    if total > MAX_PDF_BYTES:
-                        raise ValueError("Downloaded PDF exceeds the 25 MB limit")
+                    if total > self.max_pdf_bytes:
+                        raise ValueError(f"Downloaded PDF exceeds the {limit} limit")
                     if len(header) < MAX_HEADER_BYTES:
                         header.extend(chunk[: MAX_HEADER_BYTES - len(header)])
                     if len(header) >= MAX_HEADER_BYTES and b"%PDF-" not in header:

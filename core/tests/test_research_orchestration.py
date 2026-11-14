@@ -496,7 +496,7 @@ async def test_answer_trace_has_every_stage_tokens_prompt_version_and_model() ->
         answer.input_tokens,
         answer.output_tokens,
     )
-    assert trace.prompt_version == "qa.v1" and trace.model == "scripted-model"
+    assert trace.prompt_version == "qa.v2" and trace.model == "scripted-model"
     assert trace.mode == answer.mode and trace.fallback_reason == ""
 
 

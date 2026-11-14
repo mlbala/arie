@@ -26,13 +26,14 @@ from arie_core.pipeline.figures import (
     figure_records,
     ocr_chunks,
 )
+from arie_core.pipeline.tables import chunk_table_tags, table_records
 from arie_core.plugin_api import (
     PagedSourcePlugin,
     ScrapedPaperInput,
     normalize_scraper_output,
 )
 from arie_core.registry.manager import ArieConfig
-from arie_core.registry.sync import SyncConfig
+from arie_core.registry.sync import SyncConfig, papers_to_prune
 from arie_core.registry.sync import months_ago as months_ago
 from arie_core.sched import supervised
 
@@ -67,8 +68,13 @@ class SyncJobs(FigureCapture):
             queue.put_nowait(dict(job))
 
     async def save_sync_settings(self, settings: SyncConfig) -> None:
-        """Atomically replace only the YAML sync block; leave runtime defaults intact on failure."""
+        """Atomically replace only the YAML sync block; leave runtime defaults intact on failure.
+
+        ``keep_papers`` is not on the sync form, so a request without it keeps the current value.
+        """
         settings.window(datetime.now(UTC))
+        if "keep_papers" not in settings.model_fields_set:
+            settings = settings.model_copy(update={"keep_papers": self.config.sync.keep_papers})
 
         def save() -> None:
             path = config_path(self.root)
@@ -292,6 +298,7 @@ class SyncJobs(FigureCapture):
             job = self.jobs[job_id]
             try:
                 await self._run_job(job)
+                await self.prune_library()
             except asyncio.CancelledError:
                 await self.update_job(
                     job, status="interrupted", message="Sync interrupted; resume available"
@@ -301,6 +308,36 @@ class SyncJobs(FigureCapture):
                 await self.update_job(job, status="failed", error=str(exc), message=str(exc))
             finally:
                 self.queue.task_done()
+
+    async def prune_library(self) -> list[str]:
+        """Keep only the newest ``sync.keep_papers`` papers; returns the ids removed.
+
+        Papers with evaluation questions are kept and not counted. Each removal goes through
+        ``delete_paper`` (PDF, crops, vectors, chat, pack, guide and eval data). A removal that
+        cannot run now (an import is active) stops the pass; the next sync retries it.
+        """
+        keep = self.config.sync.keep_papers
+        if keep is None:
+            return []
+        ctx = context("prune-library", 30.0)
+        rows = await self.db.fetch(ctx, "SELECT paper_id, published_at FROM arie_library")
+        cases = await self.db.fetch(ctx, "SELECT DISTINCT paper_id FROM arie_eval_cases")
+        doomed = papers_to_prune(
+            ((str(row["paper_id"]), str(row["published_at"] or "")) for row in rows),
+            {str(row["paper_id"]) for row in cases},
+            keep,
+        )
+        removed: list[str] = []
+        for paper_id in doomed:
+            try:
+                await self.delete_paper(paper_id)
+            except (ValueError, RuntimeError) as exc:
+                logger.warning("Library retention stopped at %s: %s", paper_id, exc)
+                break
+            removed.append(paper_id)
+        if removed:
+            logger.info("Library retention removed %d papers (keep %d)", len(removed), keep)
+        return removed
 
     async def _run_job(self, job: Document) -> None:
         settings = SyncConfig.model_validate(job.get("settings", self.config.sync.model_dump()))
@@ -446,6 +483,7 @@ class SyncJobs(FigureCapture):
                 allowed_hosts=hosts,
                 parse_worker=self.parse_pdf,
                 ctx=context(paper.paper_id),
+                max_pdf_bytes=self.config.ingestion.max_pdf_mb * 1024 * 1024,
             )
             if not pipeline.gate(paper):
                 document.update(
@@ -525,6 +563,7 @@ class SyncJobs(FigureCapture):
                             text=text,
                             # Only set keys: a chunk without figures is stored as before.
                             **chunk_figure_tags(text, page["number"], start, end, figures),
+                            **chunk_table_tags(text),
                         )
                     )
             if not chunks:
@@ -537,6 +576,8 @@ class SyncJobs(FigureCapture):
             document.update(
                 status="INDEXED",
                 chunks=chunks,
+                # One record per table chunk: caption, header and row offsets (S27).
+                tables=msgspec.to_builtins(table_records(chunks)),
                 pdf_url=f"/v1/papers/{paper.paper_id}/pdf",
                 pdf_deleted=False,
                 status_reason="PDF extracted and indexed",

@@ -2739,3 +2739,8 @@ html, body { overflow: hidden; }
 .source-tools[open] > summary > svg { transform: rotate(90deg); }
 .source-tools > summary .source-tools-state { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; color: var(--ok); font-size: 10px; font-weight: 500; }
 .source-tools > .sync-card, .source-tools > .import-paper { margin: 0 0 18px; }
+
+/* A table row's caption and header (S27): read with the quote, set apart from it, never quoted. */
+.quote-context { margin: 0 0 6px; padding: 0 0 5px; border-bottom: 1px dashed var(--line); }
+.quote-context > span { display: block; margin-bottom: 2px; color: var(--muted); font-size: 9px; letter-spacing: 0.02em; text-transform: uppercase; }
+.quote-context pre { margin: 0; overflow-x: auto; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; line-height: 1.5; white-space: pre; }

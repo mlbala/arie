@@ -664,6 +664,7 @@ function CitationChip({ number, claim, onOpen }: { number: number; claim: Verifi
       page: claim.citation.page_start,
       quote: isTableQuote(claim.quote) ? claim.quote.trim() : displaySourceText(claim.quote),
       table: isTableQuote(claim.quote),
+      context: claim.citation.context,
     }} />}
   </>;
 }
@@ -829,6 +830,8 @@ function normalizeCitation(value: unknown): CitationRange | undefined {
     ...(chunkId ? { chunk_id: chunkId } : {}),
     ...(figures.length ? { figures } : {}),
     ...("ocr" in value && value.ocr === true ? { ocr: true } : {}),
+    ...("context" in value && typeof value.context === "string" && value.context.trim() && value.context.length <= 4000
+      ? { context: value.context } : {}),
   };
 }
 

@@ -103,6 +103,26 @@ class Figure(msgspec.Struct, frozen=True):
     text_spans: tuple[tuple[int, int], ...] = ()
 
 
+class Table(msgspec.Struct, frozen=True):
+    """A Markdown table in one chunk, as offsets into that page's text (S27).
+
+    ``number`` is its "Table N" caption's label ("2", "A1"), or "" when the chunk holds no
+    caption. ``caption_start``/``caption_end`` are -1 then. ``header_start``/``header_end``
+    cover the header line(s) above the ``|---|`` separator, and ``rows`` has one
+    ``(start, end)`` per data row, each the exact row line without its newline.
+    """
+
+    number: str
+    page: int
+    caption: str
+    chunk_id: str
+    header_start: int
+    header_end: int
+    rows: tuple[tuple[int, int], ...] = ()
+    caption_start: int = -1
+    caption_end: int = -1
+
+
 class ParsedDoc(msgspec.Struct, frozen=True):
     paper_id: str
     title: str

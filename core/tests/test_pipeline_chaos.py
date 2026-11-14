@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -51,6 +52,37 @@ async def test_download_rejects_oversized_content_length(
 
     with pytest.raises(ValueError, match="Content-Length exceeds the 25 MB limit"):
         await pipeline.download_pdf(paper)
+
+
+@pytest.mark.asyncio
+async def test_download_honours_a_lower_configured_size_cap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cap = 10 * 1024 * 1024
+    pipeline = IngestionPipeline(storage_root=tmp_path, max_pdf_bytes=cap)
+    paper = ScrapedPaperInput(
+        paper_id="big-1",
+        title="Big",
+        source="arxiv",
+        pdf_url="https://export.arxiv.org/pdf/big-1.pdf",
+    )
+    # No Content-Length: the streamed size is checked as it arrives.
+    body = [b"%PDF-1.4\n" + b"0" * (cap - 9), b"0" * 1024]
+
+    async def fake_fetch(_url: str) -> DummyResponse:
+        return DummyResponse(chunks=body)
+
+    monkeypatch.setattr(pipeline, "_fetch_response", fake_fetch)
+
+    with pytest.raises(ValueError, match="Downloaded PDF exceeds the 10 MB limit"):
+        await pipeline.download_pdf(paper)
+    assert not await asyncio.to_thread(lambda: list(tmp_path.rglob("*.pdf")))
+    # A cap above the hard limit is clamped to it.
+    assert (
+        IngestionPipeline(storage_root=tmp_path, max_pdf_bytes=MAX_PDF_BYTES * 2).max_pdf_bytes
+        == MAX_PDF_BYTES
+    )
 
 
 @pytest.mark.asyncio

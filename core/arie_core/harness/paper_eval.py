@@ -41,6 +41,7 @@ from arie_core.harness.reader import (
 )
 from arie_core.harness.session import ModelSession
 from arie_core.harness.trace import STAGES, AnswerTrace
+from arie_core.pipeline.chunker import is_table
 from arie_core.pipeline.pack import chunk_number, pack_chunks
 from arie_core.plugin_api import LLM, Ctx
 
@@ -465,6 +466,21 @@ def float_ref_passed(
         elif any(_float_pattern(name).search(row.text) for row in cited):
             return True
     return abstained and any(_float_pattern(name).search(hint) for name in floats)
+
+
+def table_chunk_retrieved(floats: Sequence[str], texts: Sequence[str]) -> bool | None:
+    """Whether a retrieved chunk is one of the expected tables (S27 retrieval-only check).
+
+    A table's chunk holds a Markdown table and names it ("Table 2", as its caption or a
+    mention). Returns None when ``floats`` names no table, so the case is not counted.
+    """
+    names = [name for name in floats if name.startswith("Table ")]
+    if not names:
+        return None
+    return any(
+        is_table(text) and any(_float_pattern(name).search(text) for name in names)
+        for text in texts
+    )
 
 
 def score_case(
