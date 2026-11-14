@@ -115,6 +115,17 @@ def anchor_numbers(value: str) -> set[str]:
     return set(re.findall(r"\d+(?:\.\d+)?", value.replace(",", "")))
 
 
+def canonical_numbers(value: str) -> set[str]:
+    """``anchor_numbers`` with trailing decimal zeros dropped: ``92.10`` and ``92.1`` are one.
+
+    There is no unit or scale conversion, so ``0.853`` and ``85.3`` stay different.
+    """
+    return {
+        number.rstrip("0").rstrip(".") if "." in number else number
+        for number in anchor_numbers(unicodedata.normalize("NFKC", value))
+    }
+
+
 def lost_qualifier(text: str, quote: str) -> bool:
     """True if ``quote`` has a negation, hedge or restriction word that ``text`` lacks."""
     return any(
@@ -122,9 +133,15 @@ def lost_qualifier(text: str, quote: str) -> bool:
     )
 
 
-def preserves_anchors(text: str, quote: str) -> bool:
-    """Reject changed numbers, lost qualifications and new absolutes before model review."""
-    if not anchor_numbers(text) <= anchor_numbers(quote):
+def preserves_anchors(text: str, quote: str, *, table: bool = False) -> bool:
+    """Reject changed numbers, lost qualifications and new absolutes before model review.
+
+    With ``table`` (S28), ``quote`` is a table premise (``table_premise``/``linearize_quote``)
+    and numbers compare in ``canonical_numbers`` form: every number of the claim must be a
+    cell, header or caption number of the rows it is checked against.
+    """
+    numbers = canonical_numbers if table else anchor_numbers
+    if not numbers(text) <= numbers(quote):
         return False
     if lost_qualifier(text, quote):
         return False
@@ -265,6 +282,7 @@ __all__ = [
     "REVIEW_OPTIONAL_ENTAILMENT",
     "EntailmentCheck",
     "attributed_premise",
+    "canonical_numbers",
     "EvidenceVerifier",
     "normalize_verification_text",
     "preserves_anchors",

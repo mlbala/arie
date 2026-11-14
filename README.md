@@ -243,7 +243,10 @@ flowchart TD
   is filtered by paper again.
 - Tables are quoted as text. A table longer than 650 bytes offers its caption, header
   and first rows (up to 1,200 bytes) as one quote; contents listings are never
-  evidence. Figures are never described: their caption and the words drawn inside a
+  evidence. A claim quoted from a table is checked against its rows written as
+  sentences ("Table 2: Model = BERT, F1 = 85.3."), so the entailment model sees each
+  value with its column name; its numbers must be cells, column names or caption of the
+  rows it cites. The quote shown is still the exact table text. Figures are never described: their caption and the words drawn inside a
   vector figure are searchable and quotable; a bitmap figure gives only its caption.
 - Vector search gets at most 6 seconds and always leaves 10 seconds for writing and
   review. If it fails, retrieval falls back to keyword search.

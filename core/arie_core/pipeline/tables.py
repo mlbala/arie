@@ -136,3 +136,84 @@ def table_context(text: str, layout: TableLayout) -> str:
     """
     parts = [text[span[0] : span[1]] for span in (layout.caption, layout.header) if span[0] >= 0]
     return "\n".join(part.strip() for part in parts if part.strip())
+
+
+# Table rows as sentences, for checking only (S28, ADR 0020). Never shown, never stored.
+
+_TAG = re.compile(r"<br\s*/?>|<[^>]+>", re.IGNORECASE)
+_CAPTION_PARTS = re.compile(r"^(Table|Tab\.)\s*([A-Z]?\d+)\s*[:.]?\s*(.*)$", re.IGNORECASE | re.S)
+
+
+def table_cells(line: str) -> list[str]:
+    """The cells of one ``| a | b |`` line, emphasis, HTML tags and extra spaces removed."""
+    body = line.strip()
+    body = body.removeprefix("|").removesuffix("|")
+    cells = [_TAG.sub(" ", cell).replace("*", "").replace("`", "") for cell in body.split("|")]
+    return [" ".join(cell.split()) for cell in cells]
+
+
+def _caption_lead(caption: str) -> str:
+    """``"Table 2 (Results on SQuAD; dev set)"`` from ``"**Table 2:** Results on SQuAD. Dev set."``.
+
+    Inner sentence ends become ``;`` so the lead stays one sentence for the checks.
+    """
+    text = " ".join(caption.replace("*", "").split()).strip("_ ")
+    if not text:
+        return ""
+    match = _CAPTION_PARTS.match(text)
+    if match is None:
+        return re.sub(r"[.!?]+\s+", "; ", text).rstrip(" .")
+    label = f"Table {match.group(2)}"
+    about = re.sub(r"[.!?]+\s+", "; ", match.group(3)).rstrip(" .")
+    return f"{label} ({about})" if about else label
+
+
+def linearize_row(caption: str, header: str, row: str) -> str:
+    """One data row as a sentence: ``"Table 2 (Results): Model = BERT, F1 = 85.3."``.
+
+    ``header`` may hold several lines; the last one names the columns. An empty cell is
+    skipped, a cell under an empty or missing header is given alone, and without a caption
+    the sentence starts at the cells. Every cell's text is kept as written.
+    """
+    lines = [line for line in header.splitlines() if line.strip()]
+    names = table_cells(lines[-1]) if lines else []
+    parts: list[str] = []
+    for index, value in enumerate(table_cells(row)):
+        if not value:
+            continue
+        name = names[index] if index < len(names) else ""
+        parts.append(f"{name} = {value}" if name and name != value else value)
+    lead = _caption_lead(caption)
+    body = ", ".join(parts)
+    return f"{lead}: {body}." if lead else f"{body}."
+
+
+def table_premise(text: str) -> str | None:
+    """``text`` with its first table written as sentences, for checking a claim against it.
+
+    The header and table lines become one sentence per data row, each its own paragraph and
+    led by "Table N" (nothing when uncaptioned). The caption stays once, as written, so its
+    words (and any "only" or "not") are not repeated into every row. Every row is kept: a
+    match on row labels missed rows named another way (S28 measurement, ADR 0020). The text
+    around the table stays as it is. Returns None when ``text`` holds no table.
+    """
+    layout = table_layout(text)
+    if layout is None:
+        return None
+    header = text[layout.header[0] : layout.header[1]]
+    lead = f"Table {layout.number}" if layout.number else ""
+    sentences = [linearize_row(lead, header, text[start:end]) for start, end in layout.rows]
+    end = layout.rows[-1][1] if layout.rows else layout.header[1]
+    return "\n\n".join(
+        part.strip()
+        for part in (text[: layout.header[0]], "\n\n".join(sentences), text[end:])
+        if part.strip()
+    )
+
+
+def linearize_quote(context: str, quote: str) -> str:
+    """A table-row quote with its S27 ``context`` (caption, then header lines) as a sentence."""
+    lines = context.splitlines()
+    header = "\n".join(line for line in lines if line.lstrip().startswith("|"))
+    caption = " ".join(line for line in lines if not line.lstrip().startswith("|"))
+    return linearize_row(caption, header, quote)

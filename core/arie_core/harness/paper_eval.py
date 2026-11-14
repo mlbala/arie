@@ -19,7 +19,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import cast
 
@@ -27,6 +27,7 @@ import msgspec
 import yaml
 
 from arie_core.harness.answer import AnswerResult
+from arie_core.harness.citations import FLAGGED, CitationChecks, check_answer
 from arie_core.harness.explain import ExplainResult
 from arie_core.harness.injection import is_untrusted
 from arie_core.harness.judge import (
@@ -132,6 +133,12 @@ class PaperEvalResult(msgspec.Struct, frozen=True, kw_only=True):
     background_share: float | None = None
     # Copied from the case (S21); ``summarize`` splits the numbers by it.
     evidence_kind: str = "text"
+    # Explain mode only (S28): flagged sentences that cite a table chunk, as ``flagged`` and a
+    # count per reason. ``table_flags`` reads tables as row sentences (``check_answer``);
+    # ``table_flags_s27`` re-checks the same answer on the raw pipes, as S27 code did. Empty
+    # when the answer cites no table chunk.
+    table_flags: dict[str, int] = {}
+    table_flags_s27: dict[str, int] = {}
 
 
 def _normalize(text: str) -> str:
@@ -586,6 +593,17 @@ def error_result(
     )
 
 
+def table_flags(checks: CitationChecks) -> dict[str, int]:
+    """``flagged`` and per-reason counts of flagged sentences citing a table; {} for none."""
+    flagged = [item for item in checks.sentences if item.table and item.status == FLAGGED]
+    if not any(item.table for item in checks.sentences):
+        return {}
+    reasons = Counter(reason for item in flagged for reason in item.reasons)
+    return {"cited": sum(item.table for item in checks.sentences), "flagged": len(flagged)} | dict(
+        sorted(reasons.items())
+    )
+
+
 def score_explained(
     case: PaperEvalCase,
     rows: Sequence[EvidenceChunk],
@@ -638,6 +656,11 @@ def score_explained(
         passed = None
     passed_written = grounded and written and recall >= PASS_RECALL if case.kind == "fact" else None
     tokens = result.trace.tokens
+    sources = {
+        item.marker: by_id[item.chunk_id].text
+        for item in result.citations
+        if item.chunk_id in by_id
+    }
     served = tokens.cache_hit + tokens.cache_miss
     return PaperEvalResult(
         case_id=case.case_id,
@@ -668,6 +691,8 @@ def score_explained(
         citation_support=citation_support(result.checks, judgement) if judgement else None,
         win_rate=pairwise.score if pairwise else None,
         judge_status=judgement.status if judgement else "",
+        table_flags=table_flags(check_answer(result.text, sources)),
+        table_flags_s27=table_flags(check_answer(result.text, sources, tables=False)),
     )
 
 
@@ -729,6 +754,13 @@ def _by_evidence_kind(
             else None,
         }
     return block
+
+
+def _sum_counts(counts: Iterable[Mapping[str, int]]) -> dict[str, int]:
+    total: Counter[str] = Counter()
+    for count in counts:
+        total.update(count)
+    return dict(total)
 
 
 def summarize(results: Sequence[PaperEvalResult]) -> dict[str, object]:
@@ -808,6 +840,10 @@ def summarize(results: Sequence[PaperEvalResult]) -> dict[str, object]:
         # ``judge_failed`` say how many cases stand behind the two means, and how many
         # support judgements failed (those cases are left out of ``citation_support``).
         "citation_support": round(sum(supports) / len(supports), 3) if supports else None,
+        # Explain runs only (S28): sentences citing a table chunk, flagged with tables read as
+        # row sentences vs the raw pipes (S27) on the same answers; {} when none cite a table.
+        "table_flags": _sum_counts(item.table_flags for item in results),
+        "table_flags_s27": _sum_counts(item.table_flags_s27 for item in results),
         "win_rate": round(sum(wins) / len(wins), 3) if wins else None,
         "win_cases": len(wins),
         "judge_failed": sum(item.judge_status == "failed" for item in results),

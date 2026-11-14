@@ -18,9 +18,11 @@ from arie_core.harness.reader import (
     Excerpt,
     checked_text,
     locate_quote,
+    premise_text,
     prose_sentences,
     query_terms,
     select_excerpts,
+    table_check_text,
 )
 from arie_core.harness.session import ModelSession, failure_reason
 from arie_core.harness.trace import AnswerTrace
@@ -451,9 +453,13 @@ async def _compose(
                 continue
             start, end = span
             authoritative = row.text[start:end]
-            # A table row is checked with its caption and header, never other rows (S27).
+            # A table row is checked with its caption and header, never other rows (S27), and
+            # as a sentence (S28): a row unit's numbers must be that row's cells, header or caption.
+            table = table_check_text(row.context, authoritative)
             checked = f"{row.context}\n{authoritative}" if row.context else authoritative
-            if not preserves_anchors(text, checked):
+            if not preserves_anchors(text, table or checked, table=table is not None):
+                if table is not None:
+                    logger.info("table_number trace=%s claim rejected before Tier 3", ctx.trace_id)
                 continue
             # One passage may support several separately stated points (the writer is told
             # to split sentences), but never the same point twice.
@@ -494,7 +500,7 @@ async def _compose(
                 with session.stage("tier3"):
                     async with asyncio.timeout(budget):
                         scores = await EvidenceVerifier.tier_3_scores(
-                            entail, [(checked_text(item), item.text) for item in candidates]
+                            entail, [(premise_text(item), item.text) for item in candidates]
                         )
             except TimeoutError:
                 _tier_3_failed(ctx, "entailment_timeout", f"after {budget:.1f}s")
