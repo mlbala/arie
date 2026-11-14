@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from typing import Any, Protocol, cast, get_args
 
 import httpx
+import msgspec
 import pytest
 from arie_api import eval_paper
 from arie_api.export_openapi import export_openapi
@@ -45,7 +46,24 @@ FIGURES = [
         "caption": "Figure 2: Cedar.",
         "crop": "paper-1.figures/0.png",
     },
-    {"number": "3", "page": 1, "box": [0.0, 0.0, 10.0, 10.0], "caption": "Figure 3: Size."},
+    {
+        "number": "3",
+        "page": 1,
+        "box": [0.0, 0.0, 10.0, 10.0],
+        "caption": "Figure 3: Size.",
+        "text_spans": [[0, 5]],
+    },
+]
+TABLES = [
+    {
+        "number": "1",
+        "page": 1,
+        "caption": "Table 1: Scores.",
+        "chunk_id": "paper-1:0",
+        "header_start": 0,
+        "header_end": 5,
+        "rows": [[6, 10]],
+    }
 ]
 
 
@@ -170,7 +188,7 @@ def client(
             # Captured already (S26), so the background figure catch-up leaves it alone.
             captured = {CAPTURE_KEY: dict(CAPTURE_STEPS)}
             stored = (
-                {"file_path": str(pdf), "figures": FIGURES, **captured}
+                {"file_path": str(pdf), "figures": FIGURES, "tables": TABLES, **captured}
                 if identifier == "paper-1"
                 else {}
             )
@@ -275,6 +293,7 @@ def test_the_paper_lists_its_figures_without_storage_keys(client: _APIClient) ->
             "page": 1,
             "caption": "Figure 2: Cedar.",
             "has_crop": True,
+            "image_only": True,
             "crop_url": "/v1/papers/paper-1/figures/2.png",
         },
         {
@@ -282,10 +301,14 @@ def test_the_paper_lists_its_figures_without_storage_keys(client: _APIClient) ->
             "page": 1,
             "caption": "Figure 3: Size.",
             "has_crop": False,
+            "image_only": False,
             "crop_url": None,
         },
     ]
-    assert client.get("/v1/papers/paper-2").json()["figures"] == []
+    # Tables are listed without offsets (S27); a paper stored before S27 lists none.
+    assert body["tables"] == [{"number": "1", "page": 1, "caption": "Table 1: Scores."}]
+    other = client.get("/v1/papers/paper-2").json()
+    assert other["figures"] == [] and other["tables"] == []
 
 
 def test_question_stream_emits_verified_claims_only(client: _APIClient) -> None:
@@ -330,6 +353,17 @@ def test_an_ocr_excerpt_is_cited_as_ocr_text_from_its_figure() -> None:
     page = EvidenceChunk("paper-1", "paper-1:0", text, 3, 0, len(text))
     assert strict_citation(excerpt, page)["label"] == "p. 3"
     assert "ocr" not in strict_citation(excerpt, page)
+
+
+def test_a_table_row_citation_carries_its_header_as_context_only() -> None:
+    row = "| BERT | 85.1 |"
+    excerpt = Excerpt("BERT scores 85.1.", row, 2, 40, 40 + len(row), "paper-1:3")
+    page = EvidenceChunk("paper-1", "paper-1:3", row, 2, 40, 40 + len(row))
+    assert "context" not in strict_citation(excerpt, page)
+    with_header = msgspec.structs.replace(excerpt, context="Table 1: F1.\n| Model | F1 |")
+    citation = strict_citation(with_header, page)
+    assert citation["context"] == "Table 1: F1.\n| Model | F1 |"
+    assert (citation["char_start"], citation["char_end"]) == (40, 40 + len(row))
 
 
 def test_override_preserves_protected_fields(client: _APIClient) -> None:

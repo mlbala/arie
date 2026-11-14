@@ -296,6 +296,19 @@
             "title": "Initial Months",
             "type": "integer"
           },
+          "keep_papers": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Keep Papers"
+          },
           "max_papers": {
             "default": 100,
             "maximum": 10000.0,

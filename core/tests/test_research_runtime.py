@@ -18,6 +18,7 @@ from arie_core.harness.reader import EvidenceChunk, retrieve, select_excerpts
 from arie_core.pipeline import IngestionPipeline
 from arie_core.plugin_api import Ctx, LLMRequest, ScrapedPaperInput, SourcePage
 from arie_core.registry.manager import ArieConfig
+from arie_core.registry.sync import SyncConfig
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -123,7 +124,8 @@ with pymupdf.open() as doc:
         reranker={"use": "none"},
         sources=["arxiv"],
     )
-    config = config.model_copy(update={"plugins": plugins})
+    # The default 6-month window and no retention, whatever arie.yaml sets.
+    config = config.model_copy(update={"plugins": plugins, "sync": SyncConfig()})
     runtime = ResearchRuntime(ROOT, config)
     published = (datetime.now(UTC) - timedelta(days=2)).isoformat()
     pages_seen: list[str | None] = []
