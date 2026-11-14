@@ -22,7 +22,7 @@ from arie_core.harness.citations import (
 )
 from arie_core.harness.intent import plan_answer
 from arie_core.harness.reader import EvidenceChunk, Excerpt, premise_text
-from arie_core.harness.verifier import canonical_numbers, preserves_anchors
+from arie_core.harness.verifier import anchor_numbers, canonical_numbers, preserves_anchors
 from arie_core.pipeline.tables import (
     linearize_quote,
     linearize_row,
@@ -192,3 +192,32 @@ def test_explain_checks_of_prose_sources_are_unchanged() -> None:
     )
     assert check_answer(text, sources) == check_answer(text, sources, tables=False)
     assert all(not item.table for item in check_answer(text, sources).sentences)
+
+
+# S29: numbers as PDF-to-Markdown writes them.
+
+
+@pytest.mark.parametrize(
+    ("text", "numbers"),
+    [
+        ("|Densely-connected 4-layer QRNN|150|91_._4|", {"4", "150", "91.4"}),
+        ("|UTCNN (full)|.698|**.755***|", {"0.698", "0.755"}),
+        ("|M-_F_1|.602|**.251**|", {"1", "0.602", "0.251"}),
+        ("See Section 3.2 and v1.2.", {"3.2", "1.2"}),
+        ("About 1,000 papers, e.g. 5 of them, and 3*4 cells.", {"1000", "5", "3", "4"}),
+    ],
+)
+def test_anchor_numbers_read_pdf_emphasis_and_bare_decimals(text: str, numbers: set[str]) -> None:
+    assert anchor_numbers(text) == numbers
+
+
+def test_a_bare_decimal_in_a_table_supports_its_leading_zero_form_in_both_modes() -> None:
+    row = "| UTCNN (full) | .698 | **.755*** |"
+    assert preserves_anchors("UTCNN reaches 0.755.", row, table=True)
+    assert preserves_anchors("UTCNN reaches 0.755.", row)
+    assert not preserves_anchors("UTCNN reaches 0.756.", row, table=True)
+    table = "| Model | Acc |\n| --- | --- |\n| Densely-connected 4-layer QRNN | 91_._4 |"
+    ok = check_answer("The 4-layer QRNN reached 91.4% accuracy [c2].", {2: table})
+    wrong = check_answer("The 4-layer QRNN reached 91.5% accuracy [c2].", {2: table})
+    assert ok.sentences[0].status == CITED_OK
+    assert wrong.sentences[0].reasons == (NUMBER_NOT_IN_SOURCE,)

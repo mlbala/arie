@@ -110,9 +110,19 @@ _QUALIFIERS = (
 _ABSOLUTES = r"\b(?:always|never|every|guarantees?|proves?|perfect|all datasets)\b"
 
 
+# PDF-to-Markdown writes italic numbers as ``91_._4`` and table decimals as ``.755``.
+_MARKUP_AT_POINT = re.compile(r"(?<=\d)[_*]+(?=\.)|(?<=\.)[_*]+(?=\d)")
+_BARE_DECIMAL = re.compile(r"(?<![\w.])\.(?=\d)")
+
+
 def anchor_numbers(value: str) -> set[str]:
-    """The numbers in a text as written, with thousands commas removed (``1,000`` is ``1000``)."""
-    return set(re.findall(r"\d+(?:\.\d+)?", value.replace(",", "")))
+    """The numbers in a text, with thousands commas removed (``1,000`` is ``1000``).
+
+    Emphasis markers at a decimal point are dropped (``91_._4`` is ``91.4``) and a decimal
+    with no leading digit gets one (``.755`` is ``0.755``) (S29). Nothing is rescaled.
+    """
+    text = _MARKUP_AT_POINT.sub("", value.replace(",", ""))
+    return set(re.findall(r"\d+(?:\.\d+)?", _BARE_DECIMAL.sub("0.", text)))
 
 
 def canonical_numbers(value: str) -> set[str]:
