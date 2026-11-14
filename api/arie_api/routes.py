@@ -141,11 +141,25 @@ def public_figures(paper_id: str, paper: Document) -> list[Document]:
             "page": figure.get("page"),
             "caption": figure.get("caption", ""),
             "has_crop": bool(figure.get("crop")),
+            # No words drawn inside it (S27): the figure is known only by its caption and crop.
+            "image_only": not figure.get("text_spans"),
             "crop_url": (
                 figure_url(paper_id, str(figure.get("number", ""))) if figure.get("crop") else None
             ),
         }
         for figure in cast(list[Document], paper.get("figures") or [])
+    ]
+
+
+def public_tables(paper: Document) -> list[Document]:
+    """The paper's tables as the API lists them (S27); a paper stored before S27 has none."""
+    return [
+        {
+            "number": str(table.get("number", "")),
+            "page": table.get("page"),
+            "caption": table.get("caption", ""),
+        }
+        for table in cast(list[Document], paper.get("tables") or [])
     ]
 
 
@@ -166,6 +180,9 @@ def strict_citation(excerpt: Excerpt, source: EvidenceChunk | None) -> Document:
             source.figure if source else "", source.mentions if source else ()
         ),
     }
+    if excerpt.context:
+        # A table row's caption and header (S27): shown above the quote, never part of it.
+        citation["context"] = excerpt.context
     if ocr and source is not None:
         citation.update(label=f"OCR text from Figure {source.figure}, p. {excerpt.page_start}")
         citation["ocr"] = True
@@ -590,6 +607,7 @@ def create_app(runtime: ResearchRuntime | None = None) -> FastAPI:
             None if paper.get("pdf_deleted") else f"/v1/papers/{quote(paper_id, safe='')}/pdf"
         )
         result["figures"] = public_figures(paper_id, paper)
+        result["tables"] = public_tables(paper)
         return result
 
     @app.delete("/v1/papers/{paper_id:path}")

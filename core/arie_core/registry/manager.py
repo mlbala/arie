@@ -190,9 +190,11 @@ class IngestionConfig(BaseModel):
     recognition model it loads, relative to the project root unless absolute; ``make setup``
     or ``make ocr-model`` fetches it once and the runtime checks its pinned SHA-256 (ADR 0018).
     A missing model only skips OCR, with a warning; ARIE still starts.
+    ``max_pdf_mb`` caps a downloaded PDF's size; a larger one fails before it is stored.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
+    max_pdf_mb: int = Field(default=25, ge=1, le=25, strict=True)
     pdf_check: PdfCheckConfig = Field(default_factory=PdfCheckConfig)
     hidden_text: bool = True
     figure_ocr: bool = True

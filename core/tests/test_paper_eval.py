@@ -34,6 +34,7 @@ from arie_core.harness.paper_eval import (
     score_case,
     score_explained,
     summarize,
+    table_chunk_retrieved,
 )
 from arie_core.harness.reader import EvidenceChunk, Excerpt
 from arie_core.harness.trace import AnswerTrace, StageSeconds
@@ -718,3 +719,12 @@ def test_a_strict_answer_is_judged_on_everything_it_wrote_not_the_saved_cut() ->
     long = Excerpt("w " * 900, "q" * 100, 3, 0, 100, "p1:2")
     assert answer_text(AnswerResult([long], "verified_answer")) == "w " * 900
     assert answer_text(AnswerResult([], "abstention")) == ""
+
+
+def test_table_chunk_retrieved_needs_the_named_table_as_a_table() -> None:
+    table = "Table 2: Results.\n\n| Model | F1 |\n| --- | --- |\n| A | 1.0 |"
+    assert table_chunk_retrieved(["Table 2"], ["prose", table]) is True
+    # A mention of the table in prose is not the table, and another table is not it.
+    assert table_chunk_retrieved(["Table 2"], ["As Table 2 shows, A wins."]) is False
+    assert table_chunk_retrieved(["Table 3"], [table]) is False
+    assert table_chunk_retrieved(["Figure 1"], [table]) is None

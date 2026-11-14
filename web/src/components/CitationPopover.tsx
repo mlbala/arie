@@ -12,6 +12,8 @@ export interface CitationHover {
   page: number;
   quote: string | null | undefined;
   table?: boolean;
+  /** A table row's caption and header (S27), shown above the quote for reading only. */
+  context?: string | undefined;
   unchecked?: boolean;
 }
 
@@ -55,11 +57,22 @@ export function CitationPopover({ id, hover, onDismiss }: { id: string; hover: C
         ? <p>Loading passage…</p>
         : hover.quote === null
           ? <p>Passage preview unavailable. Click to open it.</p>
-          : <blockquote className={hover.table ? "table-quote" : undefined}>{hover.quote}</blockquote>}
+          : <>
+            {hover.context && <QuoteContext text={hover.context} />}
+            <blockquote className={hover.table ? "table-quote" : undefined}>{hover.quote}</blockquote>
+          </>}
       <footer>Click to open in the paper</footer>
     </div>,
     document.body,
   );
+}
+
+/** A table row's caption and header, set apart from the quote: context to read it by, not quoted. */
+export function QuoteContext({ text }: { text: string }) {
+  return <div className="quote-context">
+    <span>Table header · context, not quoted</span>
+    <pre>{text.trim()}</pre>
+  </div>;
 }
 
 /** Explain-mode citations carry no quote, so the hover card reads the cited chunk from its page. */

@@ -1,6 +1,6 @@
 """Evaluate answers on the first N papers of Qasper's dev split.
 
-    uv run python -m arie_api.eval_qasper <papers> [--kind figure|table|text|any]
+    uv run python -m arie_api.eval_qasper <papers> [--kind figure|table|text|any] [--retrieval]
 
 Qasper's questions were written by NLP practitioners from a paper's title and abstract,
 so they are an outside check next to ``eval_paper``'s self-generated questions. The dev
@@ -14,6 +14,10 @@ Prints one JSON line per answer, then a last line with the paper and question co
 summary over every answer, shaped like ``eval_paper``'s. Papers that fail to import are
 counted and skipped, not replaced, so the slice stays the same between runs. Exits 1 if no
 paper was evaluated or a run did not complete. The papers join your library.
+
+``--retrieval`` (S27) calls no LLM: for every ``float_ref`` case that names a table it asks
+the vector index for the question's top 8 chunks and counts the cases where one of them is
+the expected table (``table_chunk_retrieved``). It saves no cases and prints one summary line.
 """
 
 from __future__ import annotations
@@ -29,7 +33,7 @@ from pathlib import Path
 
 import httpx
 import msgspec
-from arie_core.harness.paper_eval import PaperEvalResult, summarize
+from arie_core.harness.paper_eval import PaperEvalResult, summarize, table_chunk_retrieved
 from arie_core.harness.qasper import (
     DEV_MEMBER,
     MAX_ARCHIVE_BYTES,
@@ -189,6 +193,47 @@ async def evaluate(papers: int, mode: str = "strict", kind: str = "any") -> bool
     return ok
 
 
+async def retrieval(papers: int, kind: str = "table") -> bool:
+    """Share of table ``float_ref`` cases whose expected table is in the vector top 8."""
+    dev = await load_dev()
+    selected = select_papers(dev, papers, kind)
+    runtime = ResearchRuntime(ROOT)
+    counts: Counter[str] = Counter(papers=len(selected))
+    try:
+        await runtime.initialize()
+        if runtime.embedding is None:
+            print("Vector search is off", file=sys.stderr)
+            return False
+        await runtime.embedding.embed(["warm-up"], kill_after=600.0)
+        for qasper_id in selected:
+            paper = await runtime.get_paper(qasper_id)
+            if paper is None or paper.get("status") != "INDEXED":
+                counts["not_in_library"] += 1
+                continue
+            if not await build_vectors(runtime, qasper_id):
+                counts["vectors_failed"] += 1
+                continue
+            texts = {str(chunk["chunk_id"]): str(chunk["text"]) for chunk in paper["chunks"]}
+            cases, _ = convert_questions(
+                qasper_id, dev[qasper_id], runtime.evaluations.chunks(paper)
+            )
+            for case in cases:
+                if case.kind != "float_ref":
+                    continue
+                ids = (await runtime.semantic_search(qasper_id, [case.question]))[:8]
+                found = table_chunk_retrieved(case.floats, [texts.get(i, "") for i in ids])
+                if found is None:
+                    continue
+                counts["table_cases"] += 1
+                counts["in_top_8"] += found
+            counts["evaluated"] += 1
+    finally:
+        runtime.close()
+    share = counts["in_top_8"] / counts["table_cases"] if counts["table_cases"] else 0.0
+    print(json.dumps({"retrieval": dict(sorted(counts.items())), "share": round(share, 3)}))
+    return counts["table_cases"] > 0
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate answers on a Qasper dev slice.")
     parser.add_argument("papers", type=int, help="how many papers, taken in id order")
@@ -199,6 +244,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="any",
         help="only papers with a question of this evidence kind (default: any paper)",
     )
+    parser.add_argument(
+        "--retrieval",
+        action="store_true",
+        help="no LLM: share of table float_ref cases with the table in the vector top 8",
+    )
     args = parser.parse_args(argv)
     if args.papers < 1:
         parser.exit(2, "error: papers must be at least 1\n")
@@ -207,6 +257,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.retrieval:
+        raise SystemExit(0 if asyncio.run(retrieval(args.papers, args.kind)) else 1)
     raise SystemExit(0 if asyncio.run(evaluate(args.papers, args.mode, args.kind)) else 1)
 
 

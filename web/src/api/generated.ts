@@ -692,6 +692,8 @@ export interface components {
              * @default 6
              */
             initial_months: number;
+            /** Keep Papers */
+            keep_papers?: number | null;
             /**
              * Max Papers
              * @default 100

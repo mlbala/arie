@@ -47,6 +47,8 @@ export interface CitationRange {
   figures?: string[] | undefined;
   /** OCR text read from a bitmap figure (S25): a transcription, shown next to its crop. */
   ocr?: boolean | undefined;
+  /** A table row's caption and header (S27): shown above the quote, never part of it. */
+  context?: string | undefined;
 }
 
 /** A figure as the paper response lists it; the crop is the paper's own figure, never a description. */
