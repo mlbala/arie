@@ -95,7 +95,11 @@ async def test_row_claims_are_checked_with_caption_and_header_but_not_other_rows
     assert excerpt.quote == ROWS[14]
     assert PAGE[excerpt.char_start : excerpt.char_end] == ROWS[14]
     assert excerpt.context == f"{CAPTION}\n{HEADER}"
-    # Tier 3 read the caption, the header and that one row, never another row.
-    assert premises == [f"{CAPTION}\n{HEADER}\n{ROWS[14]}"]
+    # Tier 3 read the caption, the header and that one row, never another row, as a
+    # sentence (S28).
+    assert premises == [
+        "Table 3 (F1 of every model on the dev set): Model = model-14, F1 = 64.0, "
+        "Note = baseline run with seed 14."
+    ]
     writer = model.requests[0].prompt
     assert '"context"' in writer and ROWS[14] in writer

@@ -16,8 +16,10 @@ from collections.abc import Mapping, Sequence
 
 import msgspec
 
-from arie_core.harness.verifier import anchor_numbers, content_tokens, lost_qualifier
+from arie_core.harness.verifier import canonical_numbers, content_tokens, lost_qualifier
+from arie_core.pipeline.chunker import is_table
 from arie_core.pipeline.pack import marker_numbers
+from arie_core.pipeline.tables import table_premise
 
 CITED_OK = "cited_ok"
 FLAGGED = "flagged"
@@ -53,7 +55,7 @@ class SentenceCheck(msgspec.Struct, frozen=True):
 
     ``start`` and ``end`` are character offsets into the answer text, and ``text`` is
     ``text[start:end]`` with its markers. ``reasons`` is empty unless ``status`` is
-    ``flagged``.
+    ``flagged``. ``table`` is true when a cited chunk holds a table (S28).
     """
 
     start: int
@@ -62,6 +64,7 @@ class SentenceCheck(msgspec.Struct, frozen=True):
     status: str
     markers: tuple[int, ...] = ()
     reasons: tuple[str, ...] = ()
+    table: bool = False
 
 
 class CitationChecks(msgspec.Struct, frozen=True, kw_only=True):
@@ -172,15 +175,6 @@ def sentence_spans(text: str) -> list[tuple[int, int]]:
     return trimmed
 
 
-def _canonical(number: str) -> str:
-    return number.rstrip("0").rstrip(".") if "." in number else number
-
-
-def _numbers(value: str) -> set[str]:
-    """Numbers as ``92.10`` and ``92.1`` count as one."""
-    return {_canonical(number) for number in anchor_numbers(unicodedata.normalize("NFKC", value))}
-
-
 def _stems(value: str) -> frozenset[str]:
     """Content words without a final ``s``, cut to five letters: ``improves`` meets ``improve``."""
     tokens = content_tokens(unicodedata.normalize("NFKC", value))
@@ -190,23 +184,21 @@ def _stems(value: str) -> frozenset[str]:
 class _Aligner:
     """Finds the sentence of a cited chunk that a claim restates, to compare qualifiers."""
 
-    def __init__(self, sources: Mapping[int, str]) -> None:
-        self._sources = sources
-        self._cache: dict[int, list[tuple[str, frozenset[str]]]] = {}
+    def __init__(self) -> None:
+        self._cache: dict[str, list[tuple[str, frozenset[str]]]] = {}
 
-    def _sentences(self, number: int) -> list[tuple[str, frozenset[str]]]:
-        if number not in self._cache:
-            raw = self._sources[number]
-            self._cache[number] = [(raw[a:b], _stems(raw[a:b])) for a, b in sentence_spans(raw)]
-        return self._cache[number]
+    def _sentences(self, raw: str) -> list[tuple[str, frozenset[str]]]:
+        if raw not in self._cache:
+            self._cache[raw] = [(raw[a:b], _stems(raw[a:b])) for a, b in sentence_spans(raw)]
+        return self._cache[raw]
 
-    def best(self, claim: str, numbers: Sequence[int]) -> str | None:
+    def best(self, claim: str, texts: Sequence[str]) -> str | None:
         wanted = _stems(claim)
         if len(wanted) < _ALIGN_MIN_STEMS:
             return None
         best_share, best_text = 0.0, None
-        for number in numbers:
-            for sentence, stems in self._sentences(number):
+        for raw in texts:
+            for sentence, stems in self._sentences(raw):
                 shared = len(wanted & stems)
                 share = shared / len(wanted)
                 if shared >= _ALIGN_MIN_STEMS and share > best_share:
@@ -214,7 +206,7 @@ class _Aligner:
         return best_text if best_share >= _ALIGN_MIN_SHARE else None
 
 
-def check_answer(text: str, sources: Mapping[int, str]) -> CitationChecks:
+def check_answer(text: str, sources: Mapping[int, str], *, tables: bool = True) -> CitationChecks:
     """Check every sentence of an explain answer; ``sources`` maps a marker to its raw chunk text.
 
     ``sources`` holds the chunks of the bound paper that the model saw, so a marker outside it
@@ -223,14 +215,20 @@ def check_answer(text: str, sources: Mapping[int, str]) -> CitationChecks:
     ``lost_qualifier`` (the cited sentence it restates has a negation, hedge or "only" that
     the claim lacks). A sentence with no marker is ``uncited_number`` if it states a number
     and background otherwise.
+
+    A cited chunk that holds a table is read with that table as one sentence per row, with its
+    column names, and the caption once (``table_premise``, S28). Both checks compare against
+    those sentences. ``tables=False`` reads the raw pipes instead, as S10-S27 did; the eval
+    uses it to count the difference.
     """
-    aligner = _Aligner(sources)
+    aligner = _Aligner()
     checked: list[SentenceCheck] = []
     for start, end in sentence_spans(text):
         raw = text[start:end]
         markers = tuple(dict.fromkeys(marker_numbers(raw)))
         claim = _ANY_MARKER.sub("", raw).strip()
-        numbers = _numbers(claim)
+        numbers = canonical_numbers(claim)
+        table = False
         reasons: list[str] = []
         if not markers:
             status = FLAGGED if numbers else BACKGROUND
@@ -241,13 +239,18 @@ def check_answer(text: str, sources: Mapping[int, str]) -> CitationChecks:
             if len(found) < len(markers):
                 reasons.append(INVALID_MARKER)
             if found:
-                if numbers - _numbers(" ".join(sources[number] for number in found)):
+                table = any(is_table(sources[number]) for number in found)
+                texts = [
+                    (table_premise(sources[number]) if tables else None) or sources[number]
+                    for number in found
+                ]
+                if numbers - canonical_numbers(" ".join(texts)):
                     reasons.append(NUMBER_NOT_IN_SOURCE)
-                restated = aligner.best(claim, found)
+                restated = aligner.best(claim, texts)
                 if restated is not None and lost_qualifier(claim, restated):
                     reasons.append(LOST_QUALIFIER)
             status = FLAGGED if reasons else CITED_OK
-        checked.append(SentenceCheck(start, end, raw, status, markers, tuple(reasons)))
+        checked.append(SentenceCheck(start, end, raw, status, markers, tuple(reasons), table))
 
     count = {name: sum(item.status == name for item in checked) for name in (CITED_OK, BACKGROUND)}
     cited = sum(bool(item.markers) for item in checked)

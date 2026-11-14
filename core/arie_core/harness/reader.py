@@ -10,6 +10,7 @@ import msgspec
 
 from arie_core.contracts import Claim, Evidence, LLMRequest
 from arie_core.harness.verifier import EvidenceVerifier
+from arie_core.pipeline.tables import linearize_quote, table_premise
 from arie_core.plugin_api import LLM, Ctx
 from arie_core.plugin_api.figures import is_picture_text
 
@@ -142,6 +143,23 @@ def checked_text(excerpt: Excerpt) -> str:
     the same chunk and never another row; for any other quote it is the quote alone.
     """
     return f"{excerpt.context}\n{excerpt.quote}" if excerpt.context else excerpt.quote
+
+
+def table_check_text(context: str, quote: str) -> str | None:
+    """A table quote written as sentences for the checks (S28), or None for any other quote.
+
+    A row quote with its caption and header (``context``) is that one row, led by the caption;
+    a quote holding a whole table is its text with the table as one sentence per row
+    (``table_premise``). Used only for checking; the quote shown stays the exact text.
+    """
+    if context and quote.lstrip().startswith("|"):
+        return linearize_quote(context, quote)
+    return table_premise(quote)
+
+
+def premise_text(excerpt: Excerpt) -> str:
+    """The Tier 3 premise for a claim: its table rows as sentences, else ``checked_text``."""
+    return table_check_text(excerpt.context, excerpt.quote) or checked_text(excerpt)
 
 
 def is_overview(question: str) -> bool:

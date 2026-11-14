@@ -728,3 +728,19 @@ def test_table_chunk_retrieved_needs_the_named_table_as_a_table() -> None:
     assert table_chunk_retrieved(["Table 2"], ["As Table 2 shows, A wins."]) is False
     assert table_chunk_retrieved(["Table 3"], [table]) is False
     assert table_chunk_retrieved(["Figure 1"], [table]) is None
+
+
+def test_explain_eval_counts_table_flags_with_and_without_row_sentences() -> None:
+    table = (
+        "Table 2: F1 on SQuAD.\n\n| Model | F1 |\n| --- | --- |\n| BERT | 85.3 |\n| ELMo | 80.1 |"
+    )
+    rows = [*ROWS, EvidenceChunk("p1", "p1:9", table, 9, 900, 900 + len(table), "Results")]
+    text = "BERT reaches an F1 of 85.3 on SQuAD [c9]. It beats GPT at 91.2 [c9]."
+    scored = score_explained(fact_case(), rows, explained(text, cited=(9,)), seconds=1.0)
+    assert scored.table_flags == {"cited": 2, "flagged": 1, "number_not_in_source": 1}
+    assert scored.table_flags_s27 == {"cited": 2, "flagged": 1, "number_not_in_source": 1}
+    prose = score_explained(fact_case(), ROWS, explained("It rose [c2].", cited=(2,)), seconds=1)
+    assert prose.table_flags == {} and prose.table_flags_s27 == {}
+    summary = summarize([scored, scored, prose])
+    assert summary["table_flags"] == {"cited": 4, "flagged": 2, "number_not_in_source": 2}
+    assert summary["table_flags_s27"] == summary["table_flags"]
