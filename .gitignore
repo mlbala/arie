@@ -47,12 +47,23 @@ web/coverage/
 # technical specification workspace. The README is the only documentation in git.
 docs/
 
-# Local-only agent instructions, Claude Code settings and skills
+# Local-only agent instructions, prompts, settings and skills used to develop ARIE.
+# (ARIE's own runtime prompts live in prompts/ and are committed.)
 AGENTS.md
 CLAUDE.md
+GEMINI.md
 .claude/
+.copilotignore
 .github/copilot-instructions.md
 .github/instructions/
+.github/prompts/
+.cursor/
+.cursorrules
+.windsurfrules
+.codex/
+.aider*
+.mcp.json
+.vscode/
 
 # Editors, OS and agent tooling
 .DS_Store
