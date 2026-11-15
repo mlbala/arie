@@ -285,7 +285,8 @@ flowchart TD
   planner call, rerank, entailment model or reviewer; the answer depth comes from the
   keyword planner.
 - **Checks after streaming.** Deterministic checks (does the marker exist, does the
-  sentence match the chunk, numbers and qualifiers) run first, then the judge reads every
+  sentence match the chunk, numbers, and a negation or hedge in the clause the sentence
+  restates) run first, then the judge reads every
   cited sentence in one call. Unsupported sentences are flagged to the reader, not removed.
   `judge.chat: off` skips the judge. Results stream as server-sent events and are saved
   with the turn.
@@ -767,7 +768,9 @@ and scores strict answers to its questions (`ARGS="--mode explain"` scores expla
 (a span is found in the paper's extracted text ignoring case, punctuation and spacing, and the
 paper's own wording is kept), unanswerable questions must be
 refused, and yes/no and free-form answers are skipped and counted. The dev file is
-downloaded once into `data/eval/qasper/`. Needs network and an LLM key.
+downloaded once into `data/eval/qasper/`. `SKIP=30` passes over the first 30 papers, so
+`make eval-qasper N=30 SKIP=30` scores a held-out set (papers 31-60). Needs network and an
+LLM key.
 
 #### Improve the explain prompt offline
 
@@ -822,7 +825,7 @@ missed key facts, flagged citations, the judge's reasons and your thumbs-down re
 | `make web-check` | `oxlint`, TypeScript and Vitest for `web/` |
 | `make eval-llm` | Source-grounding evaluation against the configured LLM |
 | `make eval-paper PAPER=<id>` | Evaluate answers on one ingested paper (see [Evaluate answers on one paper](#evaluate-answers-on-one-paper)) |
-| `make eval-qasper N=<papers> [KIND=figure\|table]` | Import the first N Qasper dev papers (with `KIND`, only papers with a figure or table question) and score strict answers to their questions; `ARGS="--retrieval"` calls no LLM and reports how many table questions find their table in the vector top 8 |
+| `make eval-qasper N=<papers> [KIND=figure\|table] [SKIP=<n>]` | Import the first N Qasper dev papers (with `KIND`, only papers with a figure or table question; with `SKIP`, after passing over the first n) and score strict answers to their questions; `ARGS="--retrieval"` calls no LLM and reports how many table questions find their table in the vector top 8 |
 | `make optimize-prompts PROMPT=explain MAX_CALLS=200` | Propose better explain writer rules offline under a hard cap on model calls, and write them as a candidate prompt file (see [Improve the explain prompt offline](#improve-the-explain-prompt-offline)) |
 | `make setup` | `uv sync`, then `make ocr-model` |
 | `make figures-backfill` | By hand, what the background figure catch-up does: add figure records to papers indexed before they existed: re-parse each stored PDF and keep only its figures, with pages, chunks and vectors unchanged (`ARGS="--all"` also refreshes papers that already have figures) |

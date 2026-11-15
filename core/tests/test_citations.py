@@ -212,3 +212,55 @@ def test_the_verifier_helpers_keep_their_meaning() -> None:
     assert not preserves_anchors("It works on 3 sets", "It does not work on 3 sets.")
     assert not preserves_anchors("It works on 4 sets", "It works on 3 sets.")
     assert not preserves_anchors("It always works", "It works.")
+
+
+def _qualifier_flag(claim: str, source: str) -> bool:
+    [sentence] = check_answer(f"{claim} [c1].", {1: source}).sentences
+    return LOST_QUALIFIER in sentence.reasons
+
+
+def test_explain_skips_restriction_words_and_strict_keeps_them() -> None:
+    # S30, 1605.06083: "a small sample" restated without "small" is not a qualification.
+    source = "Here is a small sample of the phrases used to describe beards: a thick beard."
+    claim = "The paper gives a sample of the phrases used to describe beards"
+    assert not _qualifier_flag(claim, source)
+    assert lost_qualifier(claim, source)  # strict is unchanged
+    # A dropped hedge in the same shape is still flagged.
+    hedged = "Here a sample of the phrases may describe beards: a thick beard."
+    assert _qualifier_flag("A sample of the phrases describes beards", hedged)
+
+
+def test_explain_reads_a_qualifier_only_in_the_clause_the_claim_restates() -> None:
+    # S30, 1604.03114: the "not" belongs to the clause before the colon.
+    source = (
+        "However, this does not mean debaters are giving monologues: the interaction shows "
+        "a sharp drop in self-coverage and a rise in opponent-coverage once discussion begins."
+    )
+    claim = "Once discussion begins, self-coverage shows a sharp drop and opponent-coverage a rise"
+    assert not _qualifier_flag(claim, source)
+    # S30, 1610.07809: ", so as to not hinder" starts a clause of its own.
+    noisy = (
+        "Most documents contain irrelevant text such as muddled sentences and footnotes, "
+        "so as to not hinder keyphrase extraction systems."
+    )
+    assert not _qualifier_flag("Documents still contain muddled sentences and footnotes", noisy)
+    # The planted shapes stay flagged: a hedge in the restated clause, and a negation in a
+    # second clause that names the claim's subject.
+    assert _qualifier_flag("The method improves accuracy", "The method may improve accuracy.")
+    split = "The base model improves accuracy on the benchmark; the pruned model does not."
+    assert _qualifier_flag("The pruned model improves accuracy on the benchmark", split)
+
+
+def test_not_only_and_or_not_are_not_negations_and_past_forms_count() -> None:
+    # S30, 1601.02403 and 1605.06083.
+    additive = "Features are extracted not only for the current sentence but also for neighbours."
+    assert not _qualifier_flag("Features are extracted for the current sentence", additive)
+    either = "Dark-skinned people are called African-American whether in the USA or not."
+    assert not _qualifier_flag("Dark-skinned people are called African-American", either)
+    # S30, 1611.01576: "removed" in the claim keeps the source's "remove".
+    removal = "We remove training sentences with more than 300 characters in English or German."
+    assert not _qualifier_flag("Training sentences over 300 characters were removed", removal)
+    assert _qualifier_flag("Training sentences over 300 characters were kept", removal)
+    failed = "The pruned model failed to converge on the larger dataset."
+    assert _qualifier_flag("The pruned model converged on the larger dataset", failed)
+    assert not _qualifier_flag("The pruned model fails to converge on the larger dataset", failed)

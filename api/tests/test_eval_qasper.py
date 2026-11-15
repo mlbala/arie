@@ -115,3 +115,10 @@ def test_the_command_scores_strict_by_default_and_explain_on_request() -> None:
         parse_args(["5", "--kind", "chart"])
     with pytest.raises(SystemExit):
         parse_args(["5", "--mode", "loud"])
+
+
+def test_the_command_skips_papers_for_a_held_out_set() -> None:
+    assert parse_args(["30"]).skip == 0
+    assert parse_args(["30", "--skip", "30"]).skip == 30
+    with pytest.raises(SystemExit):
+        parse_args(["30", "--skip", "-1"])

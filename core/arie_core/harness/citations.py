@@ -16,7 +16,7 @@ from collections.abc import Mapping, Sequence
 
 import msgspec
 
-from arie_core.harness.verifier import canonical_numbers, content_tokens, lost_qualifier
+from arie_core.harness.verifier import canonical_numbers, content_tokens
 from arie_core.pipeline.chunker import is_table
 from arie_core.pipeline.pack import marker_numbers
 from arie_core.pipeline.tables import table_premise
@@ -35,6 +35,20 @@ UNCITED_NUMBER = "uncited_number"
 # skipped: a whole chunk holds a "not" somewhere, so comparing against it would flag everything.
 _ALIGN_MIN_SHARE = 0.5
 _ALIGN_MIN_STEMS = 3
+
+# The explain check's qualifier groups (S30): negation and hedge as in strict
+# ``lost_qualifier``, with past forms of the negation verbs. The restriction group ("only",
+# "small", "limited", "restricted") is left out: on Qasper 30 all 21 of its flags were false,
+# since dropping "a small sample" or "only one topic" doesn't make a claim say more.
+_EXPLAIN_QUALIFIERS = (
+    r"\b(?:not|no|never|without|cannot|neither|fail(?:s|ed)?|unable|lack(?:s|ed)?"
+    r"|remov(?:e|es|ed)|dispensing)\b|n't",
+    r"\b(?:may|might|could|suggests?|appears?|potentially|preliminary)\b",
+)
+# "not only ... but also" adds and "whether ... or not" covers both cases: neither negates.
+_NOT_NEGATION = re.compile(r"\bnot\s+only\b|\bor\s+not\b", re.I)
+# Clauses of a source sentence: a qualifier binds only within its own clause.
+_CLAUSE_BREAK = re.compile(r";|(?<!\d):(?!\d)|,\s+so\s")
 
 _FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
 _HEADING = re.compile(r"^\s{0,3}#{1,6}(?:\s|$)")
@@ -206,15 +220,37 @@ class _Aligner:
         return best_text if best_share >= _ALIGN_MIN_SHARE else None
 
 
+def lost_qualifier_in_clause(claim: str, sentence: str) -> bool:
+    """True if a clause of ``sentence`` that the claim restates has a negation or hedge the
+    claim lacks (S30).
+
+    A clause is restated when it shares a content stem with the claim; clauses end at ``;``,
+    ``:`` and ``, so``, so "this does not mean X: Y" restated as Y keeps no "not". "Not only"
+    and "or not" are not negations. Restriction words are not checked (strict still checks
+    them with ``lost_qualifier``).
+    """
+    wanted = _stems(claim)
+    clauses = [
+        clause
+        for clause in _CLAUSE_BREAK.split(_NOT_NEGATION.sub(" ", sentence))
+        if wanted & _stems(clause)
+    ]
+    return any(
+        any(re.search(group, clause, re.I) for clause in clauses)
+        and not re.search(group, claim, re.I)
+        for group in _EXPLAIN_QUALIFIERS
+    )
+
+
 def check_answer(text: str, sources: Mapping[int, str], *, tables: bool = True) -> CitationChecks:
     """Check every sentence of an explain answer; ``sources`` maps a marker to its raw chunk text.
 
     ``sources`` holds the chunks of the bound paper that the model saw, so a marker outside it
     is ``invalid_marker``. For a sentence with valid markers: ``number_not_in_source`` (a
     number that is in none of the cited chunks, ``92.10`` and ``92.1`` being equal),
-    ``lost_qualifier`` (the cited sentence it restates has a negation, hedge or "only" that
-    the claim lacks). A sentence with no marker is ``uncited_number`` if it states a number
-    and background otherwise.
+    ``lost_qualifier`` (a clause of the cited sentence it restates has a negation or hedge
+    that the claim lacks, ``lost_qualifier_in_clause``). A sentence with no marker is
+    ``uncited_number`` if it states a number and background otherwise.
 
     A cited chunk that holds a table is read with that table as one sentence per row, with its
     column names, and the caption once (``table_premise``, S28). Both checks compare against
@@ -247,7 +283,7 @@ def check_answer(text: str, sources: Mapping[int, str], *, tables: bool = True) 
                 if numbers - canonical_numbers(" ".join(texts)):
                     reasons.append(NUMBER_NOT_IN_SOURCE)
                 restated = aligner.best(claim, texts)
-                if restated is not None and lost_qualifier(claim, restated):
+                if restated is not None and lost_qualifier_in_clause(claim, restated):
                     reasons.append(LOST_QUALIFIER)
             status = FLAGGED if reasons else CITED_OK
         checked.append(SentenceCheck(start, end, raw, status, markers, tuple(reasons), table))

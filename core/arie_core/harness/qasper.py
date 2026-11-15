@@ -113,11 +113,15 @@ def first_papers(papers: Mapping[str, QasperPaper], count: int) -> list[str]:
     return sorted(papers)[: max(count, 0)]
 
 
-def select_papers(papers: Mapping[str, QasperPaper], count: int, kind: str = "any") -> list[str]:
+def select_papers(
+    papers: Mapping[str, QasperPaper], count: int, kind: str = "any", skip: int = 0
+) -> list[str]:
     """``count`` paper ids in sorted order; with a ``kind`` other than ``any``, only papers with
-    at least one question of that evidence kind (``evidence_kind``)."""
+    at least one question of that evidence kind (``evidence_kind``). ``skip`` passes over the
+    first matching papers, so ``skip=30`` gives a held-out set after the first 30 (S30)."""
+    start = max(skip, 0)
     if kind == "any":
-        return first_papers(papers, count)
+        return first_papers(papers, start + max(count, 0))[start:]
     if kind not in EVIDENCE_KINDS:
         raise ValueError(f"Unknown evidence kind: {kind}")
     matching = (
@@ -128,7 +132,7 @@ def select_papers(papers: Mapping[str, QasperPaper], count: int, kind: str = "an
             for item in papers[paper_id].qas
         )
     )
-    return list(itertools.islice(matching, max(count, 0)))
+    return list(itertools.islice(matching, start, start + max(count, 0)))
 
 
 def expected_floats(answers: Sequence[QasperAnswer]) -> list[str]:

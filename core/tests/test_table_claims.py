@@ -22,7 +22,12 @@ from arie_core.harness.citations import (
 )
 from arie_core.harness.intent import plan_answer
 from arie_core.harness.reader import EvidenceChunk, Excerpt, premise_text
-from arie_core.harness.verifier import anchor_numbers, canonical_numbers, preserves_anchors
+from arie_core.harness.verifier import (
+    anchor_numbers,
+    canonical_numbers,
+    lost_qualifier,
+    preserves_anchors,
+)
 from arie_core.pipeline.tables import (
     linearize_quote,
     linearize_row,
@@ -176,9 +181,14 @@ def test_explain_does_not_repeat_a_hedged_caption_into_every_row() -> None:
     checks = check_answer(sentence, {4: table})
     assert checks.sentences[0].status == CITED_OK
     assert (table_premise(table) or "").count("only") == 1
-    # A sentence restating the caption still keeps its qualifier check.
-    hedged = "Accuracy was measured on the test split [c4]."
-    assert check_answer(hedged, {4: table}).sentences[0].reasons == (LOST_QUALIFIER,)
+    # A sentence restating the caption keeps its qualifier check. Explain no longer checks
+    # restriction words (S30), so a dropped "only" passes there and strict still catches it.
+    restated = "Accuracy was measured on the test split [c4]."
+    assert check_answer(restated, {4: table}).sentences[0].status == CITED_OK
+    assert lost_qualifier("Accuracy was measured on the test split.", "measured only on the test")
+    hedged_table = table.replace("measured only on", "may be lower on")
+    hedged = "Accuracy is lower on the test split [c4]."
+    assert check_answer(hedged, {4: hedged_table}).sentences[0].reasons == (LOST_QUALIFIER,)
 
 
 def test_explain_checks_of_prose_sources_are_unchanged() -> None:
