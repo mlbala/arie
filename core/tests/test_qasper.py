@@ -267,6 +267,28 @@ def test_a_kind_selects_papers_with_a_question_of_that_kind_in_id_order() -> Non
         select_papers(papers, 3, "chart")
 
 
+def test_select_papers_skips_the_first_papers_for_a_held_out_set() -> None:
+    text = _question(1, _answer(spans=("F1 of 83.5",), evidence=("We report F1.",)))
+    table = _question(2, _answer(free_form="Higher.", evidence=("FLOAT SELECTED: Table 1: F1.",)))
+    papers = _papers(
+        {
+            "1503.00001": [text],
+            "1601.00002": [table],
+            "1701.00003": [text],
+            "1801.00005": [table],
+            "1909.00004": [table],
+        }
+    )
+    ordered = sorted(papers)
+    assert select_papers(papers, 2, skip=2) == ordered[2:4]
+    assert set(select_papers(papers, 2)).isdisjoint(select_papers(papers, 2, skip=2))
+    assert select_papers(papers, 10, skip=4) == ordered[4:]
+    assert select_papers(papers, 3, skip=9) == []
+    # With a kind, the skip counts matching papers only.
+    assert select_papers(papers, 1, "table", skip=1) == ["1801.00005"]
+    assert select_papers(papers, 5, "table", skip=1) == ["1801.00005", "1909.00004"]
+
+
 def test_expected_floats_are_read_from_float_evidence() -> None:
     assert expected_floats([_evidence("FLOAT SELECTED: Figure 3: Curves.")]) == ["Figure 3"]
     assert expected_floats([_evidence("FLOAT SELECTED: Fig. 3: Curves.")]) == ["Figure 3"]

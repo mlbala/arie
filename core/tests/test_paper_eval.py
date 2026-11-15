@@ -671,6 +671,11 @@ def test_citation_support_and_win_rate_come_from_the_judge_and_never_change_pass
     harsh = _judged(found, "unsupported", "supported")
     unsupported = score_explained(fact_case(), ROWS, answer, seconds=1, judgement=harsh)
     assert unsupported.citation_support == 0
+    # S30: the whole answer, marker chunks and per-sentence verdicts are kept for re-scoring.
+    second = found.sentences[1].start
+    assert unsupported.full_answer == text and unsupported.cited_chunks == {"2": "p1:2"}
+    assert unsupported.support_verdicts == {"0": "unsupported", str(second): "supported"}
+    assert plain.support_verdicts == {}
 
     failed = score_explained(
         fact_case(),

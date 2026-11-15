@@ -120,9 +120,9 @@ async def build_vectors(runtime: ResearchRuntime, paper_id: str) -> bool:
     return False
 
 
-async def evaluate(papers: int, mode: str = "strict", kind: str = "any") -> bool:
+async def evaluate(papers: int, mode: str = "strict", kind: str = "any", skip: int = 0) -> bool:
     dev = await load_dev()
-    selected = select_papers(dev, papers, kind)
+    selected = select_papers(dev, papers, kind, skip)
     runtime = ResearchRuntime(ROOT)
     importer: asyncio.Task[None] | None = None
     counts: Counter[str] = Counter(papers=len(selected))
@@ -180,7 +180,11 @@ async def evaluate(papers: int, mode: str = "strict", kind: str = "any") -> bool
         json.dumps(
             {
                 "status": "complete" if ok else "incomplete",
-                "message": f"Qasper dev, first {len(selected)} papers"
+                "message": (
+                    f"Qasper dev, papers {skip + 1}-{skip + len(selected)}"
+                    if skip
+                    else f"Qasper dev, first {len(selected)} papers"
+                )
                 + ("" if kind == "any" else f" with a {kind} question")
                 + f", {mode} mode",
                 "settings": settings,
@@ -193,10 +197,10 @@ async def evaluate(papers: int, mode: str = "strict", kind: str = "any") -> bool
     return ok
 
 
-async def retrieval(papers: int, kind: str = "table") -> bool:
+async def retrieval(papers: int, kind: str = "table", skip: int = 0) -> bool:
     """Share of table ``float_ref`` cases whose expected table is in the vector top 8."""
     dev = await load_dev()
-    selected = select_papers(dev, papers, kind)
+    selected = select_papers(dev, papers, kind, skip)
     runtime = ResearchRuntime(ROOT)
     counts: Counter[str] = Counter(papers=len(selected))
     try:
@@ -245,6 +249,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="only papers with a question of this evidence kind (default: any paper)",
     )
     parser.add_argument(
+        "--skip",
+        type=int,
+        default=0,
+        help="pass over the first N selected papers (held-out set: --skip 30)",
+    )
+    parser.add_argument(
         "--retrieval",
         action="store_true",
         help="no LLM: share of table float_ref cases with the table in the vector top 8",
@@ -252,14 +262,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.papers < 1:
         parser.exit(2, "error: papers must be at least 1\n")
+    if args.skip < 0:
+        parser.exit(2, "error: --skip must be 0 or more\n")
     return args
 
 
 def main() -> None:
     args = parse_args()
     if args.retrieval:
-        raise SystemExit(0 if asyncio.run(retrieval(args.papers, args.kind)) else 1)
-    raise SystemExit(0 if asyncio.run(evaluate(args.papers, args.mode, args.kind)) else 1)
+        raise SystemExit(0 if asyncio.run(retrieval(args.papers, args.kind, args.skip)) else 1)
+    ok = asyncio.run(evaluate(args.papers, args.mode, args.kind, args.skip))
+    raise SystemExit(0 if ok else 1)
 
 
 if __name__ == "__main__":

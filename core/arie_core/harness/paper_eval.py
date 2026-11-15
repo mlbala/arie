@@ -139,6 +139,12 @@ class PaperEvalResult(msgspec.Struct, frozen=True, kw_only=True):
     # when the answer cites no table chunk.
     table_flags: dict[str, int] = {}
     table_flags_s27: dict[str, int] = {}
+    # Explain mode only (S30), so a run's checks can be re-scored offline: the whole answer
+    # (``answer`` is cut at 1,200 characters), each marker's chunk id, and the support judge's
+    # verdict per cited sentence keyed by the sentence's start offset in ``full_answer``.
+    full_answer: str = ""
+    cited_chunks: dict[str, str] = {}
+    support_verdicts: dict[str, str] = {}
 
 
 def _normalize(text: str) -> str:
@@ -693,6 +699,11 @@ def score_explained(
         judge_status=judgement.status if judgement else "",
         table_flags=table_flags(check_answer(result.text, sources)),
         table_flags_s27=table_flags(check_answer(result.text, sources, tables=False)),
+        full_answer=result.text,
+        cited_chunks={str(item.marker): item.chunk_id for item in result.citations},
+        support_verdicts=(
+            {str(item.start): item.verdict for item in judgement.verdicts} if judgement else {}
+        ),
     )
 
 
